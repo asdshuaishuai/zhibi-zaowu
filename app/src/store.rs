@@ -284,8 +284,8 @@ pub use chinese_count as count_words;
 mod tests {
     use super::*;
 
-    fn temp_home() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("zhibi-test-{}", std::process::id()));
+    fn temp_home(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("zhibi-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("Documents")).unwrap();
         d
@@ -293,8 +293,9 @@ mod tests {
 
     #[test]
     fn import_dir_generates_proposals() {
-        let home = temp_home();
+        let home = temp_home("import");
         unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
         let dir = create_project("导入测试").unwrap();
         let handle = ProjectHandle::open(&dir).unwrap();
         let src = std::path::Path::new("/tmp/import-test");
@@ -311,7 +312,7 @@ mod tests {
 
     #[test]
     fn create_and_roundtrip() {
-        let home = temp_home();
+        let home = temp_home("roundtrip");
         // 测试独占进程环境；Rust 2024 起 set_var 为 unsafe（测试进程内无并发读）
         unsafe { std::env::set_var("HOME", &home); }
         // 会写进 temp 的 Documents/执笔
