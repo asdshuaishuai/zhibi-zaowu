@@ -55,11 +55,26 @@ cargo build           # 仅构建
   （initialize / session.query / session.event / session.status / approval…）。
   M1 不启用 approvalRequests 与 userQuestions（runtime 进程内应答）。
 
-## 里程碑
+## 里程碑与当前实现状态
 
 - [x] **M1** 骨架可跑：GPUI 三栏 + DSH sdk 子进程连通 + 轨迹实时滚动
-- [ ] **M2** 项目与编辑器：`.zhibi` 读写 + 稿纸编辑器 + 章节树/书架
-- [ ] **M3** 提案闭环：novel-pack 首批工具 + 收件箱 + 就地采纳 + 状态条
-- [ ] **M4** 彩云式共写：幽灵续写 + 分支卡 + 选区改写（diff + 快照）
-- [ ] **M5** 全能力复刻：审查/对账/去AI味/记忆/图谱/导入导出/统计
-- [ ] **M6** 跨端打包：Win/Linux + 自动更新
+- [x] **M2** 项目与编辑器：书架独立首页（与内容分层）；`.zhibi` 真读写（旧项目直接打开）、
+      真章节树（切章先存盘）、稿纸 Textarea、新建作品/新建章、CJK 字数口径与旧版一致、磁盘往返单测
+- [x] **M3** 提案闭环：novel-pack **17 工具**真实 runtime 注册验证；收件箱 GUI（就地采纳/拒收+理由回灌）；
+      确定性采纳落库（同题保护/同 id 合并/改名撞名跳过/草稿快照先行）；编辑器 6 个 AI 按钮 + 任务书库；
+      状态条；patch 自动挂载
+- [x] **M4** 彩云式共写（第一、二片）：续写一句/给走向 → 轨迹文本气泡「采纳到正文」；
+      选区创作（拉深/扩写/缩写/改写/去AI味）→ SelectionDraft 气泡「替换选区/追加」双落点，快照先行。
+      （编辑器装饰级幽灵内联文本 = 待做，当前用轨迹气泡+一键采纳达成同等语义）
+- [x] **M5** 台账页：设定（类别分组+归类）/ 大纲·时间线（真相|读者已知+同步/审查）/ 伏笔台账（+盘点）/
+      记忆中枢（事实账本+记一笔）/ 人物卡（别名归一）/ 写作统计（14 天柱状+提案账本）/
+      记忆图谱（列表视图）/ 导入旧稿（第N章启发式 → 提案制，单测覆盖）/ 快照页（恢复）/ 导出合并稿
+- [~] **M6** 打包：`scripts/build_app.sh` 出 macOS `.app`（Info.plist/icns/ad-hoc 签名，release 17MB 验证）；
+      设置页（端点+真实连通测试 ureq）。Win/Linux 同工程可编译，各自打包格式待补；自动更新待补
+
+已知边界（如实）：
+- 局域网 OpenAI 兼容路由（`zhibi-lan`）已写进 patch 并条件挂载，但其适配器依赖
+  `@deepseek-ai/dsh-environment` 尚未发布——发布后自动点亮；当前真实模型回环走
+  `deepseek-official`（需 DEEPSEEK_API_KEY）。
+- 骨架/验证/去AI味等 payload 的确定性落库在 Rust 侧已实现 canon/clues/canonClassify/draft；
+  其余 kind 采纳时会如实报「尚未实现」并保持待审（不静默丢弃）。
