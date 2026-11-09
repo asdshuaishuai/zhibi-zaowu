@@ -42,3 +42,25 @@ pub const EDITOR_AI_BUTTONS: &[AiButton] = &[
     AiButton { label: "AI 盘点伏笔", capability: "inventory" },
     AiButton { label: "AI 归类设定", capability: "classify" },
 ];
+
+pub fn selection_instruction(kind: &str, selected: &str) -> String {
+    let verb = match kind {
+        "deepen" => "拉深（同一段写得更细更满，保持事实与视角）",
+        "expand" => "扩写（展开更多细节与回合）",
+        "condense" => "缩写（收紧节奏删冗余，保留关键动作）",
+        "rewrite" => "改写（换一种写法，保持说什么不变）",
+        "deslop" => "去AI味改写（按 25 项检测逐处修正措辞与结构）",
+        _ => "改写",
+    };
+    format!(
+        "{verb}。只输出改写后的文本本身，不要解释、不要引号、不要调用工具。\n\n原文：\n{selected}"
+    )
+}
+
+pub const SELECTION_BUTTONS: &[(&str, &str)] = &[
+    ("拉深", "deepen"),
+    ("扩写", "expand"),
+    ("缩写", "condense"),
+    ("改写", "rewrite"),
+    ("去AI味", "deslop"),
+];

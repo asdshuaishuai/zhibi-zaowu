@@ -18,6 +18,8 @@ pub enum EditorEvent {
     SaveRequested,
     /// AI 能力按钮（capability 键，Workspace 映射为任务书）
     RunCapability(String),
+    /// 选区创作（kind 键；Workspace 读选区文本拼任务书）
+    SelectionAction(&'static str),
 }
 
 pub struct EditorPanel {
@@ -105,6 +107,30 @@ impl Render for EditorPanel {
                     .pt_2()
                     .flex_wrap()
                     .children(ai_buttons),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .px_8()
+                    .pt_1()
+                    .flex_wrap()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x5d5b57))
+                            .child("选区创作（先选中正文一段）："),
+                    )
+                    .children(crate::prompts::SELECTION_BUTTONS.iter().map(|(label, kind)| {
+                        let kind: &'static str = kind;
+                        Button::new(format!("sel-{kind}"))
+                            .xsmall()
+                            .label(*label)
+                            .on_click(cx.listener(move |_this, _, _, cx| {
+                                cx.emit(EditorEvent::SelectionAction(kind));
+                            }))
+                    })),
             )
             .child(
                 div()

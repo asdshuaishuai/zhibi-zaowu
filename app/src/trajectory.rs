@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::Sizable;
 use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::component::dock::Panel as ComponentPanel;
@@ -21,6 +21,8 @@ use gpui_kit::{
 pub enum TrajEvent {
     /// 作者点「采纳到正文」：Workspace 快照后追加
     Adopt(String),
+    /// 选区创作：替换当前选区（快照先行）
+    AdoptSelection(String),
 }
 
 /// 一条轨迹气泡。
@@ -38,6 +40,8 @@ pub enum TrajKind {
     ToolErr(String),
     /// 模型文本产出
     Text(String),
+    /// 选区创作产出：可替换选区或追加
+    SelectionDraft { original: String, text: String },
     /// 用户输入
     User(String),
     /// 完成
@@ -66,6 +70,9 @@ impl TrajKind {
             TrajKind::ToolOk(t) => format!("↳ {t}"),
             TrajKind::ToolErr(t) => format!("✕ 工具报错：{t}"),
             TrajKind::Text(t) => t.clone(),
+            TrajKind::SelectionDraft { text, original } => {
+                format!("选区创作（原文 {} 字）→ {text}", original.chars().count())
+            }
             TrajKind::User(t) => format!("你：{t}"),
             TrajKind::Done(t) => format!("✓ {t}"),
             TrajKind::Fail(t) => format!("✕ {t}"),
@@ -176,19 +183,48 @@ impl Render for TrajectoryPanel {
         } else {
             let entries = self.entries.clone();
             for e in entries {
-                let adopt_btn: Option<gpui_kit::AnyElement> = if let TrajKind::Text(text) = &e.kind {
-                    let text = text.clone();
-                    Some(
-                        Button::new(format!("adopt-{}", e.seq))
-                            .xsmall()
-                            .label("采纳到正文")
-                            .on_click(cx.listener(move |_this, _, _, cx| {
-                                cx.emit(TrajEvent::Adopt(text.clone()));
-                            }))
-                            .into_any_element(),
-                    )
-                } else {
-                    None
+                let adopt_btn: Option<gpui_kit::AnyElement> = match &e.kind {
+                    TrajKind::Text(text) => {
+                        let text = text.clone();
+                        Some(
+                            Button::new(format!("adopt-{}", e.seq))
+                                .xsmall()
+                                .label("采纳到正文")
+                                .on_click(cx.listener(move |_this, _, _, cx| {
+                                    cx.emit(TrajEvent::Adopt(text.clone()));
+                                }))
+                                .into_any_element(),
+                        )
+                    }
+                    TrajKind::SelectionDraft { text, .. } => {
+                        let text = text.clone();
+                        let replace = text.clone();
+                        Some(
+                            div()
+                                .flex()
+                                .gap_1()
+                                .justify_end()
+                                .child(
+                                    Button::new(format!("repl-{}", e.seq))
+                                        .xsmall()
+                                        .primary()
+                                        .label("替换选区")
+                                        .on_click(cx.listener(move |_this, _, _, cx| {
+                                            cx.emit(TrajEvent::AdoptSelection(replace.clone()));
+                                        })),
+                                )
+                                .child(
+                                    Button::new(format!("appnd-{}", e.seq))
+                                        .xsmall()
+                                        .label("追加到正文")
+                                        .on_click(cx.listener(move |_this, _, _, cx| {
+                                            cx.emit(TrajEvent::Adopt(text.clone()));
+                                        })),
+                                )
+                                .into_any_element(),
+                        )
+                    }
+                    _ => None,
                 };
                 list = list.child(bubble(e.clone(), adopt_btn));
             }

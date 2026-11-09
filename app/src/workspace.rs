@@ -82,6 +82,8 @@ pub struct Workspace {
     chapter: u32,
     client: Option<DshClient>,
     initialized: bool,
+    /// 选区创作请求的原文（应答到达时转成 SelectionDraft 气泡）
+    pending_sel: Option<String>,
 }
 
 impl Workspace {
@@ -182,6 +184,16 @@ impl Workspace {
             &trajectory,
             window,
             |this, _, ev: &TrajEvent, window, cx| match ev {
+                TrajEvent::AdoptSelection(text) => {
+                    let _ = this.handle.snapshot_prose(this.chapter);
+                    this.prose.update(cx, |state, cx| {
+                        state.replace(text.as_str(), window, cx);
+                    });
+                    this.save_current(cx);
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(TrajKind::Info("选区已替换（快照已存）".into()), cx);
+                    });
+                }
                 TrajEvent::Adopt(text) => {
                     let _ = this.handle.snapshot_prose(this.chapter);
                     let cur = this.prose.read(cx).value().to_string();
@@ -209,6 +221,21 @@ impl Workspace {
                     let task = prompts::task_for(cap, this.chapter);
                     this.on_send(task, cx);
                 }
+                EditorEvent::SelectionAction(kind) => {
+                    let selected = this.prose.read(cx).selected_text().to_string();
+                    if selected.trim().is_empty() {
+                        this.trajectory.update(cx, |panel, cx| {
+                            panel.push(
+                                TrajKind::Info("先在稿纸里选中一段，再用选区创作".into()),
+                                cx,
+                            );
+                        });
+                        return;
+                    }
+                    this.pending_sel = Some(selected.clone());
+                    let task = prompts::selection_instruction(kind, &selected);
+                    this.on_send(task, cx);
+                }
             },
         )
         .detach();
@@ -232,6 +259,7 @@ impl Workspace {
             chapter,
             client: None,
             initialized: false,
+            pending_sel: None,
         }
     }
 
@@ -520,6 +548,8 @@ impl Workspace {
                 let text = assistant_text(&data);
                 if text.is_empty() {
                     None
+                } else if let Some(original) = self.pending_sel.take() {
+                    Some(TrajKind::SelectionDraft { original, text })
                 } else {
                     Some(TrajKind::Text(text))
                 }
