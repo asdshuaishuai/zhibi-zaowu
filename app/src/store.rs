@@ -292,6 +292,24 @@ mod tests {
     }
 
     #[test]
+    fn import_dir_generates_proposals() {
+        let home = temp_home();
+        unsafe { std::env::set_var("HOME", &home); }
+        let dir = create_project("导入测试").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        let src = std::path::Path::new("/tmp/import-test");
+        if src.exists() {
+            let (d, c) = handle.import_dir(src).unwrap();
+            assert_eq!(d, 1, "应识别一个章节文件");
+            assert_eq!(c, 1, "应识别一个设定文件");
+            let props = handle.proposals();
+            assert_eq!(props.len(), 2);
+            assert!(props.iter().any(|p| p.payload.get("kind").and_then(|k| k.as_str()) == Some("draft")));
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn create_and_roundtrip() {
         let home = temp_home();
         // 测试独占进程环境；Rust 2024 起 set_var 为 unsafe（测试进程内无并发读）
@@ -683,4 +701,104 @@ impl ProjectHandle {
         let text = std::fs::read_to_string(&src).map_err(|e| e.to_string())?;
         self.save_prose(n, &text)
     }
+}
+
+// ───────────────────────── 导入目录 → 提案（启发式，全部走提案） ─────────────────────────
+
+fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.filter_map(|e| e.ok()) {
+        let p = e.path();
+        if p.is_dir() {
+            collect_md_files(&p, out);
+        } else if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+            if matches!(ext.to_ascii_lowercase().as_str(), "md" | "txt") {
+                out.push(p);
+            }
+        }
+    }
+}
+
+/// 「第N章」启发式：取文本首个匹配的数字章号（与旧版 ImportService 同思路）。
+fn chapter_marker(text: &str) -> Option<u32> {
+    let bytes: Vec<char> = text.chars().take(400).collect();
+    let s: String = bytes.iter().collect();
+    let idx = s.find("第")?;
+    let rest: String = s[idx + '第'.len_utf8()..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    if rest.is_empty() {
+        return None;
+    }
+    rest.parse().ok()
+}
+
+impl ProjectHandle {
+    /// 扫描目录生成提案：章 → draft 提案；设定/大纲/人物目录下的文件 → canon 提案。
+    /// 返回 (草稿提案数, 设定提案数)。
+    pub fn import_dir(&self, dir: &Path) -> Result<(usize, usize), String> {
+        let mut files = Vec::new();
+        collect_md_files(dir, &mut files);
+        files.sort();
+        let mut drafts = 0usize;
+        let mut canons = 0usize;
+        for f in files.iter().take(400) {
+            let Ok(text) = std::fs::read_to_string(f) else { continue };
+            if text.trim().is_empty() {
+                continue;
+            }
+            let name = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let path_str = f.to_string_lossy().to_lowercase();
+            if let Some(n) = chapter_marker(&text) {
+                self.add_proposal_local(
+                    "一键写作",
+                    &format!("第{n}章 草稿（导入 {name}）"),
+                    "导入旧稿：采纳前不进正文；同章已有正文时请先核对。",
+                    serde_json::json!({ "kind": "draft", "chapter": n, "text": text }),
+                )?;
+                drafts += 1;
+            } else if ["设定", "大纲", "人物", "world", "outline", "canon"]
+                .iter()
+                .any(|k| path_str.contains(k))
+            {
+                self.add_proposal_local(
+                    "搭建框架",
+                    &format!("设定导入：{name}"),
+                    "导入旧稿：同题不覆盖手改文档。",
+                    serde_json::json!({
+                        "kind": "canon",
+                        "docs": [{ "title": name, "content": text, "certainty": "tentative" }]
+                    }),
+                )?;
+                canons += 1;
+            }
+        }
+        Ok((drafts, canons))
+    }
+
+    fn add_proposal_local(
+        &self,
+        capability: &str,
+        title: &str,
+        note: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
+        let mut list = self.proposals();
+        list.insert(0, Proposal {
+            id: uuid_like(),
+            capability: capability.into(),
+            title: title.into(),
+            note: note.into(),
+            payload,
+            status: "待确认".into(),
+            created_at: iso_now(),
+            decided_at: None,
+            reject_reason: None,
+        });
+        self.save_proposals(&list)
+    }
+}
+
+fn uuid_like() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{:016x}", nanos)
 }

@@ -17,3 +17,24 @@
       你的一切产出（设定、伏笔、骨架、草稿）只能通过 propose_* 工具登记为提案，
       由作者审阅采纳后才生效；不存在任何直接写正文的工具，模型口头声明不算数。
       审校只查客观错误（连续性/设定违背/伏笔合同/物理不可能），文风好坏不评。
+
+# 局域网 OpenAI 兼容端点（ZHIBI_BASE_URL 存在时生效）：pi-ai 适配器挂自定义路由 zhibi-lan
+- insert:
+    - id: zhibi-lan-provider
+      name: '@deepseek-ai/dsh-llm-pi-ai'
+      # 条件挂载：ZHIBI_BASE_URL 存在且 pi-ai 依赖可解析时生效；
+      # 该包的 peer @deepseek-ai/dsh-environment 尚未发布（0.0.1-rc.1），
+      # 发布后此行自动点亮，未点亮时回退 deepseek-official 路由。
+      disabled: !!js "!process.env.ZHIBI_BASE_URL"
+      config:
+        providers:
+          zhibi-lan:
+            displayName: 执笔局域网
+            apiKeyEnv: ZHIBI_LAN_KEY
+            api: openai-completions
+            baseURL: !!js "process.env.ZHIBI_BASE_URL ?? 'http://127.0.0.1:8888/v1'"
+            models:
+              - id: !!js "process.env.ZHIBI_MODEL ?? 'local'"
+                name: 局域网模型
+                contextWindow: 32768
+                maxTokens: 4096

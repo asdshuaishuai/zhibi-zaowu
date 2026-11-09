@@ -24,7 +24,7 @@ use crate::inbox::{InboxEvent, InboxPanel};
 use crate::prompts;
 use crate::store::{self, ProjectHandle};
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
-use crate::views::{CanonPanel, CharactersPanel, CluesPanel, MemoryPanel, OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent};
+use crate::views::{CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel, MemoryPanel, OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent};
 
 const DOCK_AREA_ID: &str = "zhibi-main-dock";
 const DOCK_AREA_VERSION: usize = 1;
@@ -45,6 +45,8 @@ pub enum Mode {
     Characters,
     Settings,
     Snapshots,
+    Import,
+    Graph,
 }
 
 impl Mode {
@@ -59,6 +61,8 @@ impl Mode {
             Mode::Characters => "人物卡",
             Mode::Settings => "设置",
             Mode::Snapshots => "快照",
+            Mode::Import => "导入旧稿",
+            Mode::Graph => "记忆图谱",
         }
     }
 }
@@ -81,6 +85,8 @@ pub struct Workspace {
     characters_view: Entity<CharactersPanel>,
     settings_view: Entity<SettingsPanel>,
     snapshots_view: Entity<SnapshotsPanel>,
+    import_view: Entity<ImportPanel>,
+    graph_view: Entity<GraphPanel>,
     mode: Mode,
     trajectory: Entity<TrajectoryPanel>,
     prose: Entity<TextareaState>,
@@ -141,6 +147,46 @@ impl Workspace {
         let characters_view = cx.new(|cx| CharactersPanel::new(cx, handle.clone()));
         let settings_view = cx.new(|cx| SettingsPanel::new(window, cx));
         let snapshots_view = cx.new(|cx| SnapshotsPanel::new(cx, handle.clone(), chapter));
+        let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
+        let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
+
+        cx.subscribe_in(&import_view, window, |this, _, ev: &ImportEvent, _window, cx| match ev {
+            ImportEvent::Run(path) => {
+                if path.trim().is_empty() {
+                    this.import_view.update(cx, |panel, cx| {
+                        panel.set_result("先填目录路径".into(), cx);
+                    });
+                    return;
+                }
+                let path = std::path::PathBuf::from(path);
+                // Rc 不能跨线程：把句柄拆成纯数据传入后台
+                let root = this.handle.root.clone();
+                let title = this.handle.title.clone();
+                let import_view = this.import_view.clone();
+                let inbox = this.inbox.clone();
+                let traj = this.trajectory.clone();
+                cx.spawn(async move |_, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let h = ProjectHandle { root, title };
+                            h.import_dir(&path)
+                        })
+                        .await;
+                    let _ = cx.update(|cx| {
+                        let msg = match result {
+                            Ok((d, c)) => format!("扫描完成：草稿提案 {d} 份 · 设定提案 {c} 份——去收件箱逐条采纳"),
+                            Err(e) => format!("导入失败：{e}"),
+                        };
+                        import_view.update(cx, |panel, cx| panel.set_result(msg.clone(), cx));
+                        inbox.update(cx, |panel, cx| panel.refresh(cx));
+                        traj.update(cx, |panel, cx| panel.push(TrajKind::Info(msg), cx));
+                    });
+                })
+                .detach();
+            }
+        })
+        .detach();
 
         cx.subscribe_in(&settings_view, window, |this, _, ev: &SettingsEvent, _window, cx| match ev {
             SettingsEvent::Save { base_url, model, provider } => {
@@ -330,6 +376,8 @@ impl Workspace {
             characters_view,
             settings_view,
             snapshots_view,
+            import_view,
+            graph_view,
             mode: Mode::Editor,
             trajectory,
             prose,
@@ -402,6 +450,8 @@ impl Workspace {
                 self.snapshots_view.update(cx, |panel, cx| panel.reload(self.chapter, cx));
                 panel_handle(self.snapshots_view.clone())
             }
+            Mode::Import => panel_handle(self.import_view.clone()),
+            Mode::Graph => panel_handle(self.graph_view.clone()),
         };
         let center = DockLayout::tabs().panel_view(view, cx);
         self.dock_area.update(cx, |area, cx| {
@@ -803,7 +853,9 @@ impl Render for Workspace {
             nav_items.push(mk("写作统计", Mode::Stats));
             nav_items.push(mk("伏笔台账", Mode::Clues));
             nav_items.push(mk("人物卡", Mode::Characters));
+            nav_items.push(mk("记忆图谱", Mode::Graph));
             nav_items.push(mk("快照", Mode::Snapshots));
+            nav_items.push(mk("导入旧稿", Mode::Import));
             nav_items.push(mk("设置", Mode::Settings));
         }
         let menu = SidebarMenu::new()

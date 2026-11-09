@@ -858,3 +858,186 @@ impl ComponentPanel for SnapshotsPanel {
         div().text_sm().font_weight(FontWeight::MEDIUM).child("快照")
     }
 }
+
+/* ───────────────────────── 导入目录 → 提案 ───────────────────────── */
+
+#[derive(Debug, Clone)]
+pub enum ImportEvent {
+    Run(String),
+}
+
+pub struct ImportPanel {
+    focus_handle: FocusHandle,
+    handle: Rc<ProjectHandle>,
+    path: Entity<gpui_kit::component::input::InputState>,
+    last_result: String,
+}
+
+impl ImportPanel {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        let path = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("要导入的目录（.md/.txt，按「第N章」启发式分类）")
+        });
+        Self { focus_handle: cx.focus_handle(), handle, path, last_result: String::new() }
+    }
+
+    pub fn set_result(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.last_result = msg;
+        cx.notify();
+    }
+}
+
+impl EventEmitter<PanelEvent> for ImportPanel {}
+impl EventEmitter<ImportEvent> for ImportPanel {}
+
+impl Focusable for ImportPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for ImportPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let result = self.last_result.clone();
+        div()
+            .id("import-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_4()
+                    .gap_3()
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("导入旧稿（全部走提案，采纳才落库）"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8e8b85))
+                            .child("规则：文件名/内容匹配「第N章」→ 草稿提案；「设定/大纲/人物」目录 → 设定提案；其余忽略。"),
+                    )
+                    .child(field("目录", &self.path))
+                    .child(
+                        Button::new("import-run")
+                            .primary()
+                            .xsmall()
+                            .label("扫描并生成提案")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let p = this.path.read(cx).value().to_string();
+                                cx.emit(ImportEvent::Run(p));
+                            })),
+                    )
+                    .when_true(!result.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x7fae72))
+                                .child(SharedString::from(result)),
+                        )
+                    }),
+            )
+    }
+}
+
+impl BasePanel for ImportPanel {
+    fn panel_name(&self) -> &'static str {
+        "import-view"
+    }
+}
+impl ComponentPanel for ImportPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().text_sm().font_weight(FontWeight::MEDIUM).child("导入旧稿")
+    }
+}
+
+/* ───────────────────────── 记忆图谱（列表视图） ───────────────────────── */
+
+pub struct GraphPanel {
+    focus_handle: FocusHandle,
+    handle: Rc<ProjectHandle>,
+}
+
+impl GraphPanel {
+    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        Self { focus_handle: cx.focus_handle(), handle }
+    }
+}
+
+impl EventEmitter<PanelEvent> for GraphPanel {}
+
+impl Focusable for GraphPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for GraphPanel {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let lines = self.handle.storylines();
+        let events = self.handle.events();
+        let facts = self.handle.memory_facts();
+
+        let mut body: Vec<gpui_kit::AnyElement> = Vec::new();
+        for l in &lines {
+            let lid = l.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+            let name = l.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            body.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .pt_2()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(rgb(0xc96f4a)).child(SharedString::from(format!("● {name}"))))
+                    .child(div().text_xs().text_color(rgb(0x5d5b57)).child(SharedString::from(lid.clone())))
+                    .into_any_element(),
+            );
+            let related: Vec<String> = events
+                .iter()
+                .filter(|e| e.get("storylineIDs").and_then(|s| s.as_array()).map(|a| a.iter().any(|x| x.as_str() == Some(lid.as_str()))).unwrap_or(false))
+                .map(|e| format!("第{}章 {}", e.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0), e.get("objectiveFact").and_then(|f| f.as_str()).unwrap_or("").chars().take(30).collect::<String>()))
+                .collect();
+            if related.is_empty() {
+                body.push(div().pl_4().text_xs().text_color(rgb(0x5d5b57)).child("（暂无挂线事件）").into_any_element());
+            } else {
+                for r in related.iter().take(12) {
+                    body.push(div().pl_4().text_xs().text_color(rgb(0x8e8b85)).child(SharedString::from(r.clone())).into_any_element());
+                }
+            }
+        }
+        if lines.is_empty() {
+            body.push(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x5d5b57))
+                    .child("（还没有故事线/事件——建框架提案采纳后，这里按线展开事件与事实锚点）")
+                    .into_any_element(),
+            );
+        }
+        body.push(
+            div()
+                .pt_3()
+                .text_xs()
+                .text_color(rgb(0x5d5b57))
+                .child(SharedString::from(format!("事实 {} 条 · 事件 {} 个", facts.len(), events.len())))
+                .into_any_element(),
+        );
+
+        div()
+            .id("graph-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(div().flex().flex_col().p_3().gap_1().children(body))
+    }
+}
+
+impl BasePanel for GraphPanel {
+    fn panel_name(&self) -> &'static str {
+        "graph-view"
+    }
+}
+impl ComponentPanel for GraphPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().text_sm().font_weight(FontWeight::MEDIUM).child("记忆图谱")
+    }
+}
