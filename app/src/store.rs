@@ -610,6 +610,22 @@ impl ProjectHandle {
             })
             .unwrap_or_default()
     }
+    pub fn set_chapter_title(&self, n: u32, title: &str) -> Result<(), String> {
+        let dir = self.root.join("chapters").join(chapter_dir_name(n));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let meta = dir.join("meta.json");
+        let mut v: serde_json::Value = std::fs::read_to_string(&meta)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("title".into(), serde_json::json!(title));
+            obj.insert("number".into(), serde_json::json!(n));
+        }
+        let json = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+        std::fs::write(&meta, json).map_err(|e| e.to_string())
+    }
+
     pub fn chapter_word_target(&self) -> u32 {
         std::fs::read_to_string(self.root.join("project.json"))
             .ok()

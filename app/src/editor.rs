@@ -29,6 +29,9 @@ pub struct EditorPanel {
     pub prose: Entity<TextareaState>,
     prompt: Entity<InputState>,
     pub word_target: u32,
+    /// 章标题（Workspace 切章时 set_value）
+    pub title: Entity<InputState>,
+    last_saved: String,
 }
 
 impl EditorPanel {
@@ -37,10 +40,25 @@ impl EditorPanel {
             InputState::new(window, cx)
                 .placeholder("对 AI 说点什么（原话发给 DSH，轨迹在右侧滚动）…")
         });
-        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target };
+        let title = cx.new(|cx| InputState::new(window, cx).placeholder("章标题"));
+        prose.update(cx, |state, cx| {
+            state.set_placeholder(
+                "这一章还没动笔——先写下第一段，或让 AI 搭骨架（提案等你批准）…",
+                window,
+                cx,
+            );
+        });
+        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, last_saved: String::new() };
         // 正文一变就重渲染（字数/进度实时）
         cx.subscribe(&prose, |_, _, _: &InputEvent, cx| cx.notify()).detach();
         panel
+    }
+}
+
+impl EditorPanel {
+    pub fn set_saved_at(&mut self, stamp: String, cx: &mut Context<Self>) {
+        self.last_saved = stamp;
+        cx.notify();
     }
 }
 
@@ -141,6 +159,23 @@ impl Render for EditorPanel {
                             .text_xs()
                             .text_color(rgb(0x5d5b57))
                             .child(SharedString::from(format!("{pct}%"))),
+                    )
+                    .child(
+                        div()
+                            .w(px(220.))
+                            .child(Input::new(&self.title.clone())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .justify_end()
+                            .text_xs()
+                            .text_color(rgb(0x5d5b57))
+                            .child(SharedString::from(if self.last_saved.is_empty() {
+                                String::new()
+                            } else {
+                                format!("已自动保存 {}", self.last_saved)
+                            })),
                     ),
             )
             .child(

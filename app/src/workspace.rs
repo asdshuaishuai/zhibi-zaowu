@@ -501,6 +501,18 @@ impl Workspace {
 
     fn save_current(&mut self, cx: &mut Context<Self>) {
         let text = self.prose.read(cx).value().to_string();
+        let title = self.editor.read(cx).title.read(cx).value().to_string();
+        if !title.trim().is_empty() {
+            let _ = self.handle.set_chapter_title(self.chapter, title.trim());
+        }
+        let stamp = {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+        };
+        self.editor.update(cx, |panel, cx| panel.set_saved_at(stamp, cx));
         if let Err(e) = self.handle.save_prose(self.chapter, &text) {
             self.trajectory.update(cx, |panel, cx| {
                 panel.push(TrajKind::Fail(format!("正文保存失败：{e}")), cx);
@@ -518,9 +530,20 @@ impl Workspace {
         self.save_current(cx);
         let _ = self.handle.ensure_chapter(n);
         let prose_text = self.handle.prose(n);
+        let title = self
+            .chapters
+            .iter()
+            .find(|c| c.n == n)
+            .map(|c| c.title.clone())
+            .unwrap_or_default();
         self.chapter = n;
         self.prose.update(cx, |state, cx| {
             state.set_value(prose_text.as_str(), window, cx);
+        });
+        self.editor.update(cx, |panel, cx| {
+            panel.title.update(cx, |state, cx| {
+                state.set_value(title.as_str(), window, cx);
+            });
         });
         self.chapters = self.handle.chapters();
         cx.notify();
