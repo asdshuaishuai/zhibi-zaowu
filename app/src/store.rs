@@ -610,6 +610,17 @@ impl ProjectHandle {
             })
             .unwrap_or_default()
     }
+    pub fn chapter_word_target(&self) -> u32 {
+        std::fs::read_to_string(self.root.join("project.json"))
+            .ok()
+            .and_then(|t| {
+                let v: serde_json::Value = serde_json::from_str(&t).ok()?;
+                v.get("chapterWordTarget")?.as_u64().map(|n| n as u32)
+            })
+            .filter(|n| *n > 0)
+            .unwrap_or(3000)
+    }
+
     pub fn next_chapter_number(&self) -> u32 {
         self.chapters().last().map(|c| c.n + 1).unwrap_or(1)
     }

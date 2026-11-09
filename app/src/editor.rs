@@ -4,11 +4,12 @@
 use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::Sizable;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, rgb,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px, rgb,
 };
 
 #[derive(Debug, Clone)]
@@ -27,15 +28,19 @@ pub struct EditorPanel {
     /// 当前章正文（Workspace 持有同一 Entity，用于读写与保存）
     pub prose: Entity<TextareaState>,
     prompt: Entity<InputState>,
+    pub word_target: u32,
 }
 
 impl EditorPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, prose: Entity<TextareaState>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, prose: Entity<TextareaState>, word_target: u32) -> Self {
         let prompt = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("对 AI 说点什么（原话发给 DSH，轨迹在右侧滚动）…")
         });
-        Self { focus_handle: cx.focus_handle(), prose, prompt }
+        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target };
+        // 正文一变就重渲染（字数/进度实时）
+        cx.subscribe(&prose, |_, _, _: &InputEvent, cx| cx.notify()).detach();
+        panel
     }
 }
 
@@ -93,11 +98,51 @@ impl Render for EditorPanel {
             })
             .collect::<Vec<_>>();
 
+        // 实时字数与目标进度（渲染期计算：章级体量可忽略）
+        let text = self.prose.read(cx).value().to_string();
+        let words = crate::store::count_words(&text);
+        let target = self.word_target.max(1);
+        let pct = ((words as f32 / target as f32) * 100.).min(100.) as u32;
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(rgb(0x17181c))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_8()
+                    .pt_3()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8e8b85))
+                            .child(SharedString::from(format!("{words} / {target} 字"))),
+                    )
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .h(px(5.))
+                            .rounded(px(3.))
+                            .bg(rgb(0x24262d))
+                            .child(
+                                div()
+                                    .w(px(120. * pct as f32 / 100.))
+                                    .h(px(5.))
+                                    .rounded(px(3.))
+                                    .bg(rgb(0xc96f4a)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x5d5b57))
+                            .child(SharedString::from(format!("{pct}%"))),
+                    ),
+            )
             .child(
                 div()
                     .flex()
@@ -143,7 +188,28 @@ impl Render for EditorPanel {
                     .px_8()
                     .py_3()
                     .gap_2()
-                    .child(div().flex_1().min_h_24().child(Textarea::new(&prose))),
+                    .child(
+                        div()
+                            .flex()
+                            .justify_center()
+                            .w_full()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(px(680.))
+                                    .rounded_lg()
+                                    .bg(rgb(0x1b1d22))
+                                    .border_1()
+                                    .border_color(rgb(0x2e3138))
+                                    .px_6()
+                                    .py_4()
+                                    .child(
+                                        Textarea::new(&prose)
+                                            .bordered(false)
+                                            .appearance(false),
+                                    ),
+                            ),
+                    ),
             )
             .child(
                 div()

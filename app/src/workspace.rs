@@ -13,8 +13,8 @@ use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::{IconName, TitleBar};
 use gpui_kit::{
-    AppContext as _, AsyncApp, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, div, px, rgb,
+    AnyElement, AppContext as _, AsyncApp, Context, Entity, EventEmitter, InteractiveElement,
+    IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px, rgb,
 };
 use serde_json::Value;
 
@@ -25,6 +25,8 @@ use crate::prompts;
 use crate::store::{self, ProjectHandle};
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
 use crate::views::{CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel, MemoryPanel, OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent};
+
+gpui_kit::actions!(zhibi, [SaveProse, ToggleFocusMode]);
 
 const DOCK_AREA_ID: &str = "zhibi-main-dock";
 const DOCK_AREA_VERSION: usize = 1;
@@ -94,6 +96,10 @@ pub struct Workspace {
     chapter: u32,
     client: Option<DshClient>,
     initialized: bool,
+    autosave: Option<gpui_kit::Task<()>>,
+    focus: bool,
+    dock_hidden: bool,
+    workspace_focus: gpui_kit::FocusHandle,
     /// 选区创作请求的原文（应答到达时转成 SelectionDraft 气泡）
     pending_sel: Option<String>,
 }
@@ -122,7 +128,7 @@ impl Workspace {
             state.set_value(prose_text.as_str(), window, cx);
         });
 
-        let editor = cx.new(|cx| EditorPanel::new(window, cx, prose.clone()));
+        let editor = cx.new(|cx| EditorPanel::new(window, cx, prose.clone(), handle.chapter_word_target()));
         let trajectory = cx.new(|cx| TrajectoryPanel::new(cx));
         let inbox = cx.new(|cx| InboxPanel::new(window, cx, handle.clone()));
 
@@ -301,6 +307,13 @@ impl Workspace {
 
         cx.subscribe_in(&dock_area, window, |_, _, _: &DockEvent, _, _| {}).detach();
 
+        cx.subscribe(&prose, |this, _, ev: &gpui_kit::component::input::InputEvent, cx| {
+            if matches!(ev, gpui_kit::component::input::InputEvent::Change) {
+                this.schedule_autosave(cx);
+            }
+        })
+        .detach();
+
         // 轨迹气泡「采纳到正文」：先快照，再追加——共写落笔永远在作者一键之后
         cx.subscribe_in(
             &trajectory,
@@ -386,7 +399,29 @@ impl Workspace {
             client: None,
             initialized: false,
             pending_sel: None,
+            autosave: None,
+            focus: false,
+            dock_hidden: false,
+            workspace_focus: cx.focus_handle(),
         }
+    }
+
+    /// 输入变化 → 1.5 秒防抖自动保存（先落盘纪律）
+    fn focus_handle(&self, _cx: &Context<Self>) -> gpui_kit::FocusHandle {
+        self.workspace_focus.clone()
+    }
+
+    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        self.autosave = Some(cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1500))
+                .await;
+            let _ = weak.update(cx, |ws, cx| {
+                ws.save_current(cx);
+                ws.autosave = None;
+            });
+        }));
     }
 
     fn accept_proposal(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -807,7 +842,7 @@ fn assistant_text(data: &Value) -> String {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dock = self.dock_area.clone();
 
         // 真章节树（来自磁盘，可点切换）
@@ -902,12 +937,46 @@ impl Render for Workspace {
                 cx.emit(WorkspaceEvent::BackToShelf);
             }));
 
+        let focus_btn = Button::new("focus-toggle")
+            .ghost()
+            .icon(IconName::Maximize)
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.focus = !this.focus;
+                cx.notify();
+            }));
         let dsh_state = if self.client.is_some() { "已连接" } else { "未启动" };
         let ch_title = current
             .map(|c| c.title.clone())
             .unwrap_or_else(|| format!("第{}章", self.chapter));
 
+        // 专注模式进出：右 Dock 收起/恢复（0.9.0 只有 toggle_dock，用标志位对齐）
+        if self.focus && !self.dock_hidden {
+            self.dock_area.update(cx, |area, cx| {
+                area.toggle_dock(DockPlacement::Right, window, cx);
+            });
+            self.dock_hidden = true;
+        }
+        if !self.focus && self.dock_hidden {
+            self.dock_area.update(cx, |area, cx| {
+                area.toggle_dock(DockPlacement::Right, window, cx);
+            });
+            self.dock_hidden = false;
+        }
+
         div()
+            .id("zhibi-workspace-root")
+            .key_context("zhibi-workspace")
+            .on_action(cx.listener(|this, _: &SaveProse, _, cx| {
+                this.save_current(cx);
+                this.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Info("已保存（⌘S）".into()), cx);
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFocusMode, _, cx| {
+                this.focus = !this.focus;
+                cx.notify();
+            }))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .size_full()
@@ -916,6 +985,7 @@ impl Render for Workspace {
             .child(
                 TitleBar::new()
                     .child(back)
+                    .child(focus_btn)
                     .child(
                         div()
                             .flex()
@@ -948,7 +1018,11 @@ impl Render for Workspace {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(sidebar.w(px(200.)))
+                    .children(if self.focus {
+                        Vec::new()
+                    } else {
+                        vec![{ let el: AnyElement = sidebar.w(px(200.)).into_any_element(); el }]
+                    })
                     .child(div().flex_1().min_h_0().child(dock)),
             )
             .child(

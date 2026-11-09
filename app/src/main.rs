@@ -22,6 +22,10 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
+            cx.bind_keys(vec![
+                gpui_kit::KeyBinding::new("cmd-s", workspace::SaveProse, Some("zhibi-workspace")),
+                gpui_kit::KeyBinding::new("cmd-shift-f", workspace::ToggleFocusMode, Some("zhibi-workspace")),
+            ]);
             cx.activate(true);
 
             let bounds = WindowBounds::Windowed(Bounds {
