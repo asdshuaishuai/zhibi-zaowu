@@ -24,7 +24,7 @@ use crate::inbox::{InboxEvent, InboxPanel};
 use crate::prompts;
 use crate::store::{self, ProjectHandle};
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
-use crate::views::{CanonPanel, CharactersPanel, CluesPanel, MemoryPanel, OutlinePanel, StatsPanel, ViewEvent};
+use crate::views::{CanonPanel, CharactersPanel, CluesPanel, MemoryPanel, OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent};
 
 const DOCK_AREA_ID: &str = "zhibi-main-dock";
 const DOCK_AREA_VERSION: usize = 1;
@@ -43,6 +43,8 @@ pub enum Mode {
     Stats,
     Clues,
     Characters,
+    Settings,
+    Snapshots,
 }
 
 impl Mode {
@@ -55,6 +57,8 @@ impl Mode {
             Mode::Stats => "写作统计",
             Mode::Clues => "伏笔台账",
             Mode::Characters => "人物卡",
+            Mode::Settings => "设置",
+            Mode::Snapshots => "快照",
         }
     }
 }
@@ -75,6 +79,8 @@ pub struct Workspace {
     stats_view: Entity<StatsPanel>,
     clues_view: Entity<CluesPanel>,
     characters_view: Entity<CharactersPanel>,
+    settings_view: Entity<SettingsPanel>,
+    snapshots_view: Entity<SnapshotsPanel>,
     mode: Mode,
     trajectory: Entity<TrajectoryPanel>,
     prose: Entity<TextareaState>,
@@ -133,6 +139,76 @@ impl Workspace {
         let stats_view = cx.new(|cx| StatsPanel::new(cx, handle.clone()));
         let clues_view = cx.new(|cx| CluesPanel::new(cx, handle.clone()));
         let characters_view = cx.new(|cx| CharactersPanel::new(cx, handle.clone()));
+        let settings_view = cx.new(|cx| SettingsPanel::new(window, cx));
+        let snapshots_view = cx.new(|cx| SnapshotsPanel::new(cx, handle.clone(), chapter));
+
+        cx.subscribe_in(&settings_view, window, |this, _, ev: &SettingsEvent, _window, cx| match ev {
+            SettingsEvent::Save { base_url, model, provider } => {
+                let cfg = crate::store::AppSettings {
+                    base_url: base_url.clone(),
+                    model: model.clone(),
+                    provider: provider.clone(),
+                };
+                let msg = match crate::store::save_settings(&cfg) {
+                    Ok(()) => "设置已保存".to_string(),
+                    Err(e) => format!("保存失败：{e}"),
+                };
+                this.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Info(msg), cx);
+                });
+            }
+            SettingsEvent::Test(base_url) => {
+                let base_url = base_url.clone();
+                let settings = this.settings_view.clone();
+                cx.spawn(async move |_, cx| {
+                    let url = format!("{}/models", base_url.trim_end_matches('/'));
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            ureq::get(&url).timeout(std::time::Duration::from_secs(8)).call()
+                        })
+                        .await;
+                    let ok = result.is_ok();
+                    let msg = match result {
+                        Ok(resp) => {
+                            let body = resp.into_string().unwrap_or_default();
+                            let n = body.matches("\"").count() / 2;
+                            format!("连通成功，服务端清单约 {n} 项")
+                        }
+                        Err(e) => format!("连接失败：{e}"),
+                    };
+                    let _ = cx.update(|cx| {
+                        settings.update(cx, |panel, cx| panel.set_result(ok, msg, cx));
+                    });
+                })
+                .detach();
+            }
+        })
+        .detach();
+
+        cx.subscribe_in(&snapshots_view, window, |this, _, ev: &SnapEvent, window, cx| match ev {
+            SnapEvent::Restore(name) => {
+                let n = this.chapter;
+                match this.handle.restore_snapshot(n, name) {
+                    Ok(()) => {
+                        let text = this.handle.prose(n);
+                        this.prose.update(cx, |state, cx| {
+                            state.set_value(text.as_str(), window, cx);
+                        });
+                        this.snapshots_view.update(cx, |panel, cx| panel.reload(n, cx));
+                        this.trajectory.update(cx, |panel, cx| {
+                            panel.push(TrajKind::Info(format!("已恢复快照「{name}」")), cx);
+                        });
+                    }
+                    Err(e) => {
+                        this.trajectory.update(cx, |panel, cx| {
+                            panel.push(TrajKind::Fail(format!("恢复失败：{e}")), cx);
+                        });
+                    }
+                }
+            }
+        })
+        .detach();
 
         cx.subscribe_in(&canon_view, window, |this, _, ev: &ViewEvent, window, cx| match ev {
             ViewEvent::RunCapability(cap) => {
@@ -252,6 +328,8 @@ impl Workspace {
             stats_view,
             clues_view,
             characters_view,
+            settings_view,
+            snapshots_view,
             mode: Mode::Editor,
             trajectory,
             prose,
@@ -319,6 +397,11 @@ impl Workspace {
             Mode::Stats => panel_handle(self.stats_view.clone()),
             Mode::Clues => panel_handle(self.clues_view.clone()),
             Mode::Characters => panel_handle(self.characters_view.clone()),
+            Mode::Settings => panel_handle(self.settings_view.clone()),
+            Mode::Snapshots => {
+                self.snapshots_view.update(cx, |panel, cx| panel.reload(self.chapter, cx));
+                panel_handle(self.snapshots_view.clone())
+            }
         };
         let center = DockLayout::tabs().panel_view(view, cx);
         self.dock_area.update(cx, |area, cx| {
@@ -720,6 +803,8 @@ impl Render for Workspace {
             nav_items.push(mk("写作统计", Mode::Stats));
             nav_items.push(mk("伏笔台账", Mode::Clues));
             nav_items.push(mk("人物卡", Mode::Characters));
+            nav_items.push(mk("快照", Mode::Snapshots));
+            nav_items.push(mk("设置", Mode::Settings));
         }
         let menu = SidebarMenu::new()
             .children(nav_items)
@@ -822,6 +907,23 @@ impl Render for Workspace {
                             this.trajectory.update(cx, |panel, cx| {
                                 panel.push(TrajKind::Info("正文已保存（先落盘）".into()), cx);
                             });
+                        }),
+                    ))
+                    .left(Button::new("export-status").ghost().label("导出合并稿").on_click(
+                        cx.listener(|this, _, _window, cx| {
+                            match this.handle.export_merged() {
+                                Ok(path) => {
+                                    let p = path.display().to_string();
+                                    this.trajectory.update(cx, |panel, cx| {
+                                        panel.push(TrajKind::Info(format!("合并稿已导出：{p}")), cx);
+                                    });
+                                }
+                                Err(e) => {
+                                    this.trajectory.update(cx, |panel, cx| {
+                                        panel.push(TrajKind::Fail(format!("导出失败：{e}")), cx);
+                                    });
+                                }
+                            }
                         }),
                     ))
                     .right(toggle_right),

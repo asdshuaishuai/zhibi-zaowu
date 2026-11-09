@@ -7,7 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::Sizable;
 use gpui_kit::{
-    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px, rgb,
 };
@@ -608,5 +608,253 @@ impl BasePanel for CharactersPanel {
 impl ComponentPanel for CharactersPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().text_sm().font_weight(FontWeight::MEDIUM).child("人物卡")
+    }
+}
+
+
+/* ───────────────────────── 设置（端点 + 连通测试） ───────────────────────── */
+
+#[derive(Debug, Clone)]
+pub enum SettingsEvent {
+    Save { base_url: String, model: String, provider: String },
+    Test(String),
+}
+
+pub struct SettingsPanel {
+    focus_handle: FocusHandle,
+    base_url: Entity<gpui_kit::component::input::InputState>,
+    model: Entity<gpui_kit::component::input::InputState>,
+    provider: Entity<gpui_kit::component::input::InputState>,
+    status: String,
+    testing: bool,
+}
+
+impl SettingsPanel {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let cfg = crate::store::load_settings();
+        let base_url = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("http://192.168.x.x:port/v1")
+                .default_value(cfg.base_url)
+        });
+        let model = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("模型 ID")
+                .default_value(cfg.model)
+        });
+        let provider = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("provider 路由（如 deepseek-official）")
+                .default_value(if cfg.provider.is_empty() { "deepseek-official".into() } else { cfg.provider })
+        });
+        Self { focus_handle: cx.focus_handle(), base_url, model, provider, status: String::new(), testing: false }
+    }
+
+    pub fn set_result(&mut self, ok: bool, msg: String, cx: &mut Context<Self>) {
+        self.testing = false;
+        self.status = if ok { format!("✓ {msg}") } else { format!("✕ {msg}") };
+        cx.notify();
+    }
+}
+
+impl EventEmitter<PanelEvent> for SettingsPanel {}
+impl EventEmitter<SettingsEvent> for SettingsPanel {}
+
+impl Focusable for SettingsPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+fn field(label: &'static str, state: &Entity<gpui_kit::component::input::InputState>) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .w_full()
+        .child(div().w(px(90.)).text_xs().text_color(rgb(0x8e8b85)).child(label))
+        .child(div().flex_1().child(gpui_kit::component::input::Input::new(state)))
+        .into_any_element()
+}
+
+impl Render for SettingsPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = self.status.clone();
+        let testing = self.testing;
+        div()
+            .id("settings-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_4()
+                    .gap_3()
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("模型服务（OpenAI 兼容端点）"))
+                    .child(field("Base URL", &self.base_url))
+                    .child(field("模型 ID", &self.model))
+                    .child(field("Provider", &self.provider))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Button::new("settings-save")
+                                    .primary()
+                                    .xsmall()
+                                    .label("保存")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let base_url = this.base_url.read(cx).value().to_string();
+                                        let model = this.model.read(cx).value().to_string();
+                                        let provider = this.provider.read(cx).value().to_string();
+                                        cx.emit(SettingsEvent::Save { base_url, model, provider });
+                                    })),
+                            )
+                            .child(
+                                Button::new("settings-test")
+                                    .xsmall()
+                                    .label(if testing { "测试中…" } else { "测试连接" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let base_url = this.base_url.read(cx).value().to_string();
+                                        if base_url.trim().is_empty() {
+                                            this.status = "先填 Base URL".into();
+                                            cx.notify();
+                                            return;
+                                        }
+                                        this.testing = true;
+                                        this.status = String::new();
+                                        cx.notify();
+                                        cx.emit(SettingsEvent::Test(base_url));
+                                    })),
+                            ),
+                    )
+                    .when_true(!status.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .text_color(if status.starts_with('✓') { rgb(0x7fae72) } else { rgb(0xc0605c) })
+                                .child(SharedString::from(status)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x5d5b57))
+                            .child("局域网免 Key 端点直接可用；保存后下次 AI 调用生效。DSH 运行时（sdk profile）由应用自动带 --patch 挂载执笔能力包。"),
+                    ),
+            )
+    }
+}
+
+impl BasePanel for SettingsPanel {
+    fn panel_name(&self) -> &'static str {
+        "settings-view"
+    }
+}
+impl ComponentPanel for SettingsPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().text_sm().font_weight(FontWeight::MEDIUM).child("设置")
+    }
+}
+
+/* ───────────────────────── 快照（浏览与恢复） ───────────────────────── */
+
+#[derive(Debug, Clone)]
+pub enum SnapEvent {
+    Restore(String),
+}
+
+pub struct SnapshotsPanel {
+    focus_handle: FocusHandle,
+    handle: Rc<ProjectHandle>,
+    chapter: u32,
+    names: Vec<String>,
+}
+
+impl SnapshotsPanel {
+    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>, chapter: u32) -> Self {
+        let names = handle.snapshots(chapter);
+        Self { focus_handle: cx.focus_handle(), handle, chapter, names }
+    }
+    pub fn reload(&mut self, chapter: u32, cx: &mut Context<Self>) {
+        self.chapter = chapter;
+        self.names = self.handle.snapshots(chapter);
+        cx.notify();
+    }
+}
+
+impl EventEmitter<PanelEvent> for SnapshotsPanel {}
+impl EventEmitter<SnapEvent> for SnapshotsPanel {}
+
+impl Focusable for SnapshotsPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for SnapshotsPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
+        for name in self.names.iter().take(40) {
+            let n = name.clone();
+            rows.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(rgb(0x2e3138))
+                    .child(div().flex_1().text_xs().child(SharedString::from(n.clone())))
+                    .child(
+                        Button::new(format!("restore-{n}"))
+                            .xsmall()
+                            .label("恢复")
+                            .on_click(cx.listener(move |_this, _, _, cx| {
+                                cx.emit(SnapEvent::Restore(n.clone()));
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        div()
+            .id("snap-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_3()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(SharedString::from(format!("第{}章快照（{} 份）", self.chapter, self.names.len()))),
+                    )
+                    .children(rows)
+                    .when_true(self.names.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x5d5b57))
+                                .child("（还没有快照——采纳草稿/去AI味/恢复选区时自动创建）"),
+                        )
+                    }),
+            )
+    }
+}
+
+impl BasePanel for SnapshotsPanel {
+    fn panel_name(&self) -> &'static str {
+        "snapshots-view"
+    }
+}
+impl ComponentPanel for SnapshotsPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().text_sm().font_weight(FontWeight::MEDIUM).child("快照")
     }
 }

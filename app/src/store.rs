@@ -612,3 +612,75 @@ impl ProjectHandle {
             .unwrap_or_default()
     }
 }
+
+
+// ───────────────────────── 应用设置 / 导出 / 快照 ─────────────────────────
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub provider: String,
+}
+
+pub fn settings_path() -> PathBuf {
+    let mut p = dirs_home();
+    p.push("Library");
+    p.push("Application Support");
+    p.push("执笔3");
+    let _ = std::fs::create_dir_all(&p);
+    p.join("settings.json")
+}
+
+pub fn load_settings() -> AppSettings {
+    std::fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_settings(s: &AppSettings) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
+    std::fs::write(settings_path(), json).map_err(|e| e.to_string())
+}
+
+impl ProjectHandle {
+    /// 合并稿导出：全部章节正文按序拼接（与旧版 ExportService 同语义）。
+    pub fn export_merged(&self) -> Result<PathBuf, String> {
+        let mut out = String::new();
+        for c in self.chapters() {
+            out.push_str(&format!("\n# {}\n\n{}\n", c.title, self.prose(c.n)));
+        }
+        let dir = projects_dir()
+            .parent()
+            .map(|p| p.join("执笔导出"))
+            .unwrap_or_else(projects_dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("{}.md", self.title));
+        std::fs::write(&path, out).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
+
+    pub fn snapshots(&self, n: u32) -> Vec<String> {
+        let dir = self.root.join("chapters").join(chapter_dir_name(n)).join("snapshots");
+        let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|s| s.ends_with(".md"))
+            .collect();
+        names.sort();
+        names.reverse();
+        names
+    }
+
+    pub fn restore_snapshot(&self, n: u32, name: &str) -> Result<(), String> {
+        let src = self.root.join("chapters").join(chapter_dir_name(n)).join("snapshots").join(name);
+        let text = std::fs::read_to_string(&src).map_err(|e| e.to_string())?;
+        self.save_prose(n, &text)
+    }
+}
