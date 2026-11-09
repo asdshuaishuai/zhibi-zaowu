@@ -21,6 +21,8 @@ pub fn task_for(capability: &str, chapter: u32) -> String {
         "outsync" => "大纲同步：对账「计划 vs 实际」，为断线/待收束的剧情线与偏移事件给出更新建议，用 propose_outline_updates 提案。".into(),
         "audit" => "全书连贯性审查：死者复出/位置跳跃/人称漂移/时间线倒挂/台账烂账，每条给修复动作，用 propose_clue_fixes 提案。".into(),
         "dossier" => format!("提取第{chapter}章档案卡：场景/出场/推进/拐点/悬念/关键细节（检索锚点），用 propose_dossier 提案。"),
+        "continue" => "只输出下一句续写（不超过 60 字），紧贴上文语气与在场人物。不要调用工具，不要解释，只给那一句。".into(),
+        "branches" => "给 3 个故事走向，每个 80-150 字，分别以【A】【B】【C】开头标记，各自标注情绪标签。不要调用工具，不要写正文之外的说明。".into(),
         _ => "读项目现状，给出下一步建议。".into(),
     }
 }
@@ -31,6 +33,8 @@ pub struct AiButton {
 }
 
 pub const EDITOR_AI_BUTTONS: &[AiButton] = &[
+    AiButton { label: "✦ 续写一句", capability: "continue" },
+    AiButton { label: "✦ 给我几个走向", capability: "branches" },
     AiButton { label: "搭骨架", capability: "skeleton" },
     AiButton { label: "一键验证", capability: "validate" },
     AiButton { label: "去AI味", capability: "deslop" },

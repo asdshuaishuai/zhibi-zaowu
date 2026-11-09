@@ -6,13 +6,22 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::Sizable;
 use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::component::dock::Panel as ComponentPanel;
 use gpui_kit::component::dock::BasePanel;
 use gpui_kit::{
-    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement, StatefulInteractiveElement,
-    IntoElement, ParentElement, Render, ScrollHandle, SharedString, Styled, Window, div, rgb, rgba,
+    AnyElement, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, rgb, rgba,
 };
+
+#[derive(Debug, Clone)]
+pub enum TrajEvent {
+    /// 作者点「采纳到正文」：Workspace 快照后追加
+    Adopt(String),
+}
 
 /// 一条轨迹气泡。
 #[derive(Debug, Clone)]
@@ -142,6 +151,7 @@ fn utc_hhmmss() -> String {
 }
 
 impl EventEmitter<PanelEvent> for TrajectoryPanel {}
+impl EventEmitter<TrajEvent> for TrajectoryPanel {}
 
 impl Focusable for TrajectoryPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -150,7 +160,7 @@ impl Focusable for TrajectoryPanel {
 }
 
 impl Render for TrajectoryPanel {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = div().flex().flex_col().gap_1p5().size_full();
 
         if self.entries.is_empty() {
@@ -166,7 +176,21 @@ impl Render for TrajectoryPanel {
         } else {
             let entries = self.entries.clone();
             for e in entries {
-                list = list.child(bubble(e));
+                let adopt_btn: Option<gpui_kit::AnyElement> = if let TrajKind::Text(text) = &e.kind {
+                    let text = text.clone();
+                    Some(
+                        Button::new(format!("adopt-{}", e.seq))
+                            .xsmall()
+                            .label("采纳到正文")
+                            .on_click(cx.listener(move |_this, _, _, cx| {
+                                cx.emit(TrajEvent::Adopt(text.clone()));
+                            }))
+                            .into_any_element(),
+                    )
+                } else {
+                    None
+                };
+                list = list.child(bubble(e.clone(), adopt_btn));
             }
         }
 
@@ -179,7 +203,7 @@ impl Render for TrajectoryPanel {
     }
 }
 
-fn bubble(e: TrajEntry) -> impl IntoElement {
+fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
     // 品牌色板（对应原型稿）：墨底 · 朱砂强调 · 绿完成 · 红失败
     let (bg, fg): (gpui_kit::Hsla, gpui_kit::Hsla) = if e.kind.is_error() {
         (rgba(0xc0605c1f).into(), rgb(0xc0605c).into())
@@ -238,7 +262,11 @@ fn bubble(e: TrajEntry) -> impl IntoElement {
             .child(SharedString::from(e.time)),
     );
 
-    row
+    if let Some(btn) = adopt {
+        row = row.child(div().flex().justify_end().child(btn));
+    }
+
+    row.into_any_element()
 }
 
 // —— Dock 面板契约 ——

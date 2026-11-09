@@ -22,7 +22,7 @@ use crate::editor::{EditorEvent, EditorPanel};
 use crate::inbox::{InboxEvent, InboxPanel};
 use crate::prompts;
 use crate::store::{self, ProjectHandle};
-use crate::trajectory::{TrajKind, TrajectoryPanel};
+use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
 
 const DOCK_AREA_ID: &str = "zhibi-main-dock";
 const DOCK_AREA_VERSION: usize = 1;
@@ -102,6 +102,28 @@ impl Workspace {
         });
 
         cx.subscribe_in(&dock_area, window, |_, _, _: &DockEvent, _, _| {}).detach();
+
+        // 轨迹气泡「采纳到正文」：先快照，再追加——共写落笔永远在作者一键之后
+        cx.subscribe_in(
+            &trajectory,
+            window,
+            |this, _, ev: &TrajEvent, window, cx| match ev {
+                TrajEvent::Adopt(text) => {
+                    let _ = this.handle.snapshot_prose(this.chapter);
+                    let cur = this.prose.read(cx).value().to_string();
+                    let sep = if cur.ends_with('\n') || cur.is_empty() { "" } else { "\n" };
+                    let next = format!("{cur}{sep}{text}");
+                    this.prose.update(cx, |state, cx| {
+                        state.set_value(next.as_str(), window, cx);
+                    });
+                    this.save_current(cx);
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(TrajKind::Info("已采纳到正文（快照已存）".into()), cx);
+                    });
+                }
+            },
+        )
+        .detach();
 
         cx.subscribe_in(
             &editor,
