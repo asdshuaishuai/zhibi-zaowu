@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05 提案收件箱 · 执笔 3.0 设计稿</title>
+<link rel="stylesheet" href="design.css">
+<style>
+  .layout { display: flex; min-height: 620px; }
+  .main { flex: 1; min-width: 0; padding: 18px 22px 26px; }
+  .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .head h1 { font-size: 18px; font-weight: 600; }
+  .filter { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+  .filter .f { border: 1px solid var(--line); background: var(--panel2); color: var(--dim); font-size: 11.5px; border-radius: 14px; padding: 3px 11px; cursor: pointer; }
+  .filter .f.on { background: var(--accent-soft); border-color: rgba(201,111,74,.5); color: var(--text); }
+  .stats { display: flex; gap: 10px; margin-bottom: 14px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; min-width: 110px; }
+  .stat .sv { font-size: 17px; font-weight: 600; }
+  .stat .sl { font-size: 10.5px; color: var(--faint); margin-top: 2px; }
+  .stat .sv.g { color: var(--green); } .stat .sv.a { color: var(--accent); } .stat .sv.b { color: var(--blue); }
+
+  .pcard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 13px 15px; margin-bottom: 11px; }
+  .pcard.pending { border-left: 3px solid var(--accent); }
+  .pcard.accepted { border-left: 3px solid var(--green); opacity: .82; }
+  .pcard.rejected { border-left: 3px solid var(--red); opacity: .6; }
+  .phead { display: flex; align-items: center; gap: 8px; }
+  .pkind { font-size: 10.5px; border-radius: 5px; padding: 1px 8px; background: var(--accent-soft); color: var(--accent); }
+  .pkind.k2 { background: var(--blue-soft); color: var(--blue); }
+  .pkind.k3 { background: var(--green-soft); color: var(--green); }
+  .ptitle { font-size: 13px; font-weight: 600; }
+  .pmeta { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+  .pbody { margin-top: 8px; font-size: 12px; color: var(--dim); }
+  .prow { display: flex; align-items: center; gap: 7px; padding: 4px 0; }
+  .prow .arrow { color: var(--faint); font-size: 10px; }
+  .cat { font-size: 10.5px; border-radius: 5px; padding: 0 8px; line-height: 18px; background: var(--blue-soft); color: var(--blue); flex: none; }
+  .prow .rename { color: var(--text); }
+  .pactions { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .btn { border-radius: 7px; padding: 4px 13px; font-size: 12px; border: 1px solid var(--line); background: var(--panel2); color: var(--dim); cursor: pointer; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+  .btn.ghostb { border-color: transparent; background: transparent; }
+  .warnline { font-size: 11px; color: #d9a05b; margin-top: 8px; }
+  .footnote { margin-top: 10px; font-size: 10.5px; color: var(--faint); }
+
+  /* 右侧就地审阅侧卡（就地反馈铁律） */
+  .side { width: 320px; flex: none; border-left: 1px solid var(--line); background: var(--panel); padding: 16px 16px 20px; }
+  .side h3 { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+  .side .sub { font-size: 11px; color: var(--faint); margin: 4px 0 12px; }
+  .sresult { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel2); margin-bottom: 10px; }
+  .sresult .sr-head { display: flex; align-items: center; font-size: 12px; font-weight: 600; color: var(--green); }
+  .sresult .sr-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--dim); padding: 4px 0; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">执笔 3.0 · 设计稿</span><span class="crumb">05 / 提案收件箱</span>
+    <span class="spacer"></span><a class="crumb" href="index.html">← 返回总览</a>
+  </div>
+
+  <div class="win">
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <span class="name">《赤星》 — <b>提案收件箱</b></span>
+      <span style="flex:1"></span>
+      <span class="chip accent">待裁决 3</span>
+    </div>
+
+    <div class="layout">
+      <div class="main">
+        <div class="head">
+          <h1>提案收件箱</h1>
+          <span class="note">AI 的一切产出落在这里留痕；采纳才生效。</span>
+          <div class="filter">
+            <span class="f on">全部</span><span class="f">设定</span><span class="f">伏笔</span><span class="f">骨架</span><span class="f">草稿</span><span class="f">报告</span>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><div class="sv a">3</div><div class="sl">待裁决</div></div>
+          <div class="stat"><div class="sv g">86%</div><div class="sl">30 天采纳率</div></div>
+          <div class="stat"><div class="sv b">17</div><div class="sl">拒收理由已回灌</div></div>
+          <div class="stat"><div class="sv">412</div><div class="sl">累计提案</div></div>
+        </div>
+
+        <div class="pcard pending">
+          <div class="phead"><span class="pkind">骨架</span><span class="ptitle">第13章 · 旧约（骨架提案）</span><span class="pmeta">14:32 · 闸门评分 82</span></div>
+          <div class="pbody">
+            <div class="prow">节拍：雪夜叩门 → 虎符对峙 → 旧账翻页 → 观灯人现身 → 断线钩子</div>
+            <div class="prow">伏笔合同：F03 兑现 ✓ · F04 续期 ✓ · 新埋「观灯人身份」</div>
+            <div class="prow">章尾钩子：悬念型（挂具体物：半块虎符）</div>
+          </div>
+          <div class="pactions">
+            <span class="btn primary">采纳</span><span class="btn">修改后采纳</span><span class="btn ghostb">拒收（填理由）</span>
+            <span class="note" style="margin-left:auto">批准后解锁「写草稿/分段写作」</span>
+          </div>
+        </div>
+
+        <div class="pcard pending">
+          <div class="phead"><span class="pkind k2">设定归类</span><span class="ptitle">设定归类（4 篇）</span><span class="pmeta">14:20 · 导入后自动</span></div>
+          <div class="pbody">
+            <div class="prow">雁回山旧观 <span class="arrow">→</span> <span class="cat">世界观</span><span class="note">条目含 30 年前灯约设定</span></div>
+            <div class="prow">观灯暗号 <span class="arrow">→</span> <span class="cat">剧情大纲</span></div>
+            <div class="prow">沈砚 <span class="arrow">→</span> <span class="cat">势力人物</span> <span class="rename">改名：沈砚·断刀客</span></div>
+            <div class="prow">灵力枯竭症 <span class="arrow">→</span> <span class="cat">题材规则</span></div>
+          </div>
+          <div class="pactions">
+            <span class="btn primary">全部采纳</span><span class="btn ghostb">逐条微调</span>
+            <span class="warnline">沈砚→改名撞名保护：已有同名文档时自动跳过，不丢文档。</span>
+          </div>
+        </div>
+
+        <div class="pcard pending">
+          <div class="phead"><span class="pkind">伏笔</span><span class="ptitle">伏笔盘点（5 条新增 + 1 条修正）</span><span class="pmeta">昨天 · 「AI 盘点伏笔」</span></div>
+          <div class="pbody">
+            <div class="prow">F08 师兄的半块虎符 · 埋于第12章（种下原文已摘录）</div>
+            <div class="prow">F09 雁回山灯约三十年之期 · 埋于第12章</div>
+            <div class="prow warnline">修正：F03 种下原文与第5章正文不一致 → 提供「校正原文」动作（只改台账不动正文）</div>
+          </div>
+          <div class="pactions">
+            <span class="btn primary">全部采纳</span><span class="btn">逐条裁决</span>
+          </div>
+        </div>
+
+        <div class="pcard accepted">
+          <div class="phead"><span class="pkind k3">设定</span><span class="ptitle">背景设定框架（6 篇）</span><span class="pmeta">三天前 · 已采纳 · 6/6 入库</span></div>
+          <div class="pbody note">同题保护：其中「雁回山旧观」与手改文档同题，自动跳过未覆盖——重试不会重复。</div>
+        </div>
+        <div class="pcard rejected">
+          <div class="phead"><span class="pkind">草稿</span><span class="ptitle">第11章 草稿 v1</span><span class="pmeta">三天前 · 已拒收</span></div>
+          <div class="pbody note">拒收理由：后两拍赶结尾，钩子挂在"命运"上太空泛 → 理由已回灌下一次草稿生成。</div>
+        </div>
+
+        <div class="footnote">采纳语义：设定同题保护 · 伏笔同 id 合并 · 草稿先自动存快照（可回滚）· 重试不重复。拒收理由是最有价值的信号，会回灌同类能力的后续生成。</div>
+      </div>
+
+      <div class="side">
+        <h3><span class="chip blue">就地反馈</span> 触发窗内审阅</h3>
+        <div class="sub">凡在某个窗口触发的 AI（设定归类 / 整理旧稿 / 导入归类），结果直接在该窗口过目 + 一键采纳——收件箱是留痕与逐条细调的地方，不是唯一入口。</div>
+        <div class="sresult">
+          <div class="sr-head">✓ 设定归类 · 就地结果</div>
+          <div class="sr-row">雁回山旧观 → <span class="cat">世界观</span></div>
+          <div class="sr-row">观灯暗号 → <span class="cat">剧情大纲</span></div>
+          <div class="sr-row" style="margin-top:6px"><span class="btn primary" style="font-size:11px; padding:2px 10px">全部采纳</span></div>
+        </div>
+        <div class="annotation" style="margin-top:4px"><b>对应交互规则：</b>导入完成后窗口切换到「AI 归类中…」，跑完就地列结果；部分失败就地显示哪篇没入库、为什么。</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

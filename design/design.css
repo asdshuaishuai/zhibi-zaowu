@@ -1,0 +1,50 @@
+/* 执笔 3.0 设计稿 · 共享设计语言
+   墨底 #17181c · 宣纸面板 #1e2026/#24262d · 朱砂 #c96f4a · 绿完成 #7fae72 · 蓝运行 #6f9bc4 */
+:root {
+  --bg: #17181c; --panel: #1e2026; --panel2: #24262d; --line: #2e3138;
+  --text: #d8d5cf; --dim: #8e8b85; --faint: #5d5b57;
+  --accent: #c96f4a; --accent-soft: rgba(201,111,74,.14);
+  --green: #7fae72; --green-soft: rgba(127,174,114,.12);
+  --blue: #6f9bc4; --blue-soft: rgba(111,155,196,.12);
+  --purple: #a08cc0; --red: #c0605c; --red-soft: rgba(192,96,92,.12);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+  font-size: 13px; line-height: 1.55;
+}
+.serif { font-family: "Noto Serif SC", "Songti SC", serif; }
+a { color: var(--blue); text-decoration: none; }
+
+/* 页头（设计稿导航条） */
+.topbar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; }
+.topbar .brand { font-weight: 600; letter-spacing: .02em; }
+.topbar .crumb { color: var(--dim); font-size: 12px; }
+.topbar .spacer { flex: 1; }
+.topbar .ver { font-size: 11px; color: var(--faint); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+
+/* 窗框（模拟 mac 桌面窗口） */
+.win { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 14px; background: var(--bg); }
+.titlebar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.dots { display: flex; gap: 6px; }
+.dots i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+.dots i:nth-child(1) { background: #ec6a5e; } .dots i:nth-child(2) { background: #f4bf4f; } .dots i:nth-child(3) { background: #61c554; }
+.titlebar .name { color: var(--dim); font-size: 12px; }
+.titlebar .name b { color: var(--text); font-weight: 500; }
+
+.iconbtn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel2); color: var(--dim); font-size: 12px; cursor: pointer; }
+.iconbtn.primary { background: var(--accent-soft); border-color: rgba(201,111,74,.4); color: var(--text); }
+.iconbtn.ghost { border-color: transparent; background: transparent; }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; border-radius: 9px; padding: 1px 9px; line-height: 18px; border: 1px solid var(--line); color: var(--dim); }
+.chip.green { color: var(--green); border-color: rgba(127,174,114,.35); }
+.chip.red { color: var(--red); border-color: rgba(192,96,92,.35); }
+.chip.blue { color: var(--blue); border-color: rgba(111,155,196,.4); }
+.chip.accent { color: var(--accent); border-color: rgba(201,111,74,.4); }
+.badge { background: var(--accent); color: #fff; font-size: 10.5px; border-radius: 8px; padding: 0 6px; line-height: 16px; }
+.note { font-size: 11px; color: var(--faint); }
+.annotation { background: var(--blue-soft); border-left: 3px solid var(--blue); padding: 8px 12px; font-size: 12px; color: var(--dim); border-radius: 0 8px 8px 0; }
+.annotation b { color: var(--text); font-weight: 500; }
+hr.sep { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }

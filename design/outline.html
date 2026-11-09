@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>06 大纲 · 时间线 · 伏笔 · 执笔 3.0 设计稿</title>
+<link rel="stylesheet" href="design.css">
+<style>
+  body { padding: 0 0 40px; }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 18px 28px 0; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin-bottom: 18px; }
+  .panel h2 { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .panel h2 .note { font-weight: 400; }
+
+  /* 故事线健康度 */
+  .lines { display: flex; flex-direction: column; gap: 7px; }
+  .line-row { display: flex; align-items: center; gap: 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 7px 12px; }
+  .line-row .lid { font-family: ui-monospace, monospace; font-size: 11px; color: var(--faint); width: 34px; }
+  .line-row .lname { font-size: 12.5px; width: 150px; }
+  .bar { flex: 1; height: 8px; border-radius: 4px; background: rgba(255,255,255,.06); position: relative; overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; }
+  .line-row .st { font-size: 10.5px; width: 76px; text-align: right; }
+  .g { color: var(--green); } .o { color: #d9a05b; } .r { color: var(--red); } .p { color: var(--purple); }
+
+  /* 双栏时间线 */
+  table.tl { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .tl th { text-align: left; color: var(--faint); font-weight: 500; font-size: 11px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  .tl td { padding: 7px 10px; border-bottom: 1px solid rgba(46,49,56,.55); vertical-align: top; }
+  .tl .eid { font-family: ui-monospace, monospace; color: var(--faint); font-size: 11px; }
+  .tl .fact { color: var(--text); }
+  .tl .know { color: var(--dim); }
+  .tl .know.hidden { color: var(--faint); font-style: italic; }
+  .diffchip { font-size: 10px; border-radius: 4px; padding: 0 6px; line-height: 16px; }
+  .diffchip.miss { background: var(--red-soft); color: var(--red); }
+  .diffchip.shift { background: rgba(217,160,91,.15); color: #d9a05b; }
+  .diffchip.ok { background: var(--green-soft); color: var(--green); }
+
+  /* 对账条 */
+  .audit { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 13px; margin-bottom: 12px; }
+  .audit .a1 { font-size: 12px; font-weight: 600; }
+  .audit .hint { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+
+  /* 伏笔台账 */
+  table.clues { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .clues th { text-align: left; color: var(--faint); font-weight: 500; font-size: 11px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  .clues td { padding: 7px 10px; border-bottom: 1px solid rgba(46,49,56,.55); }
+  .clues .cid { font-family: ui-monospace, monospace; color: var(--accent); }
+  .pace { font-size: 10.5px; border-radius: 4px; padding: 0 6px; line-height: 16px; }
+  .p1 { background: var(--red-soft); color: var(--red); }
+  .p2 { background: rgba(217,160,91,.15); color: #d9a05b; }
+  .p3 { background: var(--blue-soft); color: var(--blue); }
+  .p4 { background: var(--green-soft); color: var(--green); }
+  .p5 { background: rgba(255,255,255,.07); color: var(--dim); }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">执笔 3.0 · 设计稿</span><span class="crumb">06 / 大纲 · 时间线 · 伏笔台账</span>
+    <span class="spacer"></span><a class="crumb" href="index.html">← 返回总览</a>
+  </div>
+
+  <div class="wrap">
+
+    <!-- 大纲对账条 -->
+    <div class="panel">
+      <h2>大纲实时对账 <span class="note">把「建书时的计划」和「正文里实际发生的」逐事件对账——大纲是活文档</span></h2>
+      <div class="audit">
+        <span class="a1">大纲对账</span>
+        <span class="note">4 条故事线：2 健康 · 1 放缓 · 1 断线 ｜ 事件 18/23 已发生 · 2 疑似偏移 · 1 未发生 · 2 待收束</span>
+        <span class="chip red">断线·复仇线 12章</span>
+        <span class="chip blue">放缓·温情线</span>
+        <span class="chip red">2 个计划事件对不上正文</span>
+        <span class="hint">「同步大纲（提案）」让 AI 给更新提案 → 采纳后大纲才变</span>
+      </div>
+      <div class="lines">
+        <div class="line-row"><span class="lid">L01</span><span class="lname">断刀寻凶（主线）</span><div class="bar"><i style="width:86%; background:var(--green)"></i></div><span class="st g">健康</span></div>
+        <div class="line-row"><span class="lid">L02</span><span class="lname">师门旧案</span><div class="bar"><i style="width:64%; background:var(--purple)"></i></div><span class="st p">推进中</span></div>
+        <div class="line-row"><span class="lid">L03</span><span class="lname">温情线（酒肆群像）</span><div class="bar"><i style="width:38%; background:#d9a05b"></i></div><span class="st o">放缓 5 章</span></div>
+        <div class="line-row"><span class="lid">L04</span><span class="lname">漕帮暗流</span><div class="bar"><i style="width:22%; background:var(--red)"></i></div><span class="st r">断线 12 章</span></div>
+      </div>
+    </div>
+
+    <!-- 双栏时间线 -->
+    <div class="panel">
+      <h2>事件时间线 <span class="note">左栏只有你知道，右栏是读者被告知的——<b style="color:var(--text)">信息差就是悬念</b></span></h2>
+      <table class="tl">
+        <tr><th style="width:52px">事件</th><th style="width:60px">章</th><th>作者真相（客观事实）</th><th>读者已知（叙事表面）</th><th style="width:110px">对账</th></tr>
+        <tr><td class="eid">E05</td><td>第3章</td><td class="fact">师兄假死脱队，留断刀与虎符各半</td><td class="know">师兄死于北境伏击，沈砚亲手葬了他</td><td><span class="diffchip ok">已发生</span></td></tr>
+        <tr><td class="eid">E07</td><td>第12章</td><td class="fact">观灯人实为师兄之徒，奉遗命交虎符</td><td class="know hidden">未揭示（读者尚不知交符人身份）</td><td><span class="diffchip ok">已发生</span></td></tr>
+        <tr><td class="eid">E11</td><td>第9章</td><td class="fact">漕帮密约易主</td><td class="know">漕帮照常开仓</td><td><span class="diffchip shift">疑似偏移：正文未写密约戏</span></td></tr>
+        <tr><td class="eid">E14</td><td>第13章</td><td class="fact">老观燃灯三十年之期到</td><td class="know hidden">未揭示</td><td><span class="diffchip miss">未发生（计划本章）</span></td></tr>
+      </table>
+      <div class="note" style="margin-top:10px">「同步大纲（提案）」会合并宿主对账与 AI 补充建议为一份大纲更新提案；采纳后故事线状态真实变化（如 L04 断线 → 标记搁置）。</div>
+    </div>
+
+    <!-- 伏笔台账 -->
+    <div class="panel">
+      <h2>伏笔台账 <span class="note">揭1埋1：每回收一条，同时埋 1-2 条新钩子 · 五档节奏 · 种下原文回灌</span>
+        <span style="margin-left:auto; display:flex; gap:8px;"><span class="chip accent">AI 盘点（提案）</span><span class="chip">健康度 82</span></span></h2>
+      <table class="clues">
+        <tr><th>编号</th><th>标题 / 详情</th><th>节奏</th><th>埋于</th><th>最近动作</th><th>状态</th></tr>
+        <tr><td class="cid">F03</td><td><b>断刀缺口与北境铁锈</b><br><span class="note">对账提示：种下原文与第5章不一致 → 埋点修复提案含「校正原文」</span></td><td><span class="pace p1">即将兑现</span></td><td>第2章</td><td>第12章</td><td class="g">回收中</td></tr>
+        <tr><td class="cid">F04</td><td><b>师父的临终遗言「别去找他」</b><br><span class="note">与 L02 师门旧案挂钩</span></td><td><span class="pace p2">到期提醒</span></td><td>第4章</td><td>第12章</td><td class="o">已升级</td></tr>
+        <tr><td class="cid">F08</td><td><b>半块虎符</b><br><span class="note">新埋 · 种下原文已摘自第12章正文</span></td><td><span class="pace p3">刚埋下</span></td><td>第12章</td><td>第12章</td><td>埋下</td></tr>
+        <tr><td class="cid">F09</td><td><b>雁回山灯约三十年之期</b></td><td><span class="pace p3">刚埋下</span></td><td>第12章</td><td>第12章</td><td>埋下</td></tr>
+        <tr><td class="cid">F06</td><td><b>漕帮开仓价暗盘</b><br><span class="note">⚠ 连续 9 章无动作 → 埋点修复提案：补动作或搁置</span></td><td><span class="pace p5">长线</span></td><td>第8章</td><td>第9章</td><td class="r">烂账预警</td></tr>
+      </table>
+      <div class="note" style="margin-top:10px">「AI 盘点（提案）」产出新增埋点 + 烂账修复动作（补埋/改期/回收/搁置/放弃/校正原文/补登记），逐条采纳，<b>只改台账不动正文</b>。</div>
+    </div>
+
+  </div>
+</body>
+</html>

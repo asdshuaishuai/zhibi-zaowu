@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>04 Agent 轨迹对话窗 · 执笔 3.0 设计稿</title>
+<link rel="stylesheet" href="design.css">
+<style>
+  body { padding: 0 0 40px; }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 18px 28px 0; }
+  .demo { display: flex; gap: 18px; align-items: flex-start; }
+  .maindim { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; filter: saturate(.6) brightness(.85); }
+  .maindim p { color: var(--dim); font-size: 12.5px; margin-bottom: 10px; }
+  .dock { width: 400px; flex: none; background: var(--panel); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 14px 0 0 14px; margin-right: -28px; }
+  .dhead { display: flex; align-items: center; gap: 8px; padding: 10px 13px; border-bottom: 1px solid var(--line); }
+  .dhead b { font-size: 12.5px; font-weight: 600; }
+  .dhead .sp { color: var(--faint); font-size: 10.5px; }
+  .dtabs { margin-left: auto; display: flex; gap: 2px; background: var(--panel2); border-radius: 8px; padding: 2px; }
+  .dtabs span { font-size: 10.5px; color: var(--faint); padding: 2px 10px; border-radius: 6px; }
+  .dtabs span.on { background: var(--accent-soft); color: var(--text); }
+  .dbody { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; max-height: 560px; overflow: hidden; }
+  .runhead { display: flex; align-items: center; gap: 7px; margin: 7px 0 2px; color: var(--accent); font-size: 11px; font-weight: 600; }
+  .runhead .line { flex: 1; height: 1px; background: var(--line); }
+  .runhead .t { color: var(--faint); font-weight: 400; }
+  .bub { background: var(--panel2); border-radius: 9px; padding: 7px 10px; font-size: 11.5px; color: var(--dim); }
+  .bub b { color: var(--text); font-weight: 500; }
+  .bub .sub { display: block; font-size: 10px; color: var(--faint); margin-top: 2px; }
+  .bub.tool { background: var(--accent-soft); }
+  .bub.ok { background: var(--green-soft); }
+  .bub.err { background: var(--red-soft); color: var(--red); }
+  .bub.live { background: var(--blue-soft); }
+  .livebox { border-top: 1px solid var(--line); padding: 9px 12px 11px; background: rgba(111,155,196,.06); border-radius: 0 0 14px 0; }
+  .livebox .lv { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--blue); font-weight: 600; }
+  .spin { width: 11px; height: 11px; border: 2px solid var(--blue); border-top-color: transparent; border-radius: 50%; display: inline-block; animation: rot .9s linear infinite; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  .livebox pre { margin-top: 6px; font-family: ui-monospace, "SF Mono", monospace; font-size: 10px; color: var(--faint); line-height: 1.55; white-space: pre-wrap; }
+  .legend { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .legend .bub { width: auto; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">执笔 3.0 · 设计稿</span><span class="crumb">04 / Agent 轨迹对话窗</span>
+    <span class="spacer"></span><a class="crumb" href="index.html">← 返回总览</a>
+  </div>
+
+  <div class="wrap">
+    <div class="annotation" style="margin-bottom:14px"><b>定位：</b>右侧边缘常驻的<b>对话窗式面板</b>（Dock，可拖宽 300-480pt、⌘⇧J 收起、专注模式自动让位）。数据源是 DSH 的 session.event 全量事件流——AI 的每一步（准备上下文 → 工具调用 → 结果回灌 → 流式产出 → 完成/失败）都像聊天一样展开，会话日志落盘可回放。轨迹是<b>可导航的</b>：点「已登记提案」跳收件箱高亮，点「写入正文」跳章节位置。</div>
+
+    <div class="demo">
+      <div class="maindim serif">
+        <p style="font-size:15px; color:var(--text); font-weight:600;">第12章 · 断刀 <span class="note">（主界面在左，轨迹窗钉在右缘——这里为了展示把 Dock 画在右侧）</span></p>
+        <p>沈砚按着刀柄走进雨里。巷口的灯笼在风里晃……</p>
+        <p>酒肆里坐着的人比他想的要多。角落里两个短打汉子压着嗓子说话，说的却是「赤星军」三个字。<span class="inkdot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.55;vertical-align:3px;margin-left:6px"></span></p>
+        <p>沈砚的手指在刀柄上收紧了一分。老观燃灯，是师父当年留下的暗号：灯亮，就是有人回来了……</p>
+        <p class="note">主编辑器照常写作；AI 的一切动作在右侧同步流淌，不打断笔感。</p>
+      </div>
+
+      <div class="dock">
+        <div class="dhead">
+          <b>Agent 轨迹</b><span class="sp">运行中 · 搭骨架</span>
+          <div class="dtabs"><span class="on">轨迹</span><span>提案 2</span><span>对话</span></div>
+        </div>
+        <div class="dbody">
+          <div class="runhead">▶ 设定归类 · 14:20:07 <span class="line"></span></div>
+          <div class="bub">准备上下文与工具（9 个工具）<span class="sub">造包 ≈3.2K tokens · 法典：仙侠档</span></div>
+          <div class="bub tool"><b>🛠 调用 propose_canon_classify</b><span class="sub">4 篇 · 分类+改名建议</span></div>
+          <div class="bub ok"><b>↳ 已登记 1 条提案（4 项）</b><span class="sub">点击跳收件箱高亮该提案</span></div>
+          <div class="bub ok"><b>✓ 完成 · 新登记 1 条提案</b></div>
+          <div class="runhead">▶ 续写幽灵 · 14:34:51 <span class="line"></span></div>
+          <div class="bub">轻量请求：1-2 句接续 · 不进收件箱<span class="sub">Tab 采纳即转正，Esc/打字作废</span></div>
+          <div class="runhead">▶ 搭骨架 · 第13章 · 14:32:07 <span class="line"></span></div>
+          <div class="bub">准备上下文与工具（9 个工具）<span class="sub">闸门预检：到期伏笔 F03/F04 已进合同</span></div>
+          <div class="bub tool"><b>🛠 调用 propose_skeleton</b><span class="sub">节拍 5 · 钩子「观灯人现身」</span></div>
+          <div class="bub ok"><b>↳ 已登记骨架提案</b><span class="sub">闸门评分 82</span></div>
+          <div class="bub err"><b>✕ 14:31:02 失败 · 一次重试已恢复</b><span class="sub">请求超时（60 秒）——已产出提案保留</span></div>
+        </div>
+        <div class="livebox">
+          <div class="lv"><span class="spin"></span>正在流式产出 · 分段写作 v2（每段 1200 字）</div>
+          <pre>沈砚把断刀横在膝上，火光从刀身的缺口里
+漏过去，像一线将熄未熄的灯。他想，灯这
+种东西，从来不是照给夜里赶路的人看的…</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span class="bub" style="background:var(--accent-soft)">🛠 工具调用（含参数摘要，可展开）</span>
+      <span class="bub" style="background:var(--green-soft)">↳ / ✓ 工具结果 · 完成（新登记 N 提案）</span>
+      <span class="bub" style="background:var(--red-soft)">✕ 失败 / 中止（原因就地可读）</span>
+      <span class="bub">💬 流式产出实时滚（运行中「正在输入」区）</span>
+    </div>
+
+    <div class="annotation" style="margin-top:14px"><b>信息密度设计：</b>每条气泡默认收起为「事件 + 一行摘要」，参数/结果摘要限 3 行可展开复制；轻量请求（幽灵续写）单独小节不淹没主轨迹；顶部过滤（全部/仅工具/仅文本）与全局停止按钮在页签栏。跨启动回放由 DSH 会话日志承担——重启后历史还在。</div>
+  </div>
+</body>
+</html>

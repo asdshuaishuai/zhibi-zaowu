@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03 彩云式人机共写 · 执笔 3.0 设计稿</title>
+<link rel="stylesheet" href="design.css">
+<style>
+  body { padding: 0 0 40px; }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 18px 28px 0; }
+  .state { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 22px; overflow: hidden; }
+  .state .shead { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .state .shead .no { font-size: 11px; color: var(--accent); letter-spacing: .14em; }
+  .state .shead h2 { font-size: 15px; font-weight: 600; }
+  .state .shead .how { margin-left: auto; font-size: 11px; color: var(--faint); }
+  .stage { padding: 20px 24px 22px; position: relative; }
+
+  /* ① 幽灵续写 */
+  .paper { max-width: 660px; margin: 0 auto; }
+  .paper p { text-indent: 2em; font-size: 14.5px; line-height: 1.9; margin-bottom: 12px; }
+  .ghost { color: #6e6a63; font-style: italic; }
+  .caret { color: var(--accent); font-style: normal; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .kbdhint { display: inline-flex; gap: 5px; vertical-align: 2px; margin-left: 8px; font-size: 10.5px; font-style: normal; color: var(--dim); border: 1px solid var(--line); background: var(--panel2); border-radius: 5px; padding: 0 7px; line-height: 18px; }
+  .kbdhint kbd { font-family: inherit; color: var(--accent); }
+  .kbdhint.warn kbd.green { color: var(--green); }
+  .inkdot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: .55; vertical-align: 3px; margin-left: 6px; }
+  .settled { background: var(--green-soft); border-radius: 8px; padding: 2px 6px; text-indent: 0; display: inline; }
+
+  /* ② 分支卡 */
+  .bhead { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; font-size: 12px; color: var(--dim); }
+  .bhead .pill { border: 1px solid var(--line); background: var(--panel2); border-radius: 6px; padding: 2px 10px; font-size: 11px; }
+  .brow3 { display: flex; gap: 10px; }
+  .bcard { flex: 1; min-width: 0; background: var(--panel2); border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px; text-align: left; cursor: pointer; }
+  .bcard.sel { border-color: var(--accent); background: var(--accent-soft); }
+  .bcard .bt { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+  .bcard .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .bcard .btxt { font-size: 12px; color: var(--dim); line-height: 1.7; min-height: 92px; }
+  .bcard .bfoot { margin-top: 9px; font-size: 10.5px; color: var(--faint); }
+  .bcard.sel .bfoot { color: var(--accent); }
+
+  /* ③ 选区菜单 */
+  .selwrap { max-width: 660px; margin: 0 auto; position: relative; }
+  .hl-sel { background: rgba(111,155,196,.28); border-radius: 3px; }
+  .selmenu { position: absolute; right: -30px; top: -14px; width: 330px; background: #22242b; border: 1px solid #3a3d45; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.5); padding: 11px 12px 10px; z-index: 5; }
+  .selmenu .t { font-size: 10.5px; color: var(--faint); margin-bottom: 7px; }
+  .selmenu .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .selmenu .mb { border: 1px solid #3a3d45; background: #1e2026; color: var(--text); font-size: 12px; border-radius: 7px; padding: 4px 11px; }
+  .selmenu .mb.hl { border-color: rgba(201,111,74,.5); background: var(--accent-soft); }
+  .selmenu input { margin-top: 8px; width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; color: var(--dim); font-size: 11.5px; padding: 5px 9px; }
+  .selmenu .land { display: flex; align-items: center; gap: 6px; margin-top: 9px; font-size: 10.5px; color: var(--faint); flex-wrap: wrap; }
+  .selmenu .land .l { border: 1px solid #3a3d45; border-radius: 6px; padding: 1px 9px; color: var(--dim); }
+  .selmenu .land .l.on { border-color: rgba(111,155,196,.55); color: var(--blue); background: var(--blue-soft); }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">执笔 3.0 · 设计稿</span><span class="crumb">03 / 彩云式人机共写（三状态）</span>
+    <span class="spacer"></span><a class="crumb" href="index.html">← 返回总览</a>
+  </div>
+
+  <div class="wrap">
+
+    <!-- ① 幽灵续写 -->
+    <div class="state">
+      <div class="shead"><span class="no">状态 ①</span><h2>续写幽灵（Ghost Continuation）</h2><span class="how">光标停段尾 ≥1.2s 自动请求 · 逐句提议 · 轻量轨迹不进收件箱</span></div>
+      <div class="stage">
+        <div class="paper serif">
+          <p>沈砚按着刀柄走进雨里。巷口的灯笼在风里晃，把他的影子拉长又压短，像一根随时会断的线。三个月了，那把断刀始终没有离开过他的腰——刀是师父留下的，缺口处还沾着北境的铁锈。<span class="inkdot" title="分叉点墨点：此段有 AI 参与"></span></p>
+          <p>「听说了吗，雁回山那边的老观又燃了灯。」</p>
+          <p>「嘘——那灯三十年前就该灭了。」</p>
+          <p>沈砚的手指在刀柄上收紧了一分。老观燃灯，是师父当年留下的暗号：灯亮，就是有人回来了。<span class="ghost">他没有回头，只是把酒一口饮尽——师兄，你终究还是走到这一步了吗。<span class="caret">▍</span><span class="kbdhint"><kbd>Tab</kbd> 采纳这句</span><span class="kbdhint warn"><kbd>Esc</kbd> <kbd class="green">继续打字即作废</kbd></span></span></p>
+          <p class="note" style="text-indent:0; margin-top:2px">↑ 上一句刚被 Tab 采纳的示例：<span class="settled">他没有回头，只是把酒一口饮尽。</span><span class="note">（已转正 · 左缘墨点可回看当时轨迹 · 每采纳一句自动请求下一句，像拉一条句子溪流）</span></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ② 分支卡 -->
+    <div class="state">
+      <div class="shead"><span class="no">状态 ②</span><h2>分支卡（三选一 + 换一批）</h2><span class="how">段尾 ⌘⇧→ 或「给我几个走向」 · 一批 1-3 张 · 翻看历史批次 · 撤回</span></div>
+      <div class="stage">
+        <div class="paper">
+          <div class="bhead">
+            <span>AI 给了 3 个走向 · 第13章开头</span>
+            <span class="chip blue">每张 80-150 字 · 带伏笔影响提示</span>
+            <span style="flex:1"></span>
+            <span class="pill">‹ 上批</span><span class="pill">下批 ›</span>
+            <span class="pill">换一批（重生成）</span><span class="pill">全部不要</span>
+          </div>
+          <div class="brow3">
+            <div class="bcard">
+              <div class="bt"><span class="dot" style="background:#c96f4a"></span>A · 复仇线<span class="chip" style="margin-left:auto">张力↑</span></div>
+              <div class="btxt">沈砚连夜出城，直奔雁回山。他要在灯灭之前见到那个人——哪怕刀刃相向。山道上雪没到脚踝，他想起的是师父咽气前那句「别去找他」。</div>
+              <div class="bfoot">接 F03 伏笔 · 新埋「观灯人身份」 · 与骨架闸门的钩子轮换检查联动</div>
+            </div>
+            <div class="bcard sel">
+              <div class="bt"><span class="dot" style="background:#6f9bc4"></span>B · 师门线<span class="chip blue" style="margin-left:auto">信息差↑</span></div>
+              <div class="btxt">来的不是师兄，是师兄的徒弟。少年跪在雪里，交出半块虎符，说师门三十年前的旧账，要沈砚亲手去翻。灯，是照给活人看的路。</div>
+              <div class="bfoot">回收 E07 事件 · 揭读者未知层 · ✓ 已选中：展开为完整段落草稿提案</div>
+            </div>
+            <div class="bcard">
+              <div class="bt"><span class="dot" style="background:#7fae72"></span>C · 温情线<span class="chip green" style="margin-left:auto">喘息位</span></div>
+              <div class="btxt">沈砚没有动。他给灯留了一夜的时间——若天亮灯还亮着，他便回去；若灭了，从此江湖两清。这一夜他和酒肆的赌客们掷了一回骰子。</div>
+              <div class="bfoot">节奏降速 · 铺人物日常面 · 第三张固定做「节奏功能卡」（不只有剧情走向）</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 选区创作菜单 -->
+    <div class="state">
+      <div class="shead"><span class="no">状态 ③</span><h2>选区创作菜单（小梦同款动词 + 执笔铁律落点）</h2><span class="how">选中即浮出 · 产出 diff 预览逐条采纳 · 采纳前自动快照</span></div>
+      <div class="stage">
+        <div class="selwrap serif">
+          <p style="text-indent:2em; font-size:14.5px; line-height:1.9;">酒肆里坐着的人比他想的要多。靠窗那桌在赌钱，押的是明日漕帮开仓的价；<span class="hl-sel">角落里两个短打汉子压着嗓子说话，说的却是「赤星军」三个字</span>。沈砚要了一角酒，背对着他们坐下，耳朵却支棱着。</p>
+          <div class="selmenu">
+            <div class="t">已选中 28 字 · 选区创作</div>
+            <div class="row">
+              <span class="mb hl">拉深</span><span class="mb">扩写</span><span class="mb">缩写</span><span class="mb">改写</span><span class="mb">去AI味改写</span>
+            </div>
+            <input type="text" placeholder="自定义创作指令…（例：生成大纲）" readonly>
+            <div class="land">结果落点
+              <span class="l on">diff 预览 · 逐条采纳（默认）</span>
+              <span class="l">替换选中</span>
+              <span class="l">插入选中后</span>
+              <span class="l">插入结尾</span>
+            </div>
+          </div>
+        </div>
+        <div class="annotation" style="max-width:660px; margin:14px auto 0;"><b>与彩云小梦的差异：</b>小梦默认直接替换文本；执笔默认 <b>diff 预览 · 逐条采纳</b>（原文 vs 建议，绿色=新增、红色=删除），采纳前自动快照可回滚——作者主权不因「顺手」而失守。落点三选是从小梦实证吸收的（替换选中 / 插入选中后 / 插入结尾）。</div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

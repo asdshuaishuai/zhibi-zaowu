@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 书架 · 执笔 3.0 设计稿</title>
+<link rel="stylesheet" href="design.css">
+<style>
+  .shelf { padding: 22px 28px 30px; }
+  .shelf-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .shelf-head h1 { font-size: 20px; font-weight: 600; }
+  .goal { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px; margin-left: auto; }
+  .ring { width: 44px; height: 44px; border-radius: 50%; background: conic-gradient(var(--accent) 0 72%, var(--line) 72% 100%); display: grid; place-items: center; }
+  .ring i { width: 33px; height: 33px; border-radius: 50%; background: var(--panel); display: grid; place-items: center; font-style: normal; font-size: 11px; color: var(--text); }
+  .goal .gt { font-size: 12px; color: var(--dim); }
+  .goal .gt b { color: var(--text); font-weight: 500; }
+  .books { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
+  .book { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; cursor: pointer; transition: transform .15s, border-color .15s; }
+  .book:hover { transform: translateY(-3px); border-color: rgba(201,111,74,.5); }
+  .cover { aspect-ratio: 3/4; display: grid; place-items: center; position: relative; }
+  .cover .c1 { background: linear-gradient(160deg, #2a2033 0%, #17181c 55%, #3a1f1a 100%); }
+  .cover .c2 { background: linear-gradient(160deg, #1a2a33 0%, #17181c 60%, #14324a 100%); }
+  .cover .c3 { background: linear-gradient(160deg, #33261a 0%, #17181c 55%, #4a3a14 100%); }
+  .cover .ctitle { writing-mode: vertical-rl; font-size: 24px; letter-spacing: .35em; color: #e8ddca; text-shadow: 0 2px 12px rgba(0,0,0,.5); }
+  .cover .cauthor { position: absolute; bottom: 12px; right: 14px; font-size: 10px; color: rgba(232,221,202,.55); letter-spacing: .2em; }
+  .cover .ci { position: absolute; inset: 0; opacity: .5; background-repeat: no-repeat; background-size: cover; background-position: center; }
+  .c1 .ci { background-image: radial-gradient(circle at 70% 30%, rgba(201,111,74,.55) 0 8px, transparent 9px), radial-gradient(circle at 72% 32%, rgba(232,221,202,.7) 0 3px, transparent 4px), linear-gradient(0deg, transparent 60%, rgba(201,111,74,.25) 61%); }
+  .c2 .ci { background-image: radial-gradient(circle at 30% 40%, rgba(111,155,196,.4) 0 2px, transparent 3px), radial-gradient(circle at 50% 60%, rgba(111,155,196,.3) 0 2px, transparent 3px), radial-gradient(circle at 70% 45%, rgba(232,221,202,.5) 0 2px, transparent 3px); }
+  .c3 .ci { background-image: linear-gradient(115deg, transparent 40%, rgba(232,221,202,.2) 41% 42%, transparent 43%), linear-gradient(180deg, transparent 70%, rgba(240,200,120,.3) 71%); }
+  .bmeta { padding: 10px 12px 12px; }
+  .bmeta .bt { font-size: 13px; font-weight: 600; }
+  .bmeta .bi { margin-top: 4px; font-size: 11px; color: var(--faint); display: flex; gap: 8px; }
+  .newbook { border: 1.5px dashed var(--line); border-radius: 12px; aspect-ratio: 3/4; display: grid; place-items: center; cursor: pointer; }
+  .newbook .plus { width: 44px; height: 44px; border-radius: 50%; background: var(--panel2); display: grid; place-items: center; font-size: 22px; color: var(--dim); }
+  .newbook .nt { margin-top: 8px; font-size: 12px; color: var(--faint); }
+  .wizard { margin-top: 26px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .wizard h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+  .wizrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .wizrow .wfield { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 12px; color: var(--dim); min-width: 120px; }
+  .genre { border: 1px solid var(--line); border-radius: 14px; padding: 2px 12px; font-size: 11.5px; color: var(--dim); cursor: pointer; }
+  .genre.on { background: var(--accent-soft); border-color: rgba(201,111,74,.5); color: var(--text); }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">执笔 3.0 · 设计稿</span><span class="crumb">01 / 书架</span>
+    <span class="spacer"></span><a class="crumb" href="index.html">← 返回总览</a>
+  </div>
+
+  <div class="win">
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <span class="name">执笔 — <b>书架</b></span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="iconbtn">导入旧稿</span>
+      <span class="iconbtn">选题调研</span>
+      <span class="iconbtn">设置</span>
+    </div>
+
+    <div class="shelf">
+      <div class="shelf-head">
+        <h1>书架</h1>
+        <span class="note">3 本书 · 今日 1,842 字</span>
+        <div class="goal">
+          <div class="ring"><i>72%</i></div>
+          <div class="gt">今日目标 <b>1,842 / 2,500 字</b><br>连续写作 <b>14 天</b></div>
+        </div>
+      </div>
+
+      <div class="books">
+        <div class="book">
+          <div class="cover c1"><div class="ci"></div><div class="ctitle">赤星</div><div class="cauthor"> kelthas </div></div>
+          <div class="bmeta"><div class="bt">赤星</div><div class="bi"><span>仙侠</span><span>12.4 万字</span><span>40 章</span></div><div class="bi"><span class="chip green" style="margin-top:4px">写作中</span><span class="note" style="margin-top:4px">刚刚编辑</span></div></div>
+        </div>
+        <div class="book">
+          <div class="cover c2"><div class="ci"></div><div class="ctitle">雾都异闻</div><div class="cauthor"> kelthas </div></div>
+          <div class="bmeta"><div class="bt">雾都异闻</div><div class="bi"><span>悬疑</span><span>3.1 万字</span><span>9 章</span></div><div class="bi"><span class="chip blue" style="margin-top:4px">大纲期</span><span class="note" style="margin-top:4px">2 天前</span></div></div>
+        </div>
+        <div class="book">
+          <div class="cover c3"><div class="ci"></div><div class="ctitle">炊烟记</div><div class="cauthor"> kelthas </div></div>
+          <div class="bmeta"><div class="bt">炊烟记</div><div class="bi"><span>现实</span><span>8,600 字</span><span>3 章</span></div><div class="bi"><span class="chip" style="margin-top:4px">暂定</span><span class="note" style="margin-top:4px">上周</span></div></div>
+        </div>
+        <div class="newbook"><div><div class="plus">＋</div><div class="nt" style="text-align:center">新建作品</div></div></div>
+      </div>
+
+      <div class="wizard">
+        <h3>新建向导（点「＋」后）</h3>
+        <div class="wizrow">
+          <span class="wfield">书名：赤星</span>
+          <span class="genre on">仙侠</span><span class="genre">都市</span><span class="genre">科幻</span><span class="genre">悬疑</span><span class="genre">言情</span><span class="genre">＋自定义（模糊匹配 13 流派档案）</span>
+          <span class="wfield" style="flex:1">一句话核心：断刀少年的归山寻凶路……</span>
+          <span class="iconbtn primary">搭框架 → 生成提案</span>
+        </div>
+        <div class="note" style="margin-top:8px">提交后走「AI 搭框架」：主线故事线 + 时间线 + 背景设定，全部以提案形态进收件箱，作者逐项采纳——结果就地反馈在本向导窗内。</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="max-width: 1200px; margin: 0 auto; padding: 0 28px 30px;">
+    <div class="annotation"><b>设计说明：</b>封面是 LLM 直接绘制的 SVG（工具箱「封面绘制」产出版），书卡右上角不放假按钮（旧版 icon 冲突教训）——封面操作统一进书卡的右键菜单与「设计」入口。每日目标按净增字数记账，进度环常驻顶部。</div>
+  </div>
+</body>
+</html>
