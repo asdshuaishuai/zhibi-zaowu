@@ -868,6 +868,8 @@ pub enum ImportEvent {
 
 pub struct ImportPanel {
     focus_handle: FocusHandle,
+    /// 预留给面板内直接扫描（当前由 Workspace 后台执行）
+    #[allow(dead_code)]
     handle: Rc<ProjectHandle>,
     path: Entity<gpui_kit::component::input::InputState>,
     last_result: String,
