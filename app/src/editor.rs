@@ -1,16 +1,24 @@
 //! 中央编辑器面板：真实正文（TextareaState，来自当前章节）+ 发话输入条。
 //! 正文保存由 Workspace 在切章/回书架时读 state.value() 完成。
+//!
+//! 视觉全部走 `crate::theme` 令牌（墨底/面板/朱砂/状态四色 + 栏内 20px 节奏）：
+//! gpui-component 走内置 light 主题，所以每个控件在这里显式覆写底色/描边/文字色
+//! （Button 用 custom 变体 + 实例样式，Input/Textarea 用 Styled refine，二者在库内
+//! 都是最后合入，能盖住主题派生值）。
 
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::Sizable;
+use gpui_kit::component::theme::Colorize;
+use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, px, rgb,
+    App, AppContext as _, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Render, Rgba, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
+
+use crate::theme;
 
 #[derive(Debug, Clone)]
 pub enum EditorEvent {
@@ -51,6 +59,8 @@ impl EditorPanel {
             );
         });
         let notes = cx.new(|cx| InputState::new(window, cx).placeholder("速记：埋了什么、要改什么、下一步想写什么…（「让AI记一笔」会带上）"));
+        // 发话框一变就重渲染：发送按钮的空文本置灰态需要跟着实时刷新
+        cx.subscribe(&prompt, |_, _, _: &InputEvent, cx| cx.notify()).detach();
         let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, notes, last_saved: String::new() };
         // 正文一变就重渲染（字数/进度实时）
         cx.subscribe(&prose, |_, _, _: &InputEvent, cx| cx.notify()).detach();
@@ -87,14 +97,60 @@ impl Render for EditorPanel {
         let prose = self.prose.clone();
         let prompt = self.prompt.clone();
 
+        // ── 实时字数与目标进度（渲染期计算：章级体量可忽略）
+        let text = self.prose.read(cx).value().to_string();
+        let words = crate::store::count_words(&text);
+        let target = self.word_target.max(1);
+        let pct = ((words as f32 / target as f32) * 100.).min(100.) as u32;
+        let dialogue = dialogue_share(&text);
+        let on_target = pct >= 100;
+
+        // ── 发话框内容决定发送按钮的可点态（空文本置灰，不再静默吞掉点击）
+        let prompt_text = self.prompt.read(cx).value().to_string();
+        let prompt_empty = prompt_text.trim().is_empty();
+        let accent_h: Hsla = theme::ACCENT().into();
+        let panel2_h: Hsla = theme::PANEL2().into();
+
         let save = Button::new("save-prose")
-            .label("保存")
+            .small()
+            .rounded(theme::RADIUS_BTN)
+            .px(theme::PAD_MD)
+            .child(tool_label("保存"))
+            .accessibility_label("保存")
+            // 次要动作：透明无边框（原型 .za-btn.gh），hover 才有 PANEL2 底
+            .custom(
+                ButtonCustomVariant::new(&*cx)
+                    .foreground(theme::DIM().into())
+                    .hover(theme::PANEL2().into())
+                    .active(panel2_h.darken(0.05)),
+            )
+            .text_color(theme::DIM())
             .on_click(cx.listener(|_this, _, _, cx| {
                 cx.emit(EditorEvent::SaveRequested);
             }));
-        let send = Button::new("send-prompt")
-            .primary()
-            .label("发送")
+
+        let send_variant = if prompt_empty {
+            ButtonCustomVariant::new(&*cx)
+                .color(theme::LINE().into())
+                .foreground(theme::GHOST().into())
+                .hover(theme::PANEL2().into())
+                .active(panel2_h.darken(0.05))
+        } else {
+            ButtonCustomVariant::new(&*cx)
+                .color(accent_h)
+                .foreground(theme::ON_ACCENT().into())
+                .hover(accent_h.lighten(0.08))
+                .active(accent_h.darken(0.08))
+        };
+        let send_base = Button::new("send-prompt")
+            .small()
+            .rounded(theme::RADIUS_BTN)
+            .px(theme::PAD_MD)
+            .child(tool_label("发送"))
+            .accessibility_label("发送")
+            .custom(send_variant)
+            .disabled(prompt_empty)
+            .border_1()
             .on_click(cx.listener(move |this, _, window, cx| {
                 let text = this.prompt.read(cx).value().to_string();
                 if text.trim().is_empty() {
@@ -105,189 +161,379 @@ impl Render for EditorPanel {
                     state.set_value("", window, cx);
                 });
             }));
+        let send = if prompt_empty {
+            send_base
+                .bg(theme::PANEL2())
+                .border_color(theme::LINE())
+                .text_color(theme::GHOST())
+                .tooltip("先在输入框里写下要对 AI 说的话")
+        } else {
+            send_base
+                .bg(theme::ACCENT())
+                .border_color(theme::ACCENT())
+                .text_color(theme::ON_ACCENT())
+        };
 
+        // ── AI 能力条：✦ 主能力 = 朱砂软底 + 朱砂描边，其余 = 中性工具（PANEL2 + LINE）
         let ai_buttons = crate::prompts::EDITOR_AI_BUTTONS
             .iter()
             .map(|b| {
                 let cap = b.capability.to_string();
-                Button::new(format!("ai-{cap}"))
-                    .xsmall()
-                    .label(b.label)
-                    .on_click(cx.listener(move |_this, _, _, cx| {
-                        cx.emit(EditorEvent::RunCapability(cap.clone()));
-                    }))
+                let id = format!("ai-{cap}");
+                let button = if b.label.starts_with('✦') {
+                    accent_button(id, b.label, &*cx)
+                } else {
+                    // 工具条＝PANEL 底，次级块用 PANEL2 才亮得起来（层次铁律）
+                    neutral_button(id, b.label, theme::PANEL2(), theme::DIM(), &*cx)
+                };
+                button.on_click(cx.listener(move |_this, _, _, cx| {
+                    cx.emit(EditorEvent::RunCapability(cap.clone()));
+                }))
             })
             .collect::<Vec<_>>();
 
-        // 实时字数与目标进度（渲染期计算：章级体量可忽略）
-        let text = self.prose.read(cx).value().to_string();
-        let words = crate::store::count_words(&text);
-        let target = self.word_target.max(1);
-        let pct = ((words as f32 / target as f32) * 100.).min(100.) as u32;
+        // ── 页头（原型 .za-edhead）：宋体 15/600 章标题 + 状态徽标 + 右侧保存回执
+        let saved_chip = if self.last_saved.is_empty() {
+            chip(
+                SharedString::from("未保存 · 点保存或切章自动落盘"),
+                theme::AMBER(),
+                theme::AMBER().opacity(0.35),
+                theme::AMBER_SOFT(),
+            )
+        } else {
+            chip(
+                SharedString::from(format!("✓ 已自动保存 {}", self.last_saved)),
+                theme::GREEN(),
+                theme::GREEN_BORDER(),
+                theme::GREEN_SOFT(),
+            )
+        };
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_LG)
+            .px(theme::PAD_XL)
+            .pt(theme::PAD_MD)
+            .pb(theme::GAP_MD)
+            .child(
+                div()
+                    .w(px(280.))
+                    .min_w_0()
+                    // 章标题＝页头标题层级（宋体 15/600），去掉输入框白底黑框
+                    .child(
+                        Input::new(&self.title)
+                            .appearance(false)
+                            .px(theme::PAD_XS)
+                            .text_size(theme::FONT_TITLE_SM)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .font_family(theme::FAMILY_SERIF)
+                            .text_color(theme::TEXT()),
+                    ),
+            )
+            .child(chip(
+                SharedString::from("写作中"),
+                theme::GREEN(),
+                theme::GREEN_BORDER(),
+                theme::BG(),
+            ))
+            .child(div().flex_1())
+            .child(saved_chip);
+
+        // ── 统计行：主数字 DIM / 目标与单位 FAINT，进度用 BAR token + 语义 chip
+        let bar_fill = if on_target { theme::GREEN() } else { theme::ACCENT() };
+        let stats = div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .px(theme::PAD_XL)
+            .pb(theme::GAP_GROUP_SM)
+            .child(
+                div()
+                    .text_size(theme::FONT_LABEL)
+                    .text_color(theme::DIM())
+                    .child(SharedString::from(count_text(words as u32))),
+            )
+            .child(
+                div()
+                    .text_size(theme::FONT_LABEL)
+                    .text_color(theme::FAINT())
+                    .child(SharedString::from(format!(" / {} 字", count_text(target)))),
+            )
+            .child(
+                div()
+                    .w(px(120.))
+                    .h(theme::BAR_H)
+                    .rounded(theme::RADIUS_TAG)
+                    .overflow_hidden()
+                    // 轨道＝白 6% 半透明（原型 .za-bar），不是 PANEL2 实心
+                    .bg(theme::BAR_TRACK())
+                    .child(
+                        div()
+                            .w(px(120. * pct as f32 / 100.))
+                            .h(theme::BAR_H)
+                            .rounded(theme::RADIUS_TAG)
+                            .bg(bar_fill),
+                    ),
+            )
+            .child(chip(
+                SharedString::from(format!("{pct}%")),
+                if on_target { theme::GREEN() } else { theme::ACCENT() },
+                if on_target { theme::GREEN_BORDER() } else { theme::ACCENT_BORDER() },
+                theme::BG(),
+            ))
+            .child(chip(
+                SharedString::from(format!("对白占比 {dialogue}%")),
+                theme::DIM(),
+                theme::LINE(),
+                theme::CHIP_NEUTRAL(),
+            ));
+
+        // ── 速记行：分节靠 border-top + 12px 呼吸，输入框＝PANEL2 + LINE
+        let notes_row = div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .px(theme::PAD_XL)
+            .py(theme::PAD_SM)
+            .border_t_1()
+            .border_color(theme::LINE())
+            .child(
+                div()
+                    .text_size(theme::FONT_LABEL)
+                    .text_color(theme::FAINT())
+                    .child("速记"),
+            )
+            .child(div().flex_1().min_w_0().child(ink_input(&self.notes)));
+
+        // ── 能力条（原型 .za-edtools：PANEL 底 + 顶部描边，比稿纸亮一档）
+        let tools_row = div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_SM)
+            .flex_wrap()
+            .px(theme::PAD_XL)
+            .py(theme::PAD_SM)
+            .bg(theme::PANEL())
+            .border_t_1()
+            .border_color(theme::LINE())
+            .children(ai_buttons);
+
+        // ── 选区创作：做成浮起的一叠面板（原型 .za-selmenu 观感），与能力条区分开；
+        //    首选项「拉深」朱砂软底高亮
+        let sel_row = div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_SM)
+            .flex_wrap()
+            .mx(theme::PAD_XL)
+            .mt(theme::GAP_MD)
+            .px(theme::PAD_MD)
+            .py(theme::PAD_SM)
+            .rounded(theme::RADIUS_PANEL)
+            .bg(theme::PANEL2())
+            .border_1()
+            .border_color(theme::LINE())
+            .shadow_md()
+            .child(
+                div()
+                    .text_size(theme::FONT_LABEL)
+                    .text_color(theme::FAINT())
+                    .child("选区创作（先选中正文一段）："),
+            )
+            .children(
+                crate::prompts::SELECTION_BUTTONS
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, (label, kind))| {
+                        let label: &'static str = *label;
+                        let kind: &'static str = *kind;
+                        let id = format!("sel-{kind}");
+                        let button = if ix == 0 {
+                            // 首选项「拉深」＝朱砂软底高亮（原型 .mb.hl）
+                            accent_button(id, label, &*cx)
+                        } else {
+                            neutral_button(id, label, theme::PANEL(), theme::TEXT(), &*cx)
+                        };
+                        button.on_click(cx.listener(move |_this, _, _, cx| {
+                            cx.emit(EditorEvent::SelectionAction(kind));
+                        }))
+                    }),
+            );
+
+        // ── 稿纸：640 居中卡，宋体 14px / 行高 1.9 / 宣纸字色
+        let scroll = div()
+            .id("editor-scroll")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(theme::PAD_XL)
+            .py(theme::GAP_MD)
+            .gap(theme::GAP_MD)
+            .child(
+                div()
+                    .flex()
+                    .justify_center()
+                    .w_full()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(640.))
+                            .rounded(theme::RADIUS_CARD)
+                            .bg(theme::PROSE_BG())
+                            .border_1()
+                            .border_color(theme::LINE())
+                            .px(theme::PAD_XL)
+                            .py(theme::PAD_LG)
+                            .child(
+                                Textarea::new(&prose)
+                                    .bordered(false)
+                                    .appearance(false)
+                                    .text_size(theme::FONT_PROSE)
+                                    .line_height(relative(theme::LINE_HEIGHT_PROSE))
+                                    .font_family(theme::FAMILY_SERIF)
+                                    .text_color(theme::TEXT()),
+                            ),
+                    ),
+            );
+
+        // ── 底部发话栏：左右 20px 与上方各栏对齐；主次按钮分明
+        let footer = div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .border_t_1()
+            .border_color(theme::LINE())
+            .px(theme::PAD_XL)
+            .py(theme::PAD_SM)
+            .bg(theme::PANEL())
+            .child(div().flex_1().min_w_0().child(ink_input(&prompt)))
+            .child(save)
+            .child(send);
 
         div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x17181c))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_8()
-                    .pt_3()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x8e8b85))
-                            .child(SharedString::from(format!("{words} / {target} 字"))),
-                    )
-                    .child(
-                        div()
-                            .w(px(120.))
-                            .h(px(5.))
-                            .rounded(px(3.))
-                            .bg(rgb(0x24262d))
-                            .child(
-                                div()
-                                    .w(px(120. * pct as f32 / 100.))
-                                    .h(px(5.))
-                                    .rounded(px(3.))
-                                    .bg(rgb(0xc96f4a)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x5d5b57))
-                            .child(SharedString::from(format!("{pct}%"))),
-                    )
-                    .child(
-                        div()
-                            .w(px(220.))
-                            .child(Input::new(&self.title.clone())),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x5d5b57))
-                            .child(SharedString::from(format!(
-                                "对白占比 {}%",
-                                dialogue_share(&text)
-                            ))),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .justify_end()
-                            .text_xs()
-                            .text_color(rgb(0x5d5b57))
-                            .child(SharedString::from(if self.last_saved.is_empty() {
-                                String::new()
-                            } else {
-                                format!("已自动保存 {}", self.last_saved)
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_8()
-                    .pt_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x5d5b57))
-                            .child("速记"),
-                    )
-                    .child(div().flex_1().child(Input::new(&self.notes.clone()))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .px_8()
-                    .pt_2()
-                    .flex_wrap()
-                    .children(ai_buttons),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .px_8()
-                    .pt_1()
-                    .flex_wrap()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x5d5b57))
-                            .child("选区创作（先选中正文一段）："),
-                    )
-                    .children(crate::prompts::SELECTION_BUTTONS.iter().map(|(label, kind)| {
-                        let kind: &'static str = kind;
-                        Button::new(format!("sel-{kind}"))
-                            .xsmall()
-                            .label(*label)
-                            .on_click(cx.listener(move |_this, _, _, cx| {
-                                cx.emit(EditorEvent::SelectionAction(kind));
-                            }))
-                    })),
-            )
-            .child(
-                div()
-                    .id("editor-scroll")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px_8()
-                    .py_3()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .justify_center()
-                            .w_full()
-                            .child(
-                                div()
-                                    .w_full()
-                                    .max_w(px(680.))
-                                    .rounded_lg()
-                                    .bg(rgb(0x1b1d22))
-                                    .border_1()
-                                    .border_color(rgb(0x2e3138))
-                                    .px_6()
-                                    .py_4()
-                                    .child(
-                                        Textarea::new(&prose)
-                                            .bordered(false)
-                                            .appearance(false),
-                                    ),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(rgb(0x2e3138))
-                    .px_3()
-                    .py_2()
-                    .bg(rgb(0x1e2026))
-                    .child(div().flex_1().child(Input::new(&prompt)))
-                    .child(save)
-                    .child(send),
-            )
+            .bg(theme::BG())
+            .text_size(theme::FONT_BODY)
+            .text_color(theme::TEXT())
+            .child(head)
+            .child(stats)
+            .child(notes_row)
+            .child(tools_row)
+            .child(sel_row)
+            .child(scroll)
+            .child(footer)
     }
+}
+
+/// 墨色输入框：PANEL2 底 + LINE 1px 描边 + 8px 圆角 + 宣纸字色
+/// （gpui-component 的 Input 底色走库主题，必须在实例样式上覆写）。
+fn ink_input(state: &Entity<InputState>) -> Input {
+    Input::new(state)
+        .appearance(true)
+        .bordered(true)
+        .bg(theme::PANEL2())
+        .border_color(theme::LINE())
+        .rounded(theme::RADIUS_BTN)
+        .text_size(theme::FONT_BODY)
+        .text_color(theme::TEXT())
+}
+
+/// 按钮文字＝11.5px（原型 .za-ib/.za-btn）：Button 的 label 字号由 size 档位决定，
+/// 走 child 自己定字号才能取到 theme token。
+fn tool_label(label: &'static str) -> impl IntoElement {
+    div()
+        .whitespace_nowrap()
+        .text_size(theme::FONT_META)
+        .child(label)
+}
+
+/// 按钮公共外壳：8px 圆角 + 12px 横向内边距 + 11.5px 文字（原型 .za-ib 节奏）。
+fn button_shell(id: impl Into<ElementId>, label: &'static str) -> Button {
+    Button::new(id)
+        .small()
+        .rounded(theme::RADIUS_BTN)
+        .px(theme::PAD_MD)
+        .child(tool_label(label))
+        .accessibility_label(label)
+}
+
+/// 主能力按钮（原型 .za-ib.pri / .za-selmenu .mb.hl）：朱砂软底 + 朱砂描边 + 宣纸字。
+/// 库的 ButtonCustomVariant 描边不随状态变（button.rs border_color 只看 variant），
+/// 所以 hover 语言只能落在底色上：软底加深一档。
+fn accent_button(id: impl Into<ElementId>, label: &'static str, cx: &App) -> Button {
+    let accent_h: Hsla = theme::ACCENT().into();
+    button_shell(id, label)
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(theme::ACCENT_BORDER().into())
+                .foreground(theme::TEXT().into())
+                .hover(accent_h.opacity(0.28))
+                .active(accent_h.opacity(0.42)),
+        )
+        .border_1()
+        .border_color(theme::ACCENT_BORDER())
+        .bg(theme::ACCENT_SOFT())
+        .text_color(theme::TEXT())
+}
+
+/// 中性工具按钮（原型 .za-ib / .za-selmenu .mb）：底色与文字色由所在面的 token 决定
+/// （PANEL 工具条上＝PANEL2+DIM，PANEL2 浮层上＝PANEL+TEXT），hover 提亮一档。
+fn neutral_button(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    bg: Rgba,
+    fg: Rgba,
+    cx: &App,
+) -> Button {
+    let bg_h: Hsla = bg.into();
+    button_shell(id, label)
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(theme::LINE().into())
+                .foreground(fg.into())
+                .hover(bg_h.lighten(0.06))
+                .active(bg_h.darken(0.05)),
+        )
+        .border_1()
+        .border_color(theme::LINE())
+        .bg(bg)
+        .text_color(fg)
+}
+
+/// 语义徽标（原型 .za-chip：10.5px / 9px 圆角 / 1px 语义描边 / 17px 行高）。
+/// 状态一律用 chip 表达，不用灰字裸文本。
+fn chip(label: SharedString, fg: Rgba, border: Rgba, bg: Rgba) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .h(px(18.))
+        .px(theme::PAD_SM)
+        .whitespace_nowrap()
+        .rounded(theme::RADIUS_CHIP)
+        .border_1()
+        .border_color(border)
+        .bg(bg)
+        .text_size(theme::FONT_TAG)
+        .text_color(fg)
+        .child(label)
+}
+
+/// 千分位计数（原型统计写作 3,214 字）。
+fn count_text(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (ix, c) in digits.chars().enumerate() {
+        if ix > 0 && (digits.len() - ix) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// 对白占比：以「/“开头的行字数占总字数（网文结构信号，零 LLM）

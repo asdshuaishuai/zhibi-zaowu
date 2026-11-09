@@ -8,20 +8,59 @@ mod inbox;
 mod prompts;
 mod shelf;
 mod store;
+mod theme;
 mod trajectory;
 mod views;
 mod workspace;
 
+use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::{
     AppContext as _, Bounds, Size, WindowBounds, WindowKind, WindowOptions, component::TitleBar,
-    point, px,
+    point, px, rgba, rgb,
 };
+
+/// 全局主题初始化：墨底/宣纸/朱砂——库组件（Input/Button/Textarea/Sidebar/
+/// TitleBar/StatusBar）全部从这里取色，不再与手绘 palette 两套体系打架。
+fn init_theme(cx: &mut gpui_kit::App) {
+    Theme::change(ThemeMode::Dark, None, cx);
+    {
+        let theme = cx.default_global::<Theme>();
+        let c = &mut theme.colors;
+        c.background = rgb(0x17181c).into();
+        c.foreground = rgb(0xd8d5cf).into();
+        c.border = rgb(0x2e3138).into();
+        c.accent = rgba(0xc96f4a24).into();
+        c.accent_foreground = rgb(0xd8d5cf).into();
+        c.primary = rgb(0xc96f4a).into();
+        c.primary_foreground = rgb(0xffffff).into();
+        c.secondary = rgb(0x24262d).into();
+        c.secondary_foreground = rgb(0xd8d5cf).into();
+        c.muted = rgb(0x24262d).into();
+        c.muted_foreground = rgb(0x8e8b85).into();
+        c.input = rgb(0x24262d).into();
+        c.popover = rgb(0x1e2026).into();
+        c.popover_foreground = rgb(0xd8d5cf).into();
+        c.danger = rgb(0xc0605c).into();
+        c.success = rgb(0x7fae72).into();
+        c.info = rgb(0x6f9bc4).into();
+        c.scrollbar = rgb(0x1e2026).into();
+        c.scrollbar_thumb = rgb(0x3a3d45).into();
+        c.sidebar = rgb(0x1e2026).into();
+        c.sidebar_foreground = rgb(0xd8d5cf).into();
+        c.sidebar_accent = rgba(0xc96f4a24).into();
+        c.sidebar_accent_foreground = rgb(0xd8d5cf).into();
+        c.sidebar_border = rgb(0x2e3138).into();
+        c.sidebar_primary = rgb(0xc96f4a).into();
+        c.sidebar_primary_foreground = rgb(0xffffff).into();
+    }
+}
 
 fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
+            init_theme(cx);
             cx.bind_keys(vec![
                 gpui_kit::KeyBinding::new("cmd-s", workspace::SaveProse, Some("zhibi-workspace")),
                 gpui_kit::KeyBinding::new("cmd-shift-f", workspace::ToggleFocusMode, Some("zhibi-workspace")),

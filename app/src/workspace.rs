@@ -2,29 +2,34 @@
 //! 职责：项目句柄、章节切换与正文保存、DSH 生命周期与事件分发。
 
 use anyhow::Result;
-use std::rc::Rc;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::dock::{
     DockArea, DockEvent, DockLayout, DockPlacement, DockSkin, panel_handle,
 };
 use gpui_kit::component::input::TextareaState;
-use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::Sizable;
-use gpui_kit::component::{IconName, TitleBar};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{Icon, Sizable, TitleBar};
 use gpui_kit::{
-    AnyElement, AppContext as _, AsyncApp, Context, Entity, EventEmitter, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px, rgb,
+    AnyElement, App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, relative,
 };
 use serde_json::Value;
+use std::rc::Rc;
 
 use crate::dsh::{DshClient, DshEvent, model_route};
 use crate::editor::{EditorEvent, EditorPanel};
 use crate::inbox::{InboxEvent, InboxPanel};
 use crate::prompts;
 use crate::store::{self, ProjectHandle};
+use crate::theme;
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
-use crate::views::{CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel, MemoryPanel, OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent};
+use crate::views::{
+    CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel, MemoryPanel,
+    OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent,
+};
 
 gpui_kit::actions!(zhibi, [SaveProse, ToggleFocusMode, BranchesNow]);
 
@@ -67,6 +72,107 @@ impl Mode {
             Mode::Graph => "记忆图谱",
         }
     }
+
+    /// 侧栏导航行的图标（原型 workspace.html:188-201 的 lucide 对应位）。
+    fn icon(&self) -> IconName {
+        match self {
+            Mode::Editor => IconName::SquarePen,
+            Mode::Outline => IconName::ScrollText,
+            Mode::Canon => IconName::BookMarked,
+            Mode::Memory => IconName::Brain,
+            Mode::Stats => IconName::ChartColumn,
+            Mode::Clues => IconName::Link,
+            Mode::Characters => IconName::Users,
+            Mode::Settings => IconName::Settings,
+            Mode::Snapshots => IconName::Camera,
+            Mode::Import => IconName::FolderInput,
+            Mode::Graph => IconName::Network,
+        }
+    }
+}
+
+/// 侧栏导航顺序（与原实现一致，只是改为数据表以便统一出行）。
+const NAV: [Mode; 11] = [
+    Mode::Editor,
+    Mode::Outline,
+    Mode::Canon,
+    Mode::Memory,
+    Mode::Stats,
+    Mode::Clues,
+    Mode::Characters,
+    Mode::Graph,
+    Mode::Snapshots,
+    Mode::Import,
+    Mode::Settings,
+];
+
+/// 颜色 token 是 `Rgba` 函数（theme.rs 约定），组件库色位要 `Hsla`：Rgba: Into<Hsla>。
+fn hsla(c: gpui_kit::Rgba) -> gpui_kit::Hsla {
+    c.into()
+}
+
+/// iconbtn 语言（design.css:36）：次级面板底 + 描边 + 次级文字，hover 提亮转朱砂描边。
+fn icon_btn(cx: &App) -> ButtonCustomVariant {
+    ButtonCustomVariant::new(cx)
+        .color(hsla(theme::PANEL2()))
+        .foreground(hsla(theme::DIM()))
+        .hover(hsla(theme::ACCENT_SOFT()))
+        .active(hsla(theme::LINE()))
+}
+
+/// 主能力按钮语言（design.css:37 .iconbtn.primary、workspace.html:111 .prominent）：
+/// 朱砂软底 + 正文色文字。
+fn prominent_btn(cx: &App) -> ButtonCustomVariant {
+    ButtonCustomVariant::new(cx)
+        .color(hsla(theme::ACCENT_SOFT()))
+        .foreground(hsla(theme::TEXT()))
+        .hover(hsla(theme::ACCENT_BORDER()))
+        .active(hsla(theme::LINE()))
+}
+
+/// 语义 chip（规则 6：FONT_TAG + RADIUS_CHIP + 1px 语义描边，不用裸灰字表达状态）。
+fn chip(text: &str, fg: gpui_kit::Rgba, bg: gpui_kit::Rgba, border: gpui_kit::Rgba) -> AnyElement {
+    let text: SharedString = text.into();
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .px(theme::PAD_SM)
+        .rounded(theme::RADIUS_CHIP)
+        .border_1()
+        .border_color(border)
+        .bg(bg)
+        .text_size(theme::FONT_TAG)
+        // 原型 .chip 高 18px = 10.5px × 1.71（design.css:39），故行高取 1.7
+        .line_height(relative(1.7))
+        .text_color(fg)
+        .child(text)
+        .into_any_element()
+}
+
+/// 运行中 chip（规则 6/15：BLUE 系 + spinner，不能靠静默表达进行中）。
+fn live_chip(text: &str) -> AnyElement {
+    let text: SharedString = text.into();
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .gap(theme::GAP_XS)
+        .px(theme::PAD_SM)
+        .rounded(theme::RADIUS_CHIP)
+        .border_1()
+        .border_color(theme::BLUE_BORDER())
+        .bg(theme::BLUE_SOFT())
+        .text_size(theme::FONT_TAG)
+        .line_height(relative(1.7))
+        .text_color(theme::BLUE())
+        .child(
+            Spinner::new()
+                .with_size(theme::FONT_TAG)
+                .color(hsla(theme::BLUE())),
+        )
+        .child(text)
+        .into_any_element()
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -97,6 +203,11 @@ pub struct Workspace {
     client: Option<DshClient>,
     initialized: bool,
     autosave: Option<gpui_kit::Task<()>>,
+    /// 最近一次落盘的时刻串（与 EditorPanel 同源）；底栏「已保存 / 未保存」chip 只读它是否非空，
+    /// 不显示这个 UTC 串本体（见 save_current 的 NOTE(utc)）
+    last_saved: String,
+    /// DSH 会话是否正在跑（session.status 事件驱动，标题栏 BLUE 运行态的事实源）
+    dsh_running: bool,
     focus: bool,
     dock_hidden: bool,
     workspace_focus: gpui_kit::FocusHandle,
@@ -128,13 +239,22 @@ impl Workspace {
             state.set_value(prose_text.as_str(), window, cx);
         });
 
-        let editor = cx.new(|cx| EditorPanel::new(window, cx, prose.clone(), handle.chapter_word_target()));
+        let editor =
+            cx.new(|cx| EditorPanel::new(window, cx, prose.clone(), handle.chapter_word_target()));
         {
-            let title = chapters.iter().find(|c| c.n == chapter).map(|c| c.title.clone()).unwrap_or_default();
+            let title = chapters
+                .iter()
+                .find(|c| c.n == chapter)
+                .map(|c| c.title.clone())
+                .unwrap_or_default();
             let notes = handle.chapter_notes(chapter);
             editor.update(cx, |panel, cx| {
-                panel.title.update(cx, |state, cx| state.set_value(title.as_str(), window, cx));
-                panel.notes.update(cx, |state, cx| state.set_value(notes.as_str(), window, cx));
+                panel
+                    .title
+                    .update(cx, |state, cx| state.set_value(title.as_str(), window, cx));
+                panel
+                    .notes
+                    .update(cx, |state, cx| state.set_value(notes.as_str(), window, cx));
             });
         }
         let trajectory = cx.new(|cx| TrajectoryPanel::new(cx));
@@ -164,143 +284,183 @@ impl Workspace {
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
         let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
 
-        cx.subscribe_in(&import_view, window, |this, _, ev: &ImportEvent, _window, cx| match ev {
-            ImportEvent::Run(path) => {
-                if path.trim().is_empty() {
-                    this.import_view.update(cx, |panel, cx| {
-                        panel.set_result("先填目录路径".into(), cx);
-                    });
-                    return;
+        cx.subscribe_in(
+            &import_view,
+            window,
+            |this, _, ev: &ImportEvent, _window, cx| match ev {
+                ImportEvent::Run(path) => {
+                    if path.trim().is_empty() {
+                        this.import_view.update(cx, |panel, cx| {
+                            panel.set_result("先填目录路径".into(), cx);
+                        });
+                        return;
+                    }
+                    let path = std::path::PathBuf::from(path);
+                    // Rc 不能跨线程：把句柄拆成纯数据传入后台
+                    let root = this.handle.root.clone();
+                    let title = this.handle.title.clone();
+                    let import_view = this.import_view.clone();
+                    let inbox = this.inbox.clone();
+                    let traj = this.trajectory.clone();
+                    cx.spawn(async move |_, cx| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move {
+                                let h = ProjectHandle { root, title };
+                                h.import_dir(&path)
+                            })
+                            .await;
+                        let _ = cx.update(|cx| {
+                            let msg = match result {
+                                Ok((d, c)) => format!(
+                                    "扫描完成：草稿提案 {d} 份 · 设定提案 {c} 份——去收件箱逐条采纳"
+                                ),
+                                Err(e) => format!("导入失败：{e}"),
+                            };
+                            import_view.update(cx, |panel, cx| panel.set_result(msg.clone(), cx));
+                            inbox.update(cx, |panel, cx| panel.refresh(cx));
+                            traj.update(cx, |panel, cx| panel.push(TrajKind::Info(msg), cx));
+                        });
+                    })
+                    .detach();
                 }
-                let path = std::path::PathBuf::from(path);
-                // Rc 不能跨线程：把句柄拆成纯数据传入后台
-                let root = this.handle.root.clone();
-                let title = this.handle.title.clone();
-                let import_view = this.import_view.clone();
-                let inbox = this.inbox.clone();
-                let traj = this.trajectory.clone();
-                cx.spawn(async move |_, cx| {
-                    let result = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let h = ProjectHandle { root, title };
-                            h.import_dir(&path)
-                        })
-                        .await;
-                    let _ = cx.update(|cx| {
-                        let msg = match result {
-                            Ok((d, c)) => format!("扫描完成：草稿提案 {d} 份 · 设定提案 {c} 份——去收件箱逐条采纳"),
-                            Err(e) => format!("导入失败：{e}"),
-                        };
-                        import_view.update(cx, |panel, cx| panel.set_result(msg.clone(), cx));
-                        inbox.update(cx, |panel, cx| panel.refresh(cx));
-                        traj.update(cx, |panel, cx| panel.push(TrajKind::Info(msg), cx));
-                    });
-                })
-                .detach();
-            }
-        })
+            },
+        )
         .detach();
 
-        cx.subscribe_in(&settings_view, window, |this, _, ev: &SettingsEvent, _window, cx| match ev {
-            SettingsEvent::Save { base_url, model, provider } => {
-                let cfg = crate::store::AppSettings {
-                    base_url: base_url.clone(),
-                    model: model.clone(),
-                    provider: provider.clone(),
-                };
-                let msg = match crate::store::save_settings(&cfg) {
-                    Ok(()) => "设置已保存".to_string(),
-                    Err(e) => format!("保存失败：{e}"),
-                };
-                this.trajectory.update(cx, |panel, cx| {
-                    panel.push(TrajKind::Info(msg), cx);
-                });
-            }
-            SettingsEvent::Test(base_url) => {
-                let base_url = base_url.clone();
-                let settings = this.settings_view.clone();
-                cx.spawn(async move |_, cx| {
-                    let url = format!("{}/models", base_url.trim_end_matches('/'));
-                    let result = cx
-                        .background_executor()
-                        .spawn(async move {
-                            ureq::get(&url).timeout(std::time::Duration::from_secs(8)).call()
-                        })
-                        .await;
-                    let ok = result.is_ok();
-                    let msg = match result {
-                        Ok(resp) => {
-                            let body = resp.into_string().unwrap_or_default();
-                            let n = body.matches("\"").count() / 2;
-                            format!("连通成功，服务端清单约 {n} 项")
-                        }
-                        Err(e) => format!("连接失败：{e}"),
+        cx.subscribe_in(
+            &settings_view,
+            window,
+            |this, _, ev: &SettingsEvent, _window, cx| match ev {
+                SettingsEvent::Save {
+                    base_url,
+                    model,
+                    provider,
+                } => {
+                    let cfg = crate::store::AppSettings {
+                        base_url: base_url.clone(),
+                        model: model.clone(),
+                        provider: provider.clone(),
                     };
-                    let _ = cx.update(|cx| {
-                        settings.update(cx, |panel, cx| panel.set_result(ok, msg, cx));
+                    let msg = match crate::store::save_settings(&cfg) {
+                        Ok(()) => "设置已保存".to_string(),
+                        Err(e) => format!("保存失败：{e}"),
+                    };
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(TrajKind::Info(msg), cx);
                     });
-                })
-                .detach();
-            }
-        })
+                }
+                SettingsEvent::Test(base_url) => {
+                    let base_url = base_url.clone();
+                    let settings = this.settings_view.clone();
+                    cx.spawn(async move |_, cx| {
+                        let url = format!("{}/models", base_url.trim_end_matches('/'));
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move {
+                                ureq::get(&url)
+                                    .timeout(std::time::Duration::from_secs(8))
+                                    .call()
+                            })
+                            .await;
+                        let ok = result.is_ok();
+                        let msg = match result {
+                            Ok(resp) => {
+                                let body = resp.into_string().unwrap_or_default();
+                                let n = body.matches("\"").count() / 2;
+                                format!("连通成功，服务端清单约 {n} 项")
+                            }
+                            Err(e) => format!("连接失败：{e}"),
+                        };
+                        let _ = cx.update(|cx| {
+                            settings.update(cx, |panel, cx| panel.set_result(ok, msg, cx));
+                        });
+                    })
+                    .detach();
+                }
+            },
+        )
         .detach();
 
-        cx.subscribe_in(&snapshots_view, window, |this, _, ev: &SnapEvent, window, cx| match ev {
-            SnapEvent::Restore(name) => {
-                let n = this.chapter;
-                match this.handle.restore_snapshot(n, name) {
-                    Ok(()) => {
-                        let text = this.handle.prose(n);
-                        this.prose.update(cx, |state, cx| {
-                            state.set_value(text.as_str(), window, cx);
-                        });
-                        this.snapshots_view.update(cx, |panel, cx| panel.reload(n, cx));
-                        this.trajectory.update(cx, |panel, cx| {
-                            panel.push(TrajKind::Info(format!("已恢复快照「{name}」")), cx);
-                        });
-                    }
-                    Err(e) => {
-                        this.trajectory.update(cx, |panel, cx| {
-                            panel.push(TrajKind::Fail(format!("恢复失败：{e}")), cx);
-                        });
+        cx.subscribe_in(
+            &snapshots_view,
+            window,
+            |this, _, ev: &SnapEvent, window, cx| match ev {
+                SnapEvent::Restore(name) => {
+                    let n = this.chapter;
+                    match this.handle.restore_snapshot(n, name) {
+                        Ok(()) => {
+                            let text = this.handle.prose(n);
+                            this.prose.update(cx, |state, cx| {
+                                state.set_value(text.as_str(), window, cx);
+                            });
+                            this.snapshots_view
+                                .update(cx, |panel, cx| panel.reload(n, cx));
+                            this.trajectory.update(cx, |panel, cx| {
+                                panel.push(TrajKind::Info(format!("已恢复快照「{name}」")), cx);
+                            });
+                        }
+                        Err(e) => {
+                            this.trajectory.update(cx, |panel, cx| {
+                                panel.push(TrajKind::Fail(format!("恢复失败：{e}")), cx);
+                            });
+                        }
                     }
                 }
-            }
-        })
+            },
+        )
         .detach();
 
-        cx.subscribe_in(&canon_view, window, |this, _, ev: &ViewEvent, window, cx| match ev {
-            ViewEvent::RunCapability(cap) => {
-                let task = prompts::task_for(cap, this.chapter);
-                this.on_send(task, cx);
-                this.trajectory.update(cx, |panel, cx| {
-                    panel.push(TrajKind::Info("台账页触发——产出进收件箱，轨迹窗全程可见".into()), cx);
-                });
-                let _ = window;
-            }
-        })
+        cx.subscribe_in(
+            &canon_view,
+            window,
+            |this, _, ev: &ViewEvent, window, cx| match ev {
+                ViewEvent::RunCapability(cap) => {
+                    let task = prompts::task_for(cap, this.chapter);
+                    this.on_send(task, cx);
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(
+                            TrajKind::Info("台账页触发——产出进收件箱，轨迹窗全程可见".into()),
+                            cx,
+                        );
+                    });
+                    let _ = window;
+                }
+            },
+        )
         .detach();
-        cx.subscribe_in(&outline_view, window, |this, _, ev: &ViewEvent, _window, cx| match ev {
-            ViewEvent::RunCapability(cap) => {
-                let task = prompts::task_for(cap, this.chapter);
-                this.on_send(task, cx);
-            }
-        })
+        cx.subscribe_in(
+            &outline_view,
+            window,
+            |this, _, ev: &ViewEvent, _window, cx| match ev {
+                ViewEvent::RunCapability(cap) => {
+                    let task = prompts::task_for(cap, this.chapter);
+                    this.on_send(task, cx);
+                }
+            },
+        )
         .detach();
-        cx.subscribe_in(&memory_view, window, |this, _, ev: &ViewEvent, _window, cx| match ev {
-            ViewEvent::RunCapability(cap) => {
-                let task = prompts::task_for(cap, this.chapter);
-                this.on_send(task, cx);
-            }
-        })
+        cx.subscribe_in(
+            &memory_view,
+            window,
+            |this, _, ev: &ViewEvent, _window, cx| match ev {
+                ViewEvent::RunCapability(cap) => {
+                    let task = prompts::task_for(cap, this.chapter);
+                    this.on_send(task, cx);
+                }
+            },
+        )
         .detach();
-        cx.subscribe_in(&clues_view, window, |this, _, ev: &ViewEvent, _window, cx| match ev {
-            ViewEvent::RunCapability(cap) => {
-                let task = prompts::task_for(cap, this.chapter);
-                this.on_send(task, cx);
-            }
-        })
+        cx.subscribe_in(
+            &clues_view,
+            window,
+            |this, _, ev: &ViewEvent, _window, cx| match ev {
+                ViewEvent::RunCapability(cap) => {
+                    let task = prompts::task_for(cap, this.chapter);
+                    this.on_send(task, cx);
+                }
+            },
+        )
         .detach();
 
         let center = DockLayout::tabs().panel_view(panel_handle(editor.clone()), cx);
@@ -310,16 +470,20 @@ impl Workspace {
         dock_area.update(cx, |area, cx| {
             area.set_center(center, window, cx);
             area.set_dock(DockPlacement::Right, right, window, cx);
-            area.set_dock_size(DockPlacement::Right, px(340.), window, cx);
+            area.set_dock_size(DockPlacement::Right, theme::DOCK_W, window, cx);
         });
 
-        cx.subscribe_in(&dock_area, window, |_, _, _: &DockEvent, _, _| {}).detach();
+        cx.subscribe_in(&dock_area, window, |_, _, _: &DockEvent, _, _| {})
+            .detach();
 
-        cx.subscribe(&prose, |this, _, ev: &gpui_kit::component::input::InputEvent, cx| {
-            if matches!(ev, gpui_kit::component::input::InputEvent::Change) {
-                this.schedule_autosave(cx);
-            }
-        })
+        cx.subscribe(
+            &prose,
+            |this, _, ev: &gpui_kit::component::input::InputEvent, cx| {
+                if matches!(ev, gpui_kit::component::input::InputEvent::Change) {
+                    this.schedule_autosave(cx);
+                }
+            },
+        )
         .detach();
 
         // 轨迹气泡「采纳到正文」：先快照，再追加——共写落笔永远在作者一键之后
@@ -340,7 +504,11 @@ impl Workspace {
                 TrajEvent::Adopt(text) => {
                     let _ = this.handle.snapshot_prose(this.chapter);
                     let cur = this.prose.read(cx).value().to_string();
-                    let sep = if cur.ends_with('\n') || cur.is_empty() { "" } else { "\n" };
+                    let sep = if cur.ends_with('\n') || cur.is_empty() {
+                        ""
+                    } else {
+                        "\n"
+                    };
                     let next = format!("{cur}{sep}{text}");
                     this.prose.update(cx, |state, cx| {
                         state.set_value(next.as_str(), window, cx);
@@ -415,6 +583,8 @@ impl Workspace {
             initialized: false,
             pending_sel: None,
             autosave: None,
+            last_saved: String::new(),
+            dsh_running: false,
             focus: false,
             dock_hidden: false,
             workspace_focus: cx.focus_handle(),
@@ -466,7 +636,10 @@ impl Workspace {
         match self.handle.reject_proposal(id, reason) {
             Ok(()) => {
                 self.trajectory.update(cx, |panel, cx| {
-                    panel.push(TrajKind::Info(format!("已拒收（理由将回灌）：{reason}")), cx);
+                    panel.push(
+                        TrajKind::Info(format!("已拒收（理由将回灌）：{reason}")),
+                        cx,
+                    );
                 });
             }
             Err(e) => {
@@ -497,7 +670,8 @@ impl Workspace {
             Mode::Characters => panel_handle(self.characters_view.clone()),
             Mode::Settings => panel_handle(self.settings_view.clone()),
             Mode::Snapshots => {
-                self.snapshots_view.update(cx, |panel, cx| panel.reload(self.chapter, cx));
+                self.snapshots_view
+                    .update(cx, |panel, cx| panel.reload(self.chapter, cx));
                 panel_handle(self.snapshots_view.clone())
             }
             Mode::Import => panel_handle(self.import_view.clone()),
@@ -522,20 +696,33 @@ impl Workspace {
         }
         let notes = self.editor.read(cx).notes.read(cx).value().to_string();
         let _ = self.handle.set_chapter_notes(self.chapter, &notes);
+        // NOTE(utc): 此处按 UNIX 秒取时分秒，输出的是 UTC 而非本地时间（与
+        // trajectory.rs:147 utc_hhmmss 同源缺陷）。规则 15 要求本地/相对时间，但本地
+        // 偏移需要 chrono（app/Cargo.toml 未引入，见其 dependencies 仅有 anyhow/serde/
+        // serde_json/async-channel/ureq），标准库无本地时区 API，故留待依赖变更时处理。
         let stamp = {
             let secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+            format!(
+                "{:02}:{:02}:{:02}",
+                (secs / 3600) % 24,
+                (secs / 60) % 60,
+                secs % 60
+            )
         };
-        self.editor.update(cx, |panel, cx| panel.set_saved_at(stamp, cx));
+        let chip_stamp = stamp.clone();
+        self.editor
+            .update(cx, |panel, cx| panel.set_saved_at(stamp, cx));
         if let Err(e) = self.handle.save_prose(self.chapter, &text) {
             self.trajectory.update(cx, |panel, cx| {
                 panel.push(TrajKind::Fail(format!("正文保存失败：{e}")), cx);
             });
             return;
         }
+        // 只有真的写盘成功才点亮底栏「已保存」，失败路径保持原状态
+        self.last_saved = chip_stamp;
         self.chapters = self.handle.chapters();
         cx.notify();
     }
@@ -586,15 +773,12 @@ impl Workspace {
             while let Ok(event) = rx.recv().await {
                 match event {
                     DshEvent::Notification { method, params } => {
-                        let _ = this.update(cx, |ws, cx| {
-                            ws.on_notification(&method, params, cx)
-                        });
+                        let _ = this.update(cx, |ws, cx| ws.on_notification(&method, params, cx));
                     }
                     DshEvent::Error(text) => {
                         let _ = this.update(cx, |ws, cx| {
-                            ws.trajectory.update(cx, |panel, cx| {
-                                panel.push(TrajKind::Conn(text), cx)
-                            });
+                            ws.trajectory
+                                .update(cx, |panel, cx| panel.push(TrajKind::Conn(text), cx));
                         });
                         break;
                     }
@@ -654,10 +838,7 @@ impl Workspace {
             let r = client.session_query(&session_id, &query_text).await;
             let _ = weak.update(cx, |ws, cx| {
                 ws.trajectory.update(cx, |panel, cx| match r {
-                    Ok(_) => panel.push(
-                        TrajKind::Info("已入队，等待 DSH 会话事件…".into()),
-                        cx,
-                    ),
+                    Ok(_) => panel.push(TrajKind::Info("已入队，等待 DSH 会话事件…".into()), cx),
                     Err(e) => panel.push(TrajKind::Fail(format!("发送失败：{e}")), cx),
                 });
                 ws.inbox.update(cx, |panel, cx| panel.refresh(cx));
@@ -676,6 +857,7 @@ impl Workspace {
             "session.status" => {
                 let status = params.get("status").and_then(|s| s.as_str()).unwrap_or("?");
                 let running = status == "running";
+                self.dsh_running = running;
                 self.trajectory.update(cx, |panel, cx| {
                     panel.push(
                         if running {
@@ -799,7 +981,8 @@ impl Workspace {
             _ => None,
         };
         if let Some(entry) = entry {
-            self.trajectory.update(cx, |panel, cx| panel.push(entry, cx));
+            self.trajectory
+                .update(cx, |panel, cx| panel.push(entry, cx));
         }
     }
 }
@@ -824,9 +1007,7 @@ async fn initialize_with(
     weak.update(cx, |ws, cx| {
         ws.trajectory.update(cx, |panel, cx| {
             panel.push(
-                TrajKind::Info(format!(
-                    "运行时 {name} · provider={provider} model={model}"
-                )),
+                TrajKind::Info(format!("运行时 {name} · provider={provider} model={model}")),
                 cx,
             );
         });
@@ -848,10 +1029,7 @@ fn summarize_tool_result(data: &Value) -> String {
         })
         .unwrap_or_default();
     if let Some(err) = data.get("error") {
-        let reason = err
-            .get("reason")
-            .and_then(|r| r.as_str())
-            .unwrap_or("失败");
+        let reason = err.get("reason").and_then(|r| r.as_str()).unwrap_or("失败");
         return reason.chars().take(160).collect();
     }
     let head: String = content.chars().take(160).collect();
@@ -889,109 +1067,61 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dock = self.dock_area.clone();
 
-        // 真章节树（来自磁盘，可点切换）
-        let weak = cx.weak_entity();
-        let sidebar_items = self.chapters.iter().map(|c| {
-            let n = c.n;
-            let weak = weak.clone();
-            SidebarMenuItem::new(SharedString::from(format!(
-                "{:02} {}{}",
-                c.n,
-                c.title,
-                if c.has_prose {
-                    format!(" · {}字", c.words)
-                } else {
-                    " · 未动笔".into()
-                }
-            )))
-            .active(c.n == self.chapter)
-            .on_click(move |_, window, cx| {
-                if let Some(ws) = weak.upgrade() {
-                    ws.update(cx, |ws, cx| ws.switch_chapter(n, window, cx));
-                }
-            })
-        });
-        // 台账页导航（切换中央面板）
-        let mut nav_items: Vec<gpui_kit::component::sidebar::SidebarMenuItem> = Vec::new();
-        {
-            let weak = cx.weak_entity();
-            let mk = |label: &'static str, mode: Mode| {
-                let weak = weak.clone();
-                SidebarMenuItem::new(SharedString::from(label))
-                    .active(false)
-                    .on_click(move |_, window, cx| {
-                        if let Some(ws) = weak.upgrade() {
-                            ws.update(cx, |ws, cx| ws.switch_center(mode, window, cx));
-                        }
-                    })
-            };
-            nav_items.push(mk("✎ 稿纸", Mode::Editor));
-            nav_items.push(mk("大纲 · 时间线", Mode::Outline));
-            nav_items.push(mk("设定", Mode::Canon));
-            nav_items.push(mk("记忆中枢", Mode::Memory));
-            nav_items.push(mk("写作统计", Mode::Stats));
-            nav_items.push(mk("伏笔台账", Mode::Clues));
-            nav_items.push(mk("人物卡", Mode::Characters));
-            nav_items.push(mk("记忆图谱", Mode::Graph));
-            nav_items.push(mk("快照", Mode::Snapshots));
-            nav_items.push(mk("导入旧稿", Mode::Import));
-            nav_items.push(mk("设置", Mode::Settings));
-        }
-        let menu = SidebarMenu::new()
-            .children(nav_items)
-            .children(sidebar_items);
-        let sidebar = Sidebar::new("chapters")
-            .header(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_sm()
-                    .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .text_color(rgb(0xd8d5cf))
-                    .child(SharedString::from(self.handle.title.clone())),
-            )
-            .child(menu)
-            .footer(
-                Button::new("new-chapter")
-                    .xsmall()
-                    .label("＋ 新建章")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let n = this.handle.next_chapter_number();
-                        let _ = this.handle.ensure_chapter(n);
-                        this.switch_center(Mode::Editor, window, cx);
-                        this.switch_chapter(n, window, cx);
-                    })),
-            );
-
         let current = self.chapters.iter().find(|c| c.n == self.chapter);
         let words = self.word_count(cx);
+        let ch_label = SharedString::from(format!("{:02}", self.chapter));
+        let book = SharedString::from(self.handle.title.clone());
+        let head_tail: SharedString = if self.mode == Mode::Editor {
+            current
+                .map(|c| SharedString::from(c.title.clone()))
+                .unwrap_or_else(|| SharedString::from(format!("第{}章", self.chapter)))
+        } else {
+            SharedString::from(self.mode.label())
+        };
+        let dsh_live = self.client.is_some();
+        let dsh_running = self.dsh_running;
+        let focus_on = self.focus;
+
+        // 标题栏按钮：全部走 iconbtn/prominent 语言（库 ghost 无底色反馈，属缺陷）
+        let back = Button::new("back-shelf")
+            .custom(icon_btn(&*cx))
+            .small()
+            .rounded(theme::RADIUS_BTN_SM)
+            .icon(IconName::ArrowLeft)
+            .tooltip("返回书架（先落盘）")
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.save_current(cx);
+                cx.emit(WorkspaceEvent::BackToShelf);
+            }));
+        let focus_btn = Button::new("focus-toggle")
+            .custom(if focus_on {
+                prominent_btn(&*cx)
+            } else {
+                icon_btn(&*cx)
+            })
+            .small()
+            .rounded(theme::RADIUS_BTN_SM)
+            .icon(if focus_on {
+                IconName::Minimize
+            } else {
+                IconName::Maximize
+            })
+            .tooltip("专注模式")
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.focus = !this.focus;
+                cx.notify();
+            }));
         let toggle_right = Button::new("toggle-right-dock")
-            .ghost()
+            .custom(icon_btn(&*cx))
+            .small()
+            .rounded(theme::RADIUS_BTN_SM)
             .icon(IconName::PanelRight)
+            .tooltip("轨迹 / 提案 Dock")
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.dock_area.update(cx, |area, cx| {
                     area.toggle_dock(DockPlacement::Right, window, cx);
                 });
             }));
-        let back = Button::new("back-shelf")
-            .ghost()
-            .icon(IconName::ArrowLeft)
-            .on_click(cx.listener(|this, _, _window, cx| {
-                this.save_current(cx);
-                cx.emit(WorkspaceEvent::BackToShelf);
-            }));
-
-        let focus_btn = Button::new("focus-toggle")
-            .ghost()
-            .icon(IconName::Maximize)
-            .on_click(cx.listener(|this, _, _window, cx| {
-                this.focus = !this.focus;
-                cx.notify();
-            }));
-        let dsh_state = if self.client.is_some() { "已连接" } else { "未启动" };
-        let ch_title = current
-            .map(|c| c.title.clone())
-            .unwrap_or_else(|| format!("第{}章", self.chapter));
 
         // 专注模式进出：右 Dock 收起/恢复（0.9.0 只有 toggle_dock，用标志位对齐）
         if self.focus && !self.dock_hidden {
@@ -1028,36 +1158,93 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x17181c))
-            .text_color(rgb(0xd8d5cf))
+            .font_family(theme::FAMILY_UI)
+            .text_size(theme::FONT_BODY)
+            .line_height(relative(theme::LINE_HEIGHT_BODY))
+            .bg(theme::BG())
+            .text_color(theme::TEXT())
             .child(
                 TitleBar::new()
-                    .child(back)
-                    .child(focus_btn)
+                    .bg(theme::PANEL())
+                    .border_color(theme::LINE())
                     .child(
                         div()
                             .flex()
-                            .items_baseline()
-                            .gap_2()
+                            .items_center()
+                            .gap(theme::GAP_MD)
+                            .flex_shrink_0()
+                            .child(back)
+                            .child(focus_btn),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .items_center()
+                            .gap(theme::GAP_LG)
+                            .pl(theme::PAD_MD)
+                            .pr(theme::PAD_XL)
                             .child(
                                 div()
-                                    .px_1()
-                                    .text_sm()
-                                    .text_color(rgb(0xd8d5cf))
-                                    .child(SharedString::from(format!(
-                                        "《{}》· {}",
-                                        self.handle.title,
-                                        if self.mode == Mode::Editor { ch_title.clone() } else { self.mode.label().to_string() }
-                                    ))),
+                                    .flex()
+                                    .items_baseline()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .text_size(theme::FONT_LABEL)
+                                            .text_color(theme::DIM())
+                                            .child("执笔 3.0"),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml(theme::PAD_SM)
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme::ACCENT())
+                                            .child(book),
+                                    )
+                                    .child(
+                                        div()
+                                            .ml(theme::PAD_SM)
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .text_color(theme::TEXT())
+                                            .child(head_tail),
+                                    ),
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(rgb(0x5d5b57))
-                                    .child(SharedString::from(format!(
-                                        "{} 字 · DSH：{}",
-                                        words, dsh_state
-                                    ))),
+                                    .ml_auto()
+                                    .flex()
+                                    .items_center()
+                                    .gap(theme::GAP_MD)
+                                    .child(
+                                        div()
+                                            .font_family(theme::FAMILY_MONO)
+                                            .text_size(theme::FONT_LABEL)
+                                            .text_color(theme::DIM())
+                                            .child(SharedString::from(format!("{words} 字"))),
+                                    )
+                                    .child(if dsh_running {
+                                        live_chip("DSH 运行中")
+                                    } else if dsh_live {
+                                        chip(
+                                            "DSH 已连接",
+                                            theme::GREEN(),
+                                            theme::GREEN_SOFT(),
+                                            theme::GREEN_BORDER(),
+                                        )
+                                    } else {
+                                        chip(
+                                            "DSH 未启动",
+                                            theme::FAINT(),
+                                            theme::CHIP_NEUTRAL(),
+                                            theme::LINE(),
+                                        )
+                                    }),
                             ),
                     ),
             )
@@ -1069,38 +1256,360 @@ impl Render for Workspace {
                     .children(if self.focus {
                         Vec::new()
                     } else {
-                        vec![{ let el: AnyElement = sidebar.w(px(200.)).into_any_element(); el }]
+                        vec![self.sidebar(cx)]
                     })
-                    .child(div().flex_1().min_h_0().child(dock)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .bg(theme::BG())
+                            .child(dock),
+                    ),
             )
             .child(
                 StatusBar::new()
-                    .left(Button::new("save-status").ghost().label("保存").on_click(
-                        cx.listener(|this, _, _window, cx| {
-                            this.save_current(cx);
-                            this.trajectory.update(cx, |panel, cx| {
-                                panel.push(TrajKind::Info("正文已保存（先落盘）".into()), cx);
-                            });
-                        }),
-                    ))
-                    .left(Button::new("export-status").ghost().label("导出合并稿").on_click(
-                        cx.listener(|this, _, _window, cx| {
-                            match this.handle.export_merged() {
-                                Ok(path) => {
-                                    let p = path.display().to_string();
-                                    this.trajectory.update(cx, |panel, cx| {
-                                        panel.push(TrajKind::Info(format!("合并稿已导出：{p}")), cx);
-                                    });
+                    .bg(theme::PANEL())
+                    .border_color(theme::LINE())
+                    .px(theme::PAD_XL)
+                    .text_color(theme::DIM())
+                    .left(
+                        Button::new("save-status")
+                            .custom(icon_btn(&*cx))
+                            .small()
+                            .rounded(theme::RADIUS_BTN_SM)
+                            .label("保存")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.save_current(cx);
+                                this.trajectory.update(cx, |panel, cx| {
+                                    panel.push(TrajKind::Info("正文已保存（先落盘）".into()), cx);
+                                });
+                            })),
+                    )
+                    .left(
+                        Button::new("export-status")
+                            .custom(icon_btn(&*cx))
+                            .small()
+                            .rounded(theme::RADIUS_BTN_SM)
+                            .label("导出合并稿")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                match this.handle.export_merged() {
+                                    Ok(path) => {
+                                        let p = path.display().to_string();
+                                        this.trajectory.update(cx, |panel, cx| {
+                                            panel.push(
+                                                TrajKind::Info(format!("合并稿已导出：{p}")),
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                    Err(e) => {
+                                        this.trajectory.update(cx, |panel, cx| {
+                                            panel
+                                                .push(TrajKind::Fail(format!("导出失败：{e}")), cx);
+                                        });
+                                    }
                                 }
-                                Err(e) => {
-                                    this.trajectory.update(cx, |panel, cx| {
-                                        panel.push(TrajKind::Fail(format!("导出失败：{e}")), cx);
-                                    });
-                                }
-                            }
-                        }),
-                    ))
+                            })),
+                    )
+                    .left(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_SM)
+                            .child(
+                                div()
+                                    .font_family(theme::FAMILY_MONO)
+                                    .text_size(theme::FONT_LABEL)
+                                    .text_color(theme::FAINT())
+                                    .child(ch_label),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_LABEL)
+                                    .text_color(theme::DIM())
+                                    .child("章"),
+                            )
+                            .child(if self.last_saved.is_empty() {
+                                chip(
+                                    "未保存",
+                                    theme::FAINT(),
+                                    theme::CHIP_NEUTRAL(),
+                                    theme::LINE(),
+                                )
+                            } else {
+                                // 只说「已保存」，不拼时间：stamp 由 UNIX 秒推出（UTC），
+                                // 直接展示会比本地钟慢/快数小时，宁可只给状态。
+                                chip(
+                                    "已保存",
+                                    theme::GREEN(),
+                                    theme::GREEN_SOFT(),
+                                    theme::GREEN_BORDER(),
+                                )
+                            }),
+                    )
                     .right(toggle_right),
             )
+    }
+}
+
+impl Workspace {
+    /// 导航行的标题：稿纸页叫「稿纸」（原型 workspace.html:188 起的 .ym-nav 文案），
+    /// 其余沿用页面名（`Mode::label`）。
+    fn nav_label(mode: Mode) -> &'static str {
+        if mode == Mode::Editor {
+            "稿纸"
+        } else {
+            mode.label()
+        }
+    }
+
+    /// 侧栏导航行：选中 = 朱砂软底 + 朱砂描边 + 正文字 + 图标转朱砂（规则 5/7）。
+    fn nav_row(&self, ix: usize, mode: Mode, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.mode == mode;
+        let label = Self::nav_label(mode);
+        div()
+            .id(SharedString::from(format!("nav-{ix}")))
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .px(theme::PAD_SM)
+            .py(theme::PAD_XS)
+            .rounded(theme::RADIUS_BTN_SM)
+            .cursor_pointer()
+            .border_1()
+            .border_color(if active {
+                theme::ACCENT_BORDER()
+            } else {
+                theme::PANEL()
+            })
+            .bg(if active {
+                theme::ACCENT_SOFT()
+            } else {
+                theme::PANEL()
+            })
+            .text_size(theme::FONT_SMALL)
+            .text_color(if active { theme::TEXT() } else { theme::DIM() })
+            .hover(|s| s.bg(theme::PANEL2()).border_color(theme::ACCENT_BORDER()))
+            .child(
+                Icon::new(mode.icon())
+                    .with_size(theme::FONT_TAG)
+                    .text_color(hsla(if active {
+                        theme::ACCENT()
+                    } else {
+                        theme::FAINT()
+                    })),
+            )
+            .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.switch_center(mode, window, cx);
+            }))
+            .into_any_element()
+    }
+
+    /// 章节行：行内编号等宽码（选中转朱砂），未动笔用幽灵色（规则 8/10）。
+    fn chapter_row(
+        &self,
+        ix: usize,
+        info: &store::ChapterInfo,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let n = info.n;
+        let active = n == self.chapter;
+        let meta = if info.has_prose {
+            SharedString::from(format!("{}字", info.words))
+        } else {
+            SharedString::from("未动笔")
+        };
+        div()
+            .id(SharedString::from(format!("chapter-{ix}")))
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .px(theme::PAD_SM)
+            .py(theme::PAD_XS)
+            .rounded(theme::RADIUS_BTN_SM)
+            .cursor_pointer()
+            .border_1()
+            .border_color(if active {
+                theme::ACCENT_BORDER()
+            } else {
+                theme::PANEL()
+            })
+            .bg(if active {
+                theme::ACCENT_SOFT()
+            } else {
+                theme::PANEL()
+            })
+            .text_size(theme::FONT_SMALL)
+            .text_color(if active { theme::TEXT() } else { theme::DIM() })
+            .hover(|s| s.bg(theme::PANEL2()).border_color(theme::ACCENT_BORDER()))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_family(theme::FAMILY_MONO)
+                    .text_size(theme::FONT_LABEL)
+                    .text_color(if active {
+                        theme::ACCENT()
+                    } else {
+                        theme::FAINT()
+                    })
+                    .child(SharedString::from(format!("{n:02}"))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_ellipsis()
+                    .child(SharedString::from(info.title.clone())),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(theme::FONT_TAG)
+                    .text_color(if info.has_prose {
+                        theme::FAINT()
+                    } else {
+                        theme::GHOST()
+                    })
+                    .child(meta),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.switch_chapter(n, window, cx);
+            }))
+            .into_any_element()
+    }
+
+    /// 侧栏分组小标：11px 弱字 + 字距，组间用 1px 分隔线（规则 12）。
+    fn section_label(label: &'static str) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .px(theme::PAD_SM)
+            .pt(theme::GAP_GROUP_SM)
+            .pb(theme::PAD_XS)
+            .text_size(theme::FONT_LABEL)
+            .text_color(theme::FAINT())
+            .child(label)
+            .into_any_element()
+    }
+
+    fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut rows: Vec<AnyElement> = Vec::new();
+        rows.push(Self::section_label("工作台"));
+        for (ix, mode) in NAV.iter().copied().enumerate() {
+            rows.push(self.nav_row(ix, mode, cx));
+        }
+        let count = SharedString::from(format!("{:02}", self.chapters.len()));
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(theme::GAP_MD)
+                .mt(theme::GAP_GROUP)
+                .pt(theme::PAD_SM)
+                .border_t_1()
+                .border_color(theme::LINE())
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(theme::FONT_LABEL)
+                        .text_color(theme::FAINT())
+                        .child("章节"),
+                )
+                .child(
+                    div()
+                        .font_family(theme::FAMILY_MONO)
+                        .text_size(theme::FONT_TAG)
+                        .text_color(theme::FAINT())
+                        .child(count),
+                )
+                .into_any_element(),
+        );
+        if self.chapters.is_empty() {
+            rows.push(
+                div()
+                    .px(theme::PAD_SM)
+                    .py(theme::PAD_MD)
+                    .text_size(theme::FONT_SMALL)
+                    .text_color(theme::DIM())
+                    .child("还没有章节——下方「新建章」即可落笔。")
+                    .into_any_element(),
+            );
+        } else {
+            for (ix, info) in self.chapters.iter().enumerate() {
+                rows.push(self.chapter_row(ix, info, cx));
+            }
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .w(theme::SIDEBAR_W)
+            .h_full()
+            .border_r_1()
+            .border_color(theme::LINE())
+            .bg(theme::PANEL())
+            .text_color(theme::TEXT())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::GAP_MD)
+                    .px(theme::PAD_MD)
+                    .py(theme::PAD_MD)
+                    .border_b_1()
+                    .border_color(theme::LINE())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_ellipsis()
+                            .font_family(theme::FAMILY_SERIF)
+                            .text_size(theme::FONT_TITLE_SM)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(SharedString::from(self.handle.title.clone())),
+                    ),
+            )
+            .child(
+                div()
+                    .id("sidebar-list")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .gap(theme::GAP_XS)
+                    .overflow_y_scroll()
+                    .px(theme::PAD_MD)
+                    .pb(theme::PAD_MD)
+                    .children(rows),
+            )
+            .child(
+                div()
+                    .px(theme::PAD_MD)
+                    .py(theme::PAD_MD)
+                    .border_t_1()
+                    .border_color(theme::LINE())
+                    .child(
+                        Button::new("new-chapter")
+                            .custom(prominent_btn(&*cx))
+                            .outline()
+                            .small()
+                            .rounded(theme::RADIUS_BTN)
+                            .w_full()
+                            .icon(IconName::Plus)
+                            .label("新建章")
+                            .tooltip("新建一章并进入稿纸")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let n = this.handle.next_chapter_number();
+                                let _ = this.handle.ensure_chapter(n);
+                                this.switch_center(Mode::Editor, window, cx);
+                                this.switch_chapter(n, window, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
     }
 }

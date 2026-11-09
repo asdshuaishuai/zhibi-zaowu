@@ -1,18 +1,24 @@
-//! 台账页面板（M5 第一片）：设定 / 大纲·时间线 / 记忆 / 统计。
+//! 台账页面板（M5 第一片）：设定 / 大纲·时间线 / 记忆 / 统计 / 伏笔 / 人物卡 / 设置 / 快照 / 导入 / 图谱。
 //! 全部只读渲染真实磁盘数据；写操作一律走提案（按钮上抛事件给 Workspace）。
+//!
+//! 视觉一律取 `crate::theme` 令牌（唯一事实源，勿在此写裸色值）：
+//! 页面底 BG、嵌套块 PANEL2+LINE 描边；状态语义一律 chip（FONT_TAG/RADIUS_CHIP/1px 语义描边）；
+//! 台账码（线号/事件号/伏笔号/日期/快照文件名）一律 FAMILY_MONO+FONT_LABEL+FAINT；
+//! 主按钮朱砂实心+白字、能力按钮朱砂软底+TEXT——经 `ButtonVariants::custom` 覆写库主题（规则 5/6/7）。
 
 use std::rc::Rc;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::Sizable;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
 use crate::store::ProjectHandle;
+use crate::theme;
 
 #[derive(Debug, Clone)]
 pub enum ViewEvent {
@@ -31,6 +37,301 @@ impl EventEmitter<ViewEvent> for StatsPanel {}
 impl EventEmitter<PanelEvent> for CluesPanel {}
 impl EventEmitter<ViewEvent> for CluesPanel {}
 impl EventEmitter<PanelEvent> for CharactersPanel {}
+
+/* ───────────────────────── 视觉公共件（chip / 表格 / 按钮令牌配方） ───────────────────────── */
+
+/// 状态语言四色 + 中性 chip 档（规则 6）。
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+enum Tone {
+    Accent,
+    Green,
+    Blue,
+    Amber,
+    Red,
+    Purple,
+    Neutral,
+}
+
+impl Tone {
+    fn text(self) -> gpui_kit::Hsla {
+        let c = match self {
+            Tone::Accent => theme::ACCENT(),
+            Tone::Green => theme::GREEN(),
+            Tone::Blue => theme::BLUE(),
+            Tone::Amber => theme::AMBER(),
+            Tone::Red => theme::RED(),
+            Tone::Purple => theme::PURPLE(),
+            Tone::Neutral => theme::DIM(),
+        };
+        c.into()
+    }
+    fn soft(self) -> gpui_kit::Rgba {
+        match self {
+            Tone::Accent => theme::ACCENT_SOFT(),
+            Tone::Green => theme::GREEN_SOFT(),
+            Tone::Blue => theme::BLUE_SOFT(),
+            Tone::Amber => theme::AMBER_SOFT(),
+            Tone::Red => theme::RED_SOFT(),
+            Tone::Purple => theme::PURPLE().alpha(0.14),
+            Tone::Neutral => theme::CHIP_NEUTRAL(),
+        }
+    }
+    fn border(self) -> gpui_kit::Rgba {
+        match self {
+            Tone::Accent => theme::ACCENT_BORDER(),
+            Tone::Green => theme::GREEN_BORDER(),
+            Tone::Blue => theme::BLUE_BORDER(),
+            // AMBER/PURPLE 无独立描边 token：取本色低透明档，禁止裸十六进制。
+            Tone::Amber => theme::AMBER().alpha(0.4),
+            Tone::Red => theme::RED().alpha(0.35),
+            Tone::Purple => theme::PURPLE().alpha(0.4),
+            Tone::Neutral => theme::LINE(),
+        }
+    }
+}
+
+/// 状态/节奏文案 → 语义色（纯展示映射，不动数据）。
+fn status_tone(s: &str) -> Tone {
+    if ["回收", "闭合", "完结", "完成", "收束", "揭开", "已解"].iter().any(|k| s.contains(k)) {
+        Tone::Green
+    } else if ["断线", "遗忘", "失联", "冲突", "危险", "逾期"]
+        .iter()
+        .any(|k| s.contains(k))
+    {
+        Tone::Red
+    } else if ["放缓", "停滞", "搁置", "待续", "到期", "短期", "近期"]
+        .iter()
+        .any(|k| s.contains(k))
+    {
+        Tone::Amber
+    } else if ["推进", "进行", "发展", "活跃", "展开", "埋"].iter().any(|k| s.contains(k)) {
+        Tone::Blue
+    } else {
+        Tone::Neutral
+    }
+}
+
+/// 语义状态 chip（规则 6/11：FONT_TAG + RADIUS_CHIP + soft 底 + 1px 语义描边）。
+fn chip(text: impl Into<SharedString>, tone: Tone) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .px(theme::PAD_SM)
+        .py(theme::PAD_XS)
+        .rounded(theme::RADIUS_CHIP)
+        .bg(tone.soft())
+        .border_1()
+        .border_color(tone.border())
+        .line_height(relative(1.5))
+        .text_size(theme::FONT_TAG)
+        .text_color(tone.text())
+        .child(text.into())
+        .into_any_element()
+}
+
+/// pace 节奏 chip（规则 11：RADIUS_TAG 小圆角、soft 底、无描边）。
+fn pace_chip(text: impl Into<SharedString>, tone: Tone) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .px(theme::PAD_SM)
+        .py(theme::PAD_XS)
+        .rounded(theme::RADIUS_TAG)
+        .bg(tone.soft())
+        .line_height(relative(1.5))
+        .text_size(theme::FONT_TAG)
+        .text_color(tone.text())
+        .child(text.into())
+        .into_any_element()
+}
+
+/// 表格单元格语义：正文 / 次级 / 等宽台账码 / 强调等宽 / 强调文本 / 状态 chip / 节奏 chip。
+enum Cell {
+    Text(String),
+    Dim(String),
+    Code(String),
+    CodeAccent(String),
+    Hi(String),
+    Chip(String, Tone),
+    Pace(String, Tone),
+}
+
+fn cell_text(t: String, color: gpui_kit::Rgba) -> gpui_kit::Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_size(theme::FONT_SMALL)
+        .line_height(relative(theme::LINE_HEIGHT_BODY))
+        .text_color(color)
+        .child(SharedString::from(t))
+}
+
+fn cell_code(t: String, color: gpui_kit::Rgba) -> gpui_kit::Div {
+    div()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .font_family(theme::FAMILY_MONO)
+        .text_size(theme::FONT_LABEL)
+        .text_color(color)
+        .child(SharedString::from(t))
+}
+
+/// 数据行：行距 py=GAP_SM、分隔线 LINE_SOFT（outline.html 表行档）。
+fn row(cells: Vec<Cell>) -> gpui_kit::AnyElement {
+    let mut d = div()
+        .flex()
+        .items_center()
+        .gap(theme::GAP_MD)
+        .w_full()
+        .py(theme::GAP_SM)
+        .border_b_1()
+        .border_color(theme::LINE_SOFT());
+    for c in cells {
+        d = match c {
+            Cell::Text(t) => d.child(cell_text(t, theme::TEXT())),
+            Cell::Dim(t) => d.child(cell_text(t, theme::DIM())),
+            Cell::Code(t) => d.child(cell_code(t, theme::FAINT())),
+            Cell::CodeAccent(t) => d.child(cell_code(t, theme::ACCENT())),
+            Cell::Hi(t) => d.child(cell_text(t, theme::ACCENT())),
+            Cell::Chip(t, tone) => d.child(chip(t, tone)),
+            Cell::Pace(t, tone) => d.child(pace_chip(t, tone)),
+        };
+    }
+    d.into_any_element()
+}
+
+/// 表头行：FONT_LABEL + FAINT + MEDIUM，底线转 LINE（比数据行重一档）。
+fn head_row(labels: &[&'static str]) -> gpui_kit::AnyElement {
+    let mut d = div()
+        .flex()
+        .items_center()
+        .gap(theme::GAP_MD)
+        .w_full()
+        .py(theme::GAP_SM)
+        .border_b_1()
+        .border_color(theme::LINE());
+    for l in labels {
+        d = d.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .whitespace_nowrap()
+                .text_size(theme::FONT_LABEL)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::FAINT())
+                .child(*l),
+        );
+    }
+    d.into_any_element()
+}
+
+/// 区块标题（面板内 h2 档：15px SEMIBOLD 正文色）。
+fn sec_title(text: impl Into<SharedString>) -> gpui_kit::Div {
+    div()
+        .text_size(theme::FONT_TITLE_SM)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::TEXT())
+        .child(text.into())
+}
+
+/// 空态引导（规则 15）：PANEL 卡 + 引导语指向动作，禁止静默空白。
+fn empty_hint(title: &'static str, guide: &'static str) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme::GAP_SM)
+        .w_full()
+        .p(theme::PAD_LG)
+        .bg(theme::PANEL())
+        .border_1()
+        .border_color(theme::LINE())
+        .rounded(theme::RADIUS_CARD)
+        .child(
+            div()
+                .text_size(theme::FONT_BODY)
+                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                .text_color(theme::TEXT())
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(theme::FONT_META)
+                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                .text_color(theme::DIM())
+                .child(guide),
+        )
+        .into_any_element()
+}
+
+/// 面板内容列容器：页面底 BG + 统一栏边距（规则 4/12）。
+fn panel_col<'a>() -> gpui_kit::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme::GAP_GROUP_SM)
+        .px(theme::PAD_XL)
+        .pt(theme::PAD_LG)
+        .pb(theme::PAD_XL)
+}
+
+/// 面板根（滚动容器）：墨底 BG。
+fn panel_root(id: &'static str) -> gpui_kit::Stateful<gpui_kit::Div> {
+    div().id(id).size_full().overflow_y_scroll().bg(theme::BG())
+}
+
+/// 主能力按钮（规则 5）：朱砂软底 + TEXT 文字 + hover 提亮一档；custom 变体覆写库主题。
+fn cap_btn(id: &'static str, label: &'static str, cx: &App) -> Button {
+    Button::new(id)
+        .label(label)
+        .xsmall()
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(theme::ACCENT_SOFT().into())
+                .foreground(theme::TEXT().into())
+                .hover(theme::ACCENT().alpha(0.24).into())
+                .active(theme::ACCENT().alpha(0.34).into()),
+        )
+        .rounded(ButtonRounded::Size(theme::RADIUS_BTN_SM))
+        .text_size(theme::FONT_TAG)
+}
+
+/// 主按钮（规则 5）：ACCENT 实心 + ON_ACCENT 白字 + RADIUS_BTN；hover 提亮、按下压暗。
+fn primary_btn(id: &'static str, label: &'static str, cx: &App) -> Button {
+    Button::new(id)
+        .label(label)
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(theme::ACCENT().into())
+                .foreground(theme::ON_ACCENT().into())
+                .hover(theme::ACCENT().blend(theme::ON_ACCENT().alpha(0.12)).into())
+                .active(theme::ACCENT().blend(theme::BG().alpha(0.16)).into()),
+        )
+        .rounded(ButtonRounded::Size(theme::RADIUS_BTN))
+        .text_size(theme::FONT_BODY)
+}
+
+/// 破坏性动作按钮（规则 6/7）：RED_SOFT 底 + RED 字，hover 转深红底。
+fn danger_btn(id: String, label: &'static str, cx: &App) -> Button {
+    Button::new(id)
+        .label(label)
+        .xsmall()
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(theme::RED_SOFT().into())
+                .foreground(theme::RED().into())
+                .hover(theme::RED().alpha(0.3).into())
+                .active(theme::RED().alpha(0.42).into()),
+        )
+        .rounded(ButtonRounded::Size(theme::RADIUS_BTN_SM))
+        .text_size(theme::FONT_TAG)
+}
 
 /* ───────────────────────── 设定 ───────────────────────── */
 
@@ -70,98 +371,126 @@ impl Render for CanonPanel {
         }
         let cur = docs.iter().find(|d| Some(&d.0) == self.selected.as_ref()).cloned().or_else(|| docs.first().cloned());
 
+        // 左侧条目列：选中行 ACCENT_SOFT 底 + TEXT 字；未选中 DIM 字 + hover 提亮（规则 5/7）。
         let mut left: Vec<gpui_kit::AnyElement> = Vec::new();
-        for (cat, items) in groups {
-            left.push(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x5d5b57))
-                    .pt_2()
-                    .child(SharedString::from(format!("{cat} · {}", items.len())))
-                    .into_any_element(),
-            );
+        for (gi, (cat, items)) in groups.into_iter().enumerate() {
+            let mut g = div()
+                .flex()
+                .items_center()
+                .gap(theme::GAP_SM)
+                .pt(if gi == 0 { px(0.) } else { theme::GAP_GROUP_SM })
+                .text_size(theme::FONT_LABEL)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::FAINT())
+                .child(SharedString::from(format!("{cat} · {}", items.len())));
+            if gi > 0 {
+                g = g.border_t_1().border_color(theme::LINE()).mt(theme::GAP_SM);
+            }
+            left.push(g.into_any_element());
             for (title, _, _) in items {
                 let t = title.clone();
-                left.push(
-                    Button::new(format!("canon-{title}"))
-                        .ghost()
-                        .label(title)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.selected = Some(t.clone());
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                );
+                let sel = self.selected.as_deref() == Some(title.as_str());
+                let mut item = div()
+                    .id(format!("canon-{title}"))
+                    .flex()
+                    .items_center()
+                    .w_full()
+                    .px(theme::PAD_SM)
+                    .py(theme::PAD_XS)
+                    .rounded(theme::RADIUS_BTN_SM)
+                    .text_size(theme::FONT_SMALL)
+                    .line_height(relative(theme::LINE_HEIGHT_BODY))
+                    .text_color(if sel { theme::TEXT() } else { theme::DIM() })
+                    .hover(|s| s.bg(theme::ACCENT().alpha(0.1)).text_color(theme::TEXT()))
+                    .active(|s| s.bg(theme::ACCENT().alpha(0.2)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected = Some(t.clone());
+                        cx.notify();
+                    }));
+                if sel {
+                    item = item
+                        .bg(theme::ACCENT_SOFT())
+                        .border_1()
+                        .border_color(theme::ACCENT().alpha(0.28));
+                }
+                left.push(item.child(SharedString::from(title)).into_any_element());
             }
         }
 
+        // 右侧文档卡：PANEL2 次级面 + LINE 描边 + 卡片圆角（规则 4/11）。
         let body = if let Some((title, cat, content)) = cur {
             div()
                 .flex_1()
                 .min_w_0()
-                .p_3()
-                .rounded_md()
-                .bg(rgb(0x24262d))
+                .p(theme::PAD_LG)
+                .rounded(theme::RADIUS_CARD)
+                .bg(theme::PANEL2())
+                .border_1()
+                .border_color(theme::LINE())
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .pb_2()
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(SharedString::from(title.clone())))
+                        .gap(theme::GAP_MD)
+                        .pb(theme::GAP_MD)
+                        .mb(theme::GAP_MD)
+                        .border_b_1()
+                        .border_color(theme::LINE_SOFT())
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(rgb(0x6f9bc4))
-                                .child(SharedString::from(cat)),
-                        ),
+                                .text_size(theme::FONT_TITLE_SM)
+                                .font_family(theme::FAMILY_SERIF)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme::TEXT())
+                                .child(SharedString::from(title.clone())),
+                        )
+                        .child(chip(cat, Tone::Neutral)),
                 )
                 .child(
                     div()
-                        .text_sm()
-                        .text_color(rgb(0xd8d5cf))
-                        .line_height(gpui_kit::relative(1.8))
+                        .text_size(theme::FONT_BODY)
+                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                        .text_color(theme::TEXT())
                         .child(SharedString::from(content.chars().take(4000).collect::<String>())),
                 )
+                .into_any_element()
         } else {
-            div()
-                .flex_1()
-                .p_4()
-                .text_sm()
-                .text_color(rgb(0x5d5b57))
-                .child("设定库为空——用「AI 归类设定」或导入后自动归类。")
+            empty_hint("设定库为空", "用「AI 归类设定」或导入后自动归类，条目会按世界观分类收进来。")
         };
 
-        div()
-            .id("canon-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .p_3()
-                    .gap_2()
-                    .child(
-                        div().flex().items_center().gap_3().child(
-                            div().text_sm().font_weight(FontWeight::MEDIUM).child("设定"),
-                        ).child(
-                            Button::new("canon-classify")
-                                .xsmall()
-                                .label("AI 归类（提案）")
-                                .on_click(cx.listener(|_this, _, _, cx| {
-                                    cx.emit(ViewEvent::RunCapability("classify"));
-                                })),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(div().w(px(180.)).flex_col().gap_0p5().children(left))
-                            .child(body),
-                    ),
-            )
+        panel_root("canon-scroll").child(
+            panel_col()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(theme::GAP_MD)
+                        .child(sec_title("设定"))
+                        .child(cap_btn("canon-classify", "AI 归类（提案）", cx).on_click(
+                            cx.listener(|_this, _, _, cx| {
+                                cx.emit(ViewEvent::RunCapability("classify"));
+                            }),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(theme::GAP_GROUP_LG)
+                        .w_full()
+                        .child(
+                            div()
+                                .w(theme::SIDEBAR_W)
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_col()
+                                .gap(theme::GAP_XS)
+                                .children(left),
+                        )
+                        .child(body),
+                ),
+        )
     }
 }
 
@@ -172,7 +501,11 @@ impl BasePanel for CanonPanel {
 }
 impl ComponentPanel for CanonPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("设定")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("设定")
     }
 }
 
@@ -195,37 +528,6 @@ impl Focusable for OutlinePanel {
     }
 }
 
-fn row(cells: Vec<(String, Option<&str>)>) -> gpui_kit::AnyElement {
-    let mut d = div().flex().gap_3().w_full().py_1().border_b_1().border_color(rgb(0x2e3138));
-    for (text, color) in cells {
-        d = d.child(
-            div()
-                .flex_1()
-                .text_xs()
-                .text_color(color.map(|c| c.parse_rgb()).unwrap_or_else(|| rgb(0xd8d5cf).into()))
-                .child(SharedString::from(text)),
-        );
-    }
-    d.into_any_element()
-}
-
-trait ParseRgb {
-    fn parse_rgb(&self) -> gpui_kit::Hsla;
-}
-impl ParseRgb for str {
-    fn parse_rgb(&self) -> gpui_kit::Hsla {
-        let v: gpui_kit::Rgba = match self {
-            "dim" => rgb(0x8e8b85),
-            "faint" => rgb(0x5d5b57),
-            "accent" => rgb(0xc96f4a),
-            "blue" => rgb(0x6f9bc4),
-            "green" => rgb(0x7fae72),
-            _ => rgb(0xd8d5cf),
-        };
-        v.into()
-    }
-}
-
 impl Render for OutlinePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let lines = self.handle.storylines();
@@ -233,62 +535,90 @@ impl Render for OutlinePanel {
 
         let mut line_rows = Vec::new();
         for l in &lines {
-            line_rows.push(row(vec![
-                (l.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string(), Some("faint")),
-                (l.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(), None),
-                (l.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(), Some("blue")),
-            ]));
+            let status = l.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let tone = status_tone(&status);
+            let mut cells = vec![
+                (Cell::Code(l.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string())),
+                Cell::Text(l.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string()),
+            ];
+            if !status.is_empty() {
+                cells.push(Cell::Chip(status, tone));
+            }
+            line_rows.push(row(cells));
         }
         let mut event_rows = Vec::new();
         for e in events.iter().take(40) {
-            event_rows.push(row(vec![
-                (e.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string(), Some("faint")),
-                (format!("第{}", e.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0)), Some("dim")),
-                (e.get("objectiveFact").and_then(|v| v.as_str()).unwrap_or("").chars().take(60).collect(), None),
-                (e.get("revealed").and_then(|v| v.as_bool()).map(|r| if r { "读者已知" } else { "暗线" }).unwrap_or("").to_string(), Some("accent")),
-            ]));
+            let revealed = e
+                .get("revealed")
+                .and_then(|v| v.as_bool())
+                .map(|r| if r { "读者已知" } else { "暗线" })
+                .unwrap_or("");
+            let mut cells = vec![
+                Cell::Code(e.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string()),
+                Cell::Dim(format!("第{}", e.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0))),
+                Cell::Text(
+                    e.get("objectiveFact")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .chars()
+                        .take(60)
+                        .collect(),
+                ),
+            ];
+            if !revealed.is_empty() {
+                cells.push(Cell::Chip(
+                    revealed.to_string(),
+                    if revealed == "暗线" { Tone::Neutral } else { Tone::Blue },
+                ));
+            }
+            event_rows.push(row(cells));
         }
 
-        div()
-            .id("outline-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .p_3()
-                    .gap_2()
-                    .child(
-                        div().flex().items_center().gap_3()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("故事线"))
-                            .child(
-                                Button::new("outline-sync")
-                                    .xsmall()
-                                    .label("同步大纲（提案）")
-                                    .on_click(cx.listener(|_this, _, _, cx| {
+        panel_root("outline-scroll").child(
+            panel_col()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(theme::GAP_MD)
+                        .child(sec_title("故事线"))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(theme::GAP_SM)
+                                .child(cap_btn("outline-sync", "同步大纲（提案）", cx).on_click(
+                                    cx.listener(|_this, _, _, cx| {
                                         cx.emit(ViewEvent::RunCapability("outsync"));
-                                    })),
-                            )
-                            .child(
-                                Button::new("outline-audit")
-                                    .xsmall()
-                                    .label("全书连贯性审查")
-                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                    }),
+                                ))
+                                .child(cap_btn("outline-audit", "全书连贯性审查", cx).on_click(
+                                    cx.listener(|_this, _, _, cx| {
                                         cx.emit(ViewEvent::RunCapability("audit"));
-                                    })),
-                            ),
-                    )
-                    .children(line_rows)
-                    .when_true(lines.is_empty(), |d| {
-                        d.child(div().text_xs().text_color(rgb(0x5d5b57)).child("（还没有故事线——新书建框架后出现）"))
-                    })
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).pt_3().child("事件时间线（作者真相｜读者已知）"))
-                    .children(event_rows)
-                    .when_true(events.is_empty(), |d| {
-                        d.child(div().text_xs().text_color(rgb(0x5d5b57)).child("（还没有事件——用「AI 建时间线」提案）"))
-                    }),
-            )
+                                    }),
+                                )),
+                        ),
+                )
+                .child(div().flex().flex_col().children(line_rows))
+                .when_true(lines.is_empty(), |d| {
+                    d.child(empty_hint("还没有故事线", "新书建框架提案采纳后，这里出现线号 · 名称 · 状态。"))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_MD)
+                        .border_t_1()
+                        .border_color(theme::LINE())
+                        .pt(theme::GAP_GROUP)
+                        .child(sec_title("事件时间线（作者真相｜读者已知）"))
+                        .child(div().flex().flex_col().children(event_rows))
+                        .when_true(events.is_empty(), |d| {
+                            d.child(empty_hint("还没有事件", "用「AI 建时间线」提案，从正文抽取作者真相事件。"))
+                        }),
+                ),
+        )
     }
 }
 
@@ -311,7 +641,11 @@ impl BasePanel for OutlinePanel {
 }
 impl ComponentPanel for OutlinePanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("大纲 · 时间线")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("大纲 · 时间线")
     }
 }
 
@@ -341,43 +675,39 @@ impl Render for MemoryPanel {
         for f in facts.iter().take(60) {
             let public = f.get("publicToReader").and_then(|v| v.as_bool()).unwrap_or(true);
             rows.push(row(vec![
-                (f.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string(), None),
-                (f.get("predicate").and_then(|v| v.as_str()).unwrap_or("").to_string(), Some("accent")),
-                (f.get("object").and_then(|v| v.as_str()).unwrap_or("").chars().take(50).collect(), None),
-                (format!("第{}章", f.get("fromChapter").and_then(|v| v.as_u64()).unwrap_or(0)), Some("dim")),
-                (if public { "读者可见" } else { "暗线" }.to_string(), Some("blue")),
+                Cell::Text(f.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string()),
+                Cell::Hi(f.get("predicate").and_then(|v| v.as_str()).unwrap_or("").to_string()),
+                Cell::Text(
+                    f.get("object").and_then(|v| v.as_str()).unwrap_or("").chars().take(50).collect(),
+                ),
+                Cell::Dim(format!("第{}章", f.get("fromChapter").and_then(|v| v.as_u64()).unwrap_or(0))),
+                Cell::Chip(
+                    if public { "读者可见" } else { "暗线" }.to_string(),
+                    if public { Tone::Blue } else { Tone::Neutral },
+                ),
             ]));
         }
-        div()
-            .id("memory-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div().flex().flex_col().p_3().gap_2()
-                    .child(
-                        div().flex().items_center().gap_3()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("事实账本（双时态）"))
-                            .child(
-                                Button::new("memory-extract")
-                                    .xsmall()
-                                    .label("让AI记一笔")
-                                    .on_click(cx.listener(|_this, _, _, cx| {
-                                        cx.emit(ViewEvent::RunCapability("memory"));
-                                    })),
-                            ),
-                    )
-                    .child(row(vec![
-                        ("主语".into(), Some("faint")),
-                        ("谓语".into(), Some("faint")),
-                        ("宾语".into(), Some("faint")),
-                        ("生效".into(), Some("faint")),
-                        ("读者".into(), Some("faint")),
-                    ]))
-                    .children(rows)
-                    .when_true(facts.is_empty(), |d| {
-                        d.child(div().text_xs().text_color(rgb(0x5d5b57)).child("（还没有事实——写完一章点「让AI记一笔」）"))
-                    }),
-            )
+        panel_root("memory-scroll").child(
+            panel_col()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(theme::GAP_MD)
+                        .child(sec_title("事实账本（双时态）"))
+                        .child(cap_btn("memory-extract", "让AI记一笔", cx).on_click(
+                            cx.listener(|_this, _, _, cx| {
+                                cx.emit(ViewEvent::RunCapability("memory"));
+                            }),
+                        )),
+                )
+                .child(head_row(&["主语", "谓语", "宾语", "生效", "读者"]))
+                .child(div().flex().flex_col().children(rows))
+                .when_true(facts.is_empty(), |d| {
+                    d.child(empty_hint("还没有事实", "写完一章点「让AI记一笔」，谓宾结构与生效章节会收进这本账。"))
+                }),
+        )
     }
 }
 
@@ -388,7 +718,11 @@ impl BasePanel for MemoryPanel {
 }
 impl ComponentPanel for MemoryPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("记忆中枢")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("记忆中枢")
     }
 }
 
@@ -421,6 +755,7 @@ impl Render for StatsPanel {
         let rejected = proposals.iter().filter(|p| p.status == "已拒绝").count();
         let pending = proposals.iter().filter(|p| p.status == "待确认").count();
 
+        // 柱状图：BAR_TRACK 轨道 + 朱砂进行中填充 + RADIUS_TAG 圆角，日期码等宽 FAINT（规则 10/13）。
         let bars: Vec<gpui_kit::AnyElement> = recent
             .iter()
             .map(|(day, w)| {
@@ -428,36 +763,62 @@ impl Render for StatsPanel {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap_1()
+                    .gap(theme::GAP_SM)
                     .w(px(38.))
                     .child(
                         div()
                             .w(px(22.))
-                            .h(px((*w as f32 / max as f32 * 90.).max(4.)))
-                            .rounded_t_md()
-                            .bg(rgb(0xc96f4a)),
+                            .h(px(94.))
+                            .flex()
+                            .flex_col()
+                            .justify_end()
+                            .overflow_hidden()
+                            .rounded(theme::RADIUS_TAG)
+                            .bg(theme::BAR_TRACK())
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h(px((*w as f32 / max as f32 * 90.).max(4.)))
+                                    .bg(theme::ACCENT()),
+                            ),
                     )
-                    .child(div().text_xs().text_color(rgb(0x5d5b57)).child(SharedString::from(day[5..].to_string())))
+                    .child(
+                        div()
+                            .font_family(theme::FAMILY_MONO)
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::FAINT())
+                            .child(SharedString::from(day[5..].to_string())),
+                    )
                     .into_any_element()
             })
             .collect();
 
-        div()
-            .id("stats-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div().flex().flex_col().p_3().gap_3()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("每日净增字数（近 14 天）"))
-                    .child(div().flex().gap_2().items_end().children(bars))
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).pt_2().child("提案账本"))
-                    .child(row(vec![
-                        (format!("待裁决 {pending}"), Some("accent")),
-                        (format!("已采纳 {accepted}"), Some("green")),
-                        (format!("已拒收 {rejected}"), Some("faint")),
-                        (format!("累计 {}", proposals.len()), Some("dim")),
-                    ])),
-            )
+        panel_root("stats-scroll").child(
+            panel_col()
+                .child(sec_title("每日净增字数（近 14 天）"))
+                .child(div().flex().flex_wrap().gap(theme::GAP_MD).items_end().children(bars))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_MD)
+                        .border_t_1()
+                        .border_color(theme::LINE())
+                        .pt(theme::GAP_GROUP)
+                        .child(sec_title("提案账本"))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(theme::GAP_MD)
+                                .items_center()
+                                .child(chip(format!("待裁决 {pending}"), Tone::Accent))
+                                .child(chip(format!("已采纳 {accepted}"), Tone::Green))
+                                .child(chip(format!("已拒收 {rejected}"), Tone::Red))
+                                .child(chip(format!("累计 {}", proposals.len()), Tone::Neutral)),
+                        ),
+                ),
+        )
     }
 }
 
@@ -468,7 +829,11 @@ impl BasePanel for StatsPanel {
 }
 impl ComponentPanel for StatsPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("写作统计")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("写作统计")
     }
 }
 
@@ -497,39 +862,55 @@ impl Render for CluesPanel {
         let clues = self.handle.clues_full();
         let mut rows = Vec::new();
         for c in clues.iter().take(80) {
-            rows.push(row(vec![
-                (c.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string(), Some("accent")),
-                (c.get("title").and_then(|v| v.as_str()).unwrap_or("").chars().take(40).collect(), None),
-                (c.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(), Some("blue")),
-                (format!("埋{}", c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0)), Some("dim")),
-                (format!("动{}", c.get("lastActionChapter").and_then(|v| v.as_u64()).unwrap_or(0)), Some("dim")),
-                (c.get("timing").and_then(|v| v.as_str()).unwrap_or("").to_string(), Some("faint")),
-            ]));
+            let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let tone = status_tone(&status);
+            let timing = c.get("timing").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let mut cells = vec![
+                Cell::CodeAccent(c.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string()),
+                Cell::Text(c.get("title").and_then(|v| v.as_str()).unwrap_or("").chars().take(40).collect()),
+            ];
+            if !status.is_empty() {
+                cells.push(Cell::Chip(status, tone));
+            }
+            cells.push(Cell::Code(format!("埋{}", c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0))));
+            cells.push(Cell::Code(format!("动{}", c.get("lastActionChapter").and_then(|v| v.as_u64()).unwrap_or(0))));
+            if !timing.is_empty() {
+                cells.push(Cell::Pace(timing, status_tone(c.get("timing").and_then(|v| v.as_str()).unwrap_or(""))));
+            }
+            rows.push(row(cells));
         }
-        div()
-            .id("clues-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div().flex().flex_col().p_3().gap_2()
-                    .child(
-                        div().flex().items_center().gap_3()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("伏笔台账"))
-                            .child(
-                                Button::new("clues-inventory")
-                                    .xsmall()
-                                    .label("AI 盘点（提案）")
-                                    .on_click(cx.listener(|_this, _, _, cx| {
-                                        cx.emit(ViewEvent::RunCapability("inventory"));
-                                    })),
-                            )
-                            .child(div().text_xs().text_color(rgb(0x5d5b57)).child(SharedString::from(format!("{} 条", clues.len())))),
-                    )
-                    .children(rows)
-                    .when_true(clues.is_empty(), |d| {
-                        d.child(div().text_xs().text_color(rgb(0x5d5b57)).child("（台账为空——「AI 盘点伏笔」可从正文重建）"))
-                    }),
-            )
+        panel_root("clues-scroll").child(
+            panel_col()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(theme::GAP_MD)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(theme::GAP_MD)
+                                .child(sec_title("伏笔台账"))
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_LABEL)
+                                        .text_color(theme::FAINT())
+                                        .child(SharedString::from(format!("{} 条", clues.len()))),
+                                ),
+                        )
+                        .child(cap_btn("clues-inventory", "AI 盘点（提案）", cx).on_click(
+                            cx.listener(|_this, _, _, cx| {
+                                cx.emit(ViewEvent::RunCapability("inventory"));
+                            }),
+                        )),
+                )
+                .child(div().flex().flex_col().children(rows))
+                .when_true(clues.is_empty(), |d| {
+                    d.child(empty_hint("台账为空", "「AI 盘点伏笔」提案可从正文重建埋点、推进与节奏。"))
+                }),
+        )
     }
 }
 
@@ -540,7 +921,11 @@ impl BasePanel for CluesPanel {
 }
 impl ComponentPanel for CluesPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("伏笔台账")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("伏笔台账")
     }
 }
 
@@ -580,23 +965,19 @@ impl Render for CharactersPanel {
                 .filter(|f| f.get("subject").and_then(|s| s.as_str()) == Some(canon.as_str()))
                 .count();
             rows.push(row(vec![
-                (canon, None),
-                (subs.join(" / "), Some("dim")),
-                (format!("{appears} 条事实"), Some("blue")),
+                Cell::Text(canon),
+                Cell::Dim(subs.join(" / ")),
+                Cell::Chip(format!("{appears} 条事实"), Tone::Neutral),
             ]));
         }
-        div()
-            .id("characters-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div().flex().flex_col().p_3().gap_2()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("人物卡（别名归一）"))
-                    .children(rows)
-                    .when_true(aliases.is_empty(), |d| {
-                        d.child(div().text_xs().text_color(rgb(0x5d5b57)).child("（还没有别名档案——记忆提取/人物归一提案采纳后出现）"))
-                    }),
-            )
+        panel_root("characters-scroll").child(
+            panel_col()
+                .child(sec_title("人物卡（别名归一）"))
+                .child(div().flex().flex_col().children(rows))
+                .when_true(aliases.is_empty(), |d| {
+                    d.child(empty_hint("还没有别名档案", "记忆提取 / 人物归一提案采纳后，本名与别名会在这里归一。"))
+                }),
+        )
     }
 }
 
@@ -607,7 +988,11 @@ impl BasePanel for CharactersPanel {
 }
 impl ComponentPanel for CharactersPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("人物卡")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("人物卡")
     }
 }
 
@@ -666,14 +1051,30 @@ impl Focusable for SettingsPanel {
     }
 }
 
+/// 表单行：标签 DIM；输入框覆写库主题为 PANEL2 底 + LINE 1px 描边 + 按钮圆角（规则 4/5）。
 fn field(label: &'static str, state: &Entity<gpui_kit::component::input::InputState>) -> gpui_kit::AnyElement {
     div()
         .flex()
         .items_center()
-        .gap_2()
+        .gap(theme::GAP_MD)
         .w_full()
-        .child(div().w(px(90.)).text_xs().text_color(rgb(0x8e8b85)).child(label))
-        .child(div().flex_1().child(gpui_kit::component::input::Input::new(state)))
+        .child(
+            div()
+                .w(px(90.))
+                .flex_shrink_0()
+                .text_size(theme::FONT_LABEL)
+                .text_color(theme::DIM())
+                .child(label),
+        )
+        .child(div().flex_1().min_w_0().child(
+            gpui_kit::component::input::Input::new(state)
+                .bg(theme::PANEL2())
+                .border_1()
+                .border_color(theme::LINE())
+                .rounded(theme::RADIUS_BTN)
+                .text_size(theme::FONT_BODY)
+                .text_color(theme::TEXT()),
+        ))
         .into_any_element()
 }
 
@@ -681,70 +1082,78 @@ impl Render for SettingsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.status.clone();
         let testing = self.testing;
-        div()
-            .id("settings-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .p_4()
-                    .gap_3()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("模型服务（OpenAI 兼容端点）"))
-                    .child(field("Base URL", &self.base_url))
-                    .child(field("模型 ID", &self.model))
-                    .child(field("Provider", &self.provider))
-                    .child(
+        panel_root("settings-scroll").child(
+            panel_col()
+                .child(sec_title("模型服务（OpenAI 兼容端点）"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_MD)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(field("Base URL", &self.base_url))
+                        .child(field("模型 ID", &self.model))
+                        .child(field("Provider", &self.provider)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(theme::GAP_MD)
+                        .items_center()
+                        .child(primary_btn("settings-save", "保存", cx).on_click(cx.listener(|this, _, _, cx| {
+                            let base_url = this.base_url.read(cx).value().to_string();
+                            let model = this.model.read(cx).value().to_string();
+                            let provider = this.provider.read(cx).value().to_string();
+                            cx.emit(SettingsEvent::Save { base_url, model, provider });
+                        })))
+                        .child(
+                            cap_btn("settings-test", if testing { "测试中…" } else { "测试连接" }, cx)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let base_url = this.base_url.read(cx).value().to_string();
+                                    if base_url.trim().is_empty() {
+                                        this.status = "先填 Base URL".into();
+                                        cx.notify();
+                                        return;
+                                    }
+                                    this.testing = true;
+                                    this.status = String::new();
+                                    cx.notify();
+                                    cx.emit(SettingsEvent::Test(base_url));
+                                })),
+                        )
+                        // 运行中 = BLUE 语义 chip（规则 6）。
+                        .when_true(testing, |d| d.child(chip("连通测试进行中", Tone::Blue))),
+                )
+                .when_true(!status.is_empty(), |d| {
+                    d.child(
                         div()
                             .flex()
-                            .gap_2()
                             .items_center()
-                            .child(
-                                Button::new("settings-save")
-                                    .primary()
-                                    .xsmall()
-                                    .label("保存")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        let base_url = this.base_url.read(cx).value().to_string();
-                                        let model = this.model.read(cx).value().to_string();
-                                        let provider = this.provider.read(cx).value().to_string();
-                                        cx.emit(SettingsEvent::Save { base_url, model, provider });
-                                    })),
-                            )
-                            .child(
-                                Button::new("settings-test")
-                                    .xsmall()
-                                    .label(if testing { "测试中…" } else { "测试连接" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        let base_url = this.base_url.read(cx).value().to_string();
-                                        if base_url.trim().is_empty() {
-                                            this.status = "先填 Base URL".into();
-                                            cx.notify();
-                                            return;
-                                        }
-                                        this.testing = true;
-                                        this.status = String::new();
-                                        cx.notify();
-                                        cx.emit(SettingsEvent::Test(base_url));
-                                    })),
-                            ),
+                            .gap(theme::GAP_MD)
+                            .child(chip(
+                                SharedString::from(status.clone()),
+                                if status.starts_with('✓') {
+                                    Tone::Green
+                                } else if status.starts_with('✕') {
+                                    Tone::Red
+                                } else {
+                                    Tone::Amber
+                                },
+                            )),
                     )
-                    .when_true(!status.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_xs()
-                                .text_color(if status.starts_with('✓') { rgb(0x7fae72) } else { rgb(0xc0605c) })
-                                .child(SharedString::from(status)),
-                        )
-                    })
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x5d5b57))
-                            .child("局域网免 Key 端点直接可用；保存后下次 AI 调用生效。DSH 运行时（sdk profile）由应用自动带 --patch 挂载执笔能力包。"),
-                    ),
-            )
+                })
+                .child(
+                    div()
+                        .text_size(theme::FONT_LABEL)
+                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                        .text_color(theme::FAINT())
+                        .child("局域网免 Key 端点直接可用；保存后下次 AI 调用生效。DSH 运行时（sdk profile）由应用自动带 --patch 挂载执笔能力包。"),
+                ),
+        )
     }
 }
 
@@ -755,7 +1164,11 @@ impl BasePanel for SettingsPanel {
 }
 impl ComponentPanel for SettingsPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("设置")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("设置")
     }
 }
 
@@ -799,52 +1212,61 @@ impl Render for SnapshotsPanel {
         let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
         for name in self.names.iter().take(40) {
             let n = name.clone();
+            // 快照文件名 = 台账码：等宽 FAINT（规则 10）；行 hover 提亮（规则 7）；恢复 = 破坏性红（规则 6）。
             rows.push(
                 div()
+                    .id(format!("snap-row-{n}"))
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .py_1()
+                    .gap(theme::GAP_MD)
+                    .w_full()
+                    .px(theme::PAD_XS)
+                    .py(theme::GAP_SM)
+                    .rounded(theme::RADIUS_BTN_SM)
                     .border_b_1()
-                    .border_color(rgb(0x2e3138))
-                    .child(div().flex_1().text_xs().child(SharedString::from(n.clone())))
+                    .border_color(theme::LINE_SOFT())
+                    .hover(|s| s.bg(theme::PANEL2()))
                     .child(
-                        Button::new(format!("restore-{n}"))
-                            .xsmall()
-                            .label("恢复")
-                            .on_click(cx.listener(move |_this, _, _, cx| {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .font_family(theme::FAMILY_MONO)
+                            .text_size(theme::FONT_LABEL)
+                            .text_color(theme::FAINT())
+                            .child(SharedString::from(n.clone())),
+                    )
+                    .child(
+                        danger_btn(format!("restore-{n}"), "恢复", cx).on_click(
+                            cx.listener(move |_this, _, _, cx| {
                                 cx.emit(SnapEvent::Restore(n.clone()));
-                            })),
+                            }),
+                        ),
                     )
                     .into_any_element(),
             );
         }
-        div()
-            .id("snap-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .p_3()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from(format!("第{}章快照（{} 份）", self.chapter, self.names.len()))),
-                    )
-                    .children(rows)
-                    .when_true(self.names.is_empty(), |d| {
-                        d.child(
+        panel_root("snap-scroll").child(
+            panel_col()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_MD)
+                        .child(sec_title(SharedString::from(format!("第{}章快照", self.chapter))))
+                        .child(
                             div()
-                                .text_xs()
-                                .text_color(rgb(0x5d5b57))
-                                .child("（还没有快照——采纳草稿/去AI味/恢复选区时自动创建）"),
-                        )
-                    }),
-            )
+                                .text_size(theme::FONT_LABEL)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(format!("{} 份", self.names.len()))),
+                        ),
+                )
+                .child(div().flex().flex_col().children(rows))
+                .when_true(self.names.is_empty(), |d| {
+                    d.child(empty_hint("还没有快照", "采纳草稿 / 去AI味 / 恢复选区时会自动创建章节快照。"))
+                }),
+        )
     }
 }
 
@@ -855,7 +1277,11 @@ impl BasePanel for SnapshotsPanel {
 }
 impl ComponentPanel for SnapshotsPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("快照")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("快照")
     }
 }
 
@@ -902,43 +1328,43 @@ impl Focusable for ImportPanel {
 impl Render for ImportPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let result = self.last_result.clone();
-        div()
-            .id("import-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .p_4()
-                    .gap_3()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("导入旧稿（全部走提案，采纳才落库）"))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x8e8b85))
-                            .child("规则：文件名/内容匹配「第N章」→ 草稿提案；「设定/大纲/人物」目录 → 设定提案；其余忽略。"),
-                    )
-                    .child(field("目录", &self.path))
-                    .child(
-                        Button::new("import-run")
-                            .primary()
-                            .xsmall()
-                            .label("扫描并生成提案")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let p = this.path.read(cx).value().to_string();
-                                cx.emit(ImportEvent::Run(p));
-                            })),
-                    )
-                    .when_true(!result.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(0x7fae72))
-                                .child(SharedString::from(result)),
+        panel_root("import-scroll").child(
+            panel_col()
+                .child(sec_title("导入旧稿（全部走提案，采纳才落库）"))
+                .child(
+                    div()
+                        .text_size(theme::FONT_META)
+                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                        .text_color(theme::DIM())
+                        .child("规则：文件名/内容匹配「第N章」→ 草稿提案；「设定/大纲/人物」目录 → 设定提案；其余忽略。"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_MD)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(field("目录", &self.path))
+                        .child(
+                            div().flex().items_center().gap(theme::GAP_MD).child(
+                                primary_btn("import-run", "扫描并生成提案", cx).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        let p = this.path.read(cx).value().to_string();
+                                        cx.emit(ImportEvent::Run(p));
+                                    }),
+                                ),
+                            ),
                         )
-                    }),
-            )
+                        // 成功回执 = GREEN chip（规则 6）。
+                        .when_true(!result.is_empty(), |d| {
+                            d.child(chip(SharedString::from(result.clone()), Tone::Green))
+                        }),
+                ),
+        )
     }
 }
 
@@ -949,7 +1375,11 @@ impl BasePanel for ImportPanel {
 }
 impl ComponentPanel for ImportPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("导入旧稿")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("导入旧稿")
     }
 }
 
@@ -981,18 +1411,42 @@ impl Render for GraphPanel {
         let facts = self.handle.memory_facts();
 
         let mut body: Vec<gpui_kit::AnyElement> = Vec::new();
-        for l in &lines {
+        for (gi, l) in lines.iter().enumerate() {
             let lid = l.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
             let name = l.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            // 故事线名 = 叙事性标题（衬线），线号 = 台账码（等宽 FAINT）（规则 10）。
+            let mut head = div()
+                .flex()
+                .items_center()
+                .gap(theme::GAP_MD)
+                .pt(if gi == 0 { px(0.) } else { theme::GAP_GROUP });
+            if gi > 0 {
+                head = head.border_t_1().border_color(theme::LINE());
+            }
             body.push(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pt_2()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(rgb(0xc96f4a)).child(SharedString::from(format!("● {name}"))))
-                    .child(div().text_xs().text_color(rgb(0x5d5b57)).child(SharedString::from(lid.clone())))
-                    .into_any_element(),
+                head.child(
+                    div()
+                        .text_size(theme::FONT_TAG)
+                        .text_color(theme::ACCENT())
+                        .child("●"),
+                )
+                .child(
+                    div()
+                        .text_size(theme::FONT_TITLE_SM)
+                        .font_family(theme::FAMILY_SERIF)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::TEXT())
+                        .child(SharedString::from(name)),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .font_family(theme::FAMILY_MONO)
+                        .text_size(theme::FONT_LABEL)
+                        .text_color(theme::FAINT())
+                        .child(SharedString::from(lid.clone())),
+                )
+                .into_any_element(),
             );
             let related: Vec<String> = events
                 .iter()
@@ -1000,36 +1454,68 @@ impl Render for GraphPanel {
                 .map(|e| format!("第{}章 {}", e.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0), e.get("objectiveFact").and_then(|f| f.as_str()).unwrap_or("").chars().take(30).collect::<String>()))
                 .collect();
             if related.is_empty() {
-                body.push(div().pl_4().text_xs().text_color(rgb(0x5d5b57)).child("（暂无挂线事件）").into_any_element());
+                body.push(
+                    div()
+                        .pl(theme::PAD_MD)
+                        .text_size(theme::FONT_META)
+                        .text_color(theme::FAINT())
+                        .child("（暂无挂线事件）")
+                        .into_any_element(),
+                );
             } else {
                 for r in related.iter().take(12) {
-                    body.push(div().pl_4().text_xs().text_color(rgb(0x8e8b85)).child(SharedString::from(r.clone())).into_any_element());
+                    // 「第N章」前缀按台账码等宽处理，事实正文走次级档（规则 8/10）。
+                    let (chap, rest) = match r.split_once(' ') {
+                        Some((c, o)) => (c.to_string(), o.to_string()),
+                        None => (String::new(), r.clone()),
+                    };
+                    body.push(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_MD)
+                            .pl(theme::PAD_MD)
+                            .py(theme::GAP_XS)
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .font_family(theme::FAMILY_MONO)
+                                    .text_size(theme::FONT_LABEL)
+                                    .text_color(theme::FAINT())
+                                    .child(SharedString::from(chap)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(theme::FONT_META)
+                                    .text_color(theme::DIM())
+                                    .child(SharedString::from(rest)),
+                            )
+                            .into_any_element(),
+                    );
                 }
             }
         }
         if lines.is_empty() {
             body.push(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x5d5b57))
-                    .child("（还没有故事线/事件——建框架提案采纳后，这里按线展开事件与事实锚点）")
-                    .into_any_element(),
+                empty_hint("还没有故事线 / 事件", "建框架提案采纳后，这里按线展开事件与事实锚点。").into_any_element(),
             );
         }
         body.push(
             div()
-                .pt_3()
-                .text_xs()
-                .text_color(rgb(0x5d5b57))
+                .border_t_1()
+                .border_color(theme::LINE())
+                .pt(theme::GAP_GROUP)
+                .text_size(theme::FONT_LABEL)
+                .text_color(theme::FAINT())
                 .child(SharedString::from(format!("事实 {} 条 · 事件 {} 个", facts.len(), events.len())))
                 .into_any_element(),
         );
 
-        div()
-            .id("graph-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(div().flex().flex_col().p_3().gap_1().children(body))
+        panel_root("graph-scroll").child(panel_col().gap(theme::GAP_MD).children(body))
     }
 }
 
@@ -1040,6 +1526,10 @@ impl BasePanel for GraphPanel {
 }
 impl ComponentPanel for GraphPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().font_weight(FontWeight::MEDIUM).child("记忆图谱")
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("记忆图谱")
     }
 }

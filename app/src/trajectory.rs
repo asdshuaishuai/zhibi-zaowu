@@ -1,21 +1,38 @@
 //! 右侧 Agent 轨迹面板（Dock 面板）。
 //!
 //! 数据源：DSH `session.event` 全量事件流，按「一次 prompt = 一个轮次」分节。
-//! 展示为对话式时间线：分节头 + 工具调用/结果/文本产出气泡 + 完成/失败收尾。
-//! 新事件进入时自动滚到底部。M1 用基础色板占位，M2 换执笔品牌色板。
+//! 展示为对话式时间线：轮次分隔头（`.runhead`）+ 工具调用/结果/文本产出气泡 + 完成/失败收尾。
+//! 新事件进入时自动滚到底部。
+//!
+//! 视觉全部取自 `crate::theme` 令牌（无裸 `rgb(0x…)`，间距/圆角/字号不混档）：
+//! - 层次（规则 4）：滚动底 = `BG()` 墨底；中性气泡 = `PANEL()` 亮一档 + `LINE()` 1px；
+//!   语义气泡 = `ACCENT_SOFT`/`GREEN_SOFT`/`RED_SOFT` 底 + 对应语义描边（原型 trajectory.html `.bub`）。
+//! - 状态语言（规则 6）：完成/结果 = `GREEN_SOFT` + `GREEN_BORDER` + `GREEN()` 字；
+//!   失败/报错 = `RED_SOFT` + `RED()` 字；轮次头 = `ACCENT()`；气泡一律 `RADIUS_CHIP`(9)。
+//! - 按钮（规则 5、7）：采纳/替换 = `ACCENT()` 实心 + `ON_ACCENT()` 白字 + `RADIUS_BTN`；
+//!   追加 = 中性次级（`PANEL2` + `LINE` + `DIM`），hover 底色提亮一档（`CHIP_NEUTRAL` 7% 白叠出）、
+//!   描边转 `ACCENT_BORDER()`、active 叠 22% 墨底压暗——全部由现有 token 派生，库主题（近白/近黑）
+//!   一概绕开（gpui-component 的 primary Button 走库色，故这里用 token 自绘动作钮）。
+//! - 文字三档（规则 8）：气泡正文 `TEXT()`/语义色、参数摘要 `DIM()`、时间/弱注 `FAINT()`。
+//! - 台账码（规则 10）：时间戳 `FAMILY_MONO` + `FONT_LABEL` + `FAINT()`，右对齐成列。
+//! - 排版（规则 9）：气泡正文 `FONT_META`(11.5) + `LINE_HEIGHT_BODY`；轮次头 `FONT_LABEL`(11) 半粗。
+//! - 间距（规则 12）：栏水平内边距 `PAD_MD`(12)，气泡间 `GAP_SM`(6)，组内 `GAP_XS`，
+//!   按钮间 `GAP_MD`；废除 `p_2`(8px 贴边) / `rounded_md` / `text_xs` 混档。
+//! - 空态（规则 15）：TEXT 主句 + DIM 引导句 + FAINT 指向动作的提示句；
+//!   时间显示改本地时钟（`localtime_r`，修复旧 `utc_hhmmss` 的 UTC 缺陷）。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::Sizable;
-use gpui_kit::component::dock::PanelEvent;
-use gpui_kit::component::dock::Panel as ComponentPanel;
 use gpui_kit::component::dock::BasePanel;
+use gpui_kit::component::dock::Panel as ComponentPanel;
+use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::{
-    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, Window, div, rgb, rgba,
+    App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, Rgba, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, relative,
 };
+
+use crate::theme;
 
 #[derive(Debug, Clone)]
 pub enum TrajEvent {
@@ -57,7 +74,7 @@ pub struct TrajEntry {
     #[allow(dead_code)]
     pub seq: u64,
     pub kind: TrajKind,
-    /// UTC 时钟 HH:MM:SS（M1 不引本地时区依赖）
+    /// 本地时钟 HH:MM:SS（`localtime_r`，规则 15）
     pub time: String,
 }
 
@@ -98,6 +115,14 @@ impl TrajKind {
     fn is_turn(&self) -> bool {
         matches!(self, TrajKind::Turn(_))
     }
+
+    fn is_tool(&self) -> bool {
+        matches!(self, TrajKind::Tool { .. })
+    }
+
+    fn is_user(&self) -> bool {
+        matches!(self, TrajKind::User(_))
+    }
 }
 
 pub struct TrajectoryPanel {
@@ -123,7 +148,7 @@ impl TrajectoryPanel {
         self.entries.push(TrajEntry {
             seq,
             kind,
-            time: utc_hhmmss(),
+            time: local_hhmmss(),
         });
         if self.entries.len() > 400 {
             self.entries.drain(..self.entries.len() - 400);
@@ -144,11 +169,39 @@ impl TrajectoryPanel {
     }
 }
 
-fn utc_hhmmss() -> String {
+/// 本地时钟 HH:MM:SS。旧实现按 UTC epoch 硬算（已知缺陷，规则 15），
+/// 改为直读系统本地时区。
+fn local_hhmmss() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    format_clock(secs)
+}
+
+/// unix：`localtime_r` 直读本地时区。`struct tm` 的前三个 i32 字段
+/// （sec/min/hour）在 macOS/Linux 布局一致，尾部用足量填充承接内核写入。
+#[cfg(unix)]
+fn format_clock(secs: i64) -> String {
+    #[repr(C)]
+    struct CTm {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        _pad: usize,
+        _rest: [std::ffi::c_char; 96],
+    }
+    unsafe extern "C" {
+        fn localtime_r(t: *const i64, tm: *mut CTm) -> *mut CTm;
+    }
+    let mut tm: CTm = unsafe { std::mem::zeroed() };
+    let tm = unsafe { &*localtime_r(&secs, &mut tm) };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+/// 非 unix 回退：按 UTC 组钟面（不引入额外依赖，保持零依赖）。
+#[cfg(not(unix))]
+fn format_clock(secs: i64) -> String {
     format!(
         "{:02}:{:02}:{:02}",
         (secs / 3600) % 24,
@@ -166,19 +219,144 @@ impl Focusable for TrajectoryPanel {
     }
 }
 
+/// 动作钮语气档（与收件箱面板同一套 token 语言，规则 5/6/7）。
+#[derive(Clone, Copy)]
+enum Tone {
+    /// 主能力动作：朱砂实心 + 白字。
+    Primary,
+    /// 次级动作：面板2 底 + 分隔线描边，hover 描边转朱砂。
+    Neutral,
+}
+
+/// hover「提亮一档」：在原色上叠 7% 白纱（`CHIP_NEUTRAL`），全部取自现有 token。
+fn lifted(base: Rgba) -> Hsla {
+    let base: Hsla = base.into();
+    let veil: Hsla = theme::CHIP_NEUTRAL().into();
+    base.blend(veil)
+}
+
+/// active「压暗一档」：在原色上叠 22% 墨底（`BG`），给按压可感知反馈（规则 7）。
+fn pressed(base: Rgba) -> Hsla {
+    let base: Hsla = base.into();
+    let ink: Hsla = theme::BG().into();
+    base.blend(ink.opacity(0.22))
+}
+
+/// 面板内的紧凑动作钮：全部用 token 自绘，绕开 gpui-component 库主题（近白/近黑）。
+/// 事件语义与旧实现一致：`on_click` 仍原样转发到 `cx.listener` 闭包。
+fn action_button(
+    id: String,
+    label: &'static str,
+    tone: Tone,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let (bg, border, fg, hover_bg, hover_border, hover_fg, active_bg, radius): (
+        Hsla,
+        Hsla,
+        Hsla,
+        Hsla,
+        Hsla,
+        Hsla,
+        Hsla,
+        Pixels,
+    ) = match tone {
+        Tone::Primary => (
+            theme::ACCENT().into(),
+            theme::ACCENT().into(),
+            theme::ON_ACCENT().into(),
+            lifted(theme::ACCENT()),
+            theme::ACCENT().into(),
+            theme::ON_ACCENT().into(),
+            pressed(theme::ACCENT()),
+            theme::RADIUS_BTN,
+        ),
+        Tone::Neutral => (
+            theme::PANEL2().into(),
+            theme::LINE().into(),
+            theme::DIM().into(),
+            lifted(theme::PANEL2()),
+            theme::ACCENT_BORDER().into(),
+            theme::TEXT().into(),
+            pressed(theme::PANEL2()),
+            theme::RADIUS_BTN_SM,
+        ),
+    };
+
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .px(theme::PAD_SM)
+        .py(theme::PAD_XS)
+        .cursor_pointer()
+        .rounded(radius)
+        .bg(bg)
+        .border_1()
+        .border_color(border)
+        .font_family(theme::FAMILY_UI)
+        .text_size(theme::FONT_LABEL)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(fg)
+        .hover(move |style| {
+            style
+                .bg(hover_bg)
+                .border_color(hover_border)
+                .text_color(hover_fg)
+        })
+        .active(move |style| style.bg(active_bg))
+        .on_click(on_click)
+        .child(label)
+}
+
 impl Render for TrajectoryPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = div().flex().flex_col().gap_1p5().size_full();
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(theme::GAP_SM)
+            .size_full();
 
         if self.entries.is_empty() {
+            // —— 空态：主句 TEXT + 引导 DIM + 指向动作 FAINT（规则 15），不许静默吞掉
             list = list.child(
                 div()
-                    .pt_16()
                     .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(theme::GAP_MD)
+                    .p(theme::PAD_2XL)
+                    .rounded(theme::RADIUS_CARD)
+                    .bg(theme::PANEL())
+                    .border_1()
+                    .border_color(theme::LINE())
+                    .font_family(theme::FAMILY_UI)
                     .text_center()
-                    .text_sm()
-                    .text_color(rgb(0x8e8b85))
-                    .child("还没有轨迹。\n跑一次任意 AI 能力，完整 agent 轨迹会像对话一样在这里展开。"),
+                    .child(
+                        div()
+                            .text_size(theme::FONT_BODY)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::TEXT())
+                            .child("还没有轨迹"),
+                    )
+                    .child(
+                        div()
+                            .text_size(theme::FONT_META)
+                            .line_height(relative(theme::LINE_HEIGHT_BODY))
+                            .text_color(theme::DIM())
+                            .child(
+                                "跑一次任意 AI 能力——续写、搭骨架、归类设定、验证报告——完整 agent 轨迹会像对话一样在这里逐条展开。",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme::FAMILY_MONO)
+                            .text_size(theme::FONT_TAG)
+                            .text_color(theme::FAINT())
+                            .child("▸ 发起后新事件自动滚动到此处；⌘⇧J 可随时收起本面板"),
+                    ),
             );
         } else {
             let entries = self.entries.clone();
@@ -187,13 +365,15 @@ impl Render for TrajectoryPanel {
                     TrajKind::Text(text) => {
                         let text = text.clone();
                         Some(
-                            Button::new(format!("adopt-{}", e.seq))
-                                .xsmall()
-                                .label("采纳到正文")
-                                .on_click(cx.listener(move |_this, _, _, cx| {
+                            action_button(
+                                format!("adopt-{}", e.seq),
+                                "采纳到正文",
+                                Tone::Primary,
+                                cx.listener(move |_this, _, _, cx| {
                                     cx.emit(TrajEvent::Adopt(text.clone()));
-                                }))
-                                .into_any_element(),
+                                }),
+                            )
+                            .into_any_element(),
                         )
                     }
                     TrajKind::SelectionDraft { text, .. } => {
@@ -202,31 +382,30 @@ impl Render for TrajectoryPanel {
                         Some(
                             div()
                                 .flex()
-                                .gap_1()
+                                .gap(theme::GAP_MD)
                                 .justify_end()
-                                .child(
-                                    Button::new(format!("repl-{}", e.seq))
-                                        .xsmall()
-                                        .primary()
-                                        .label("替换选区")
-                                        .on_click(cx.listener(move |_this, _, _, cx| {
-                                            cx.emit(TrajEvent::AdoptSelection(replace.clone()));
-                                        })),
-                                )
-                                .child(
-                                    Button::new(format!("appnd-{}", e.seq))
-                                        .xsmall()
-                                        .label("追加到正文")
-                                        .on_click(cx.listener(move |_this, _, _, cx| {
-                                            cx.emit(TrajEvent::Adopt(text.clone()));
-                                        })),
-                                )
+                                .child(action_button(
+                                    format!("repl-{}", e.seq),
+                                    "替换选区",
+                                    Tone::Primary,
+                                    cx.listener(move |_this, _, _, cx| {
+                                        cx.emit(TrajEvent::AdoptSelection(replace.clone()));
+                                    }),
+                                ))
+                                .child(action_button(
+                                    format!("appnd-{}", e.seq),
+                                    "追加到正文",
+                                    Tone::Neutral,
+                                    cx.listener(move |_this, _, _, cx| {
+                                        cx.emit(TrajEvent::Adopt(text.clone()));
+                                    }),
+                                ))
                                 .into_any_element(),
                         )
                     }
                     _ => None,
                 };
-                list = list.child(bubble(e.clone(), adopt_btn));
+                list = list.child(entry_block(e, adopt_btn));
             }
         }
 
@@ -235,72 +414,113 @@ impl Render for TrajectoryPanel {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)
-            .child(div().flex().flex_col().p_2().child(list))
+            .bg(theme::BG())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .px(theme::PAD_MD)
+                    .py(theme::PAD_MD)
+                    .child(list),
+            )
     }
 }
 
+/// 一条轨迹的渲染：轮次走 `.runhead` 分隔行（朱砂标签 + 等宽时间 + 1px 长线），
+/// 其余走语义气泡。
+fn entry_block(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
+    if e.kind.is_turn() {
+        return div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .pt(theme::GAP_MD)
+            .pb(theme::GAP_XS)
+            .child(
+                div()
+                    .font_family(theme::FAMILY_UI)
+                    .text_size(theme::FONT_LABEL)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::ACCENT())
+                    .child(SharedString::from(e.kind.label())),
+            )
+            .child(
+                div()
+                    .font_family(theme::FAMILY_MONO)
+                    .text_size(theme::FONT_LABEL)
+                    .text_color(theme::FAINT())
+                    .child(SharedString::from(e.time)),
+            )
+            .child(div().flex_1().border_t_1().border_color(theme::LINE()))
+            .into_any_element();
+    }
+    bubble(e, adopt)
+}
+
+/// 语义气泡：背景/描边/文字按状态语言四色取 token（规则 6），正文 `FONT_META`（规则 9），
+/// 参数摘要降一档 `DIM`（规则 8），时间戳等宽右对齐（规则 10）。
 fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
-    // 品牌色板（对应原型稿）：墨底 · 朱砂强调 · 绿完成 · 红失败
-    let (bg, fg): (gpui_kit::Hsla, gpui_kit::Hsla) = if e.kind.is_error() {
-        (rgba(0xc0605c1f).into(), rgb(0xc0605c).into())
-    } else if e.kind.is_done() {
-        (rgba(0x7fae721e).into(), rgb(0x7fae72).into())
-    } else if e.kind.is_turn() {
-        (rgba(0xc96f4a1a).into(), rgb(0xc96f4a).into())
+    let (bg, border, fg): (Rgba, Rgba, Rgba) = if e.kind.is_error() {
+        (theme::RED_SOFT(), theme::LINE(), theme::RED())
+    } else if e.kind.is_done() || matches!(e.kind, TrajKind::ToolOk(_)) {
+        (theme::GREEN_SOFT(), theme::GREEN_BORDER(), theme::GREEN())
+    } else if e.kind.is_tool() || e.kind.is_user() {
+        (theme::ACCENT_SOFT(), theme::ACCENT_BORDER(), theme::TEXT())
     } else {
-        (rgba(0xffffff0d).into(), rgb(0xd8d5cf).into())
+        (theme::PANEL(), theme::LINE(), theme::TEXT())
     };
 
     let mut row = div()
         .flex()
         .flex_col()
-        .gap_0p5()
+        .gap(theme::GAP_XS)
         .w_full()
-        .rounded_md()
-        .px_2()
-        .py_1()
-        .bg(bg);
-
-    if e.kind.is_turn() {
-        row = row.child(
+        .rounded(theme::RADIUS_CHIP)
+        .px(theme::GAP_LG)
+        .py(theme::PAD_SM)
+        .bg(bg)
+        .border_1()
+        .border_color(border)
+        .child(
             div()
                 .w_full()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_family(theme::FAMILY_UI)
+                .text_size(theme::FONT_META)
+                .line_height(relative(theme::LINE_HEIGHT_BODY))
                 .text_color(fg)
                 .child(SharedString::from(e.kind.label())),
         );
-    } else {
-        row = row.child(
-            div()
-                .w_full()
-                .text_sm()
-                .text_color(fg)
-                .child(SharedString::from(e.kind.label())),
-        );
-    }
 
     if let Some(detail) = e.kind.detail() {
         row = row.child(
             div()
                 .w_full()
-                .text_xs()
-                .text_color(rgb(0x8e8b85))
+                .font_family(theme::FAMILY_UI)
+                .text_size(theme::FONT_TAG)
+                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                .text_color(theme::DIM())
                 .child(SharedString::from(detail)),
         );
     }
 
-    row = row.child(
+    // 页脚：动作钮靠右，时间戳收进等宽右列（规则 10）。
+    let mut footer = div()
+        .flex()
+        .w_full()
+        .items_center()
+        .justify_end()
+        .gap(theme::GAP_MD);
+    if let Some(btn) = adopt {
+        footer = footer.child(btn);
+    }
+    footer = footer.child(
         div()
-            .w_full()
-            .text_xs()
-            .text_color(rgb(0x5d5b57))
+            .font_family(theme::FAMILY_MONO)
+            .text_size(theme::FONT_LABEL)
+            .text_color(theme::FAINT())
             .child(SharedString::from(e.time)),
     );
-
-    if let Some(btn) = adopt {
-        row = row.child(div().flex().justify_end().child(btn));
-    }
+    row = row.child(footer);
 
     row.into_any_element()
 }
@@ -325,8 +545,16 @@ impl ComponentPanel for TrajectoryPanel {
 
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .text_sm()
-            .font_weight(FontWeight::MEDIUM)
-            .child("Agent 轨迹")
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .child(
+                div()
+                    .font_family(theme::FAMILY_UI)
+                    .text_size(theme::FONT_TITLE_SM)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::TEXT())
+                    .child("Agent 轨迹"),
+            )
     }
 }
