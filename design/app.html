@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>执笔 3.0 · 完整可交互原型</title>
+</head>
+<body style="margin:0;background:#101114">
+<div id="zhibi-app" class="za">
+<style>
+  /* ── 执笔 3.0 可交互原型 · 墨底/宣纸/朱砂 ── */
+  .za { --bg:#17181c; --panel:#1e2026; --panel2:#24262d; --line:#2e3138; --text:#d8d5cf; --dim:#8e8b85; --faint:#5d5b57;
+       --accent:#c96f4a; --accent-soft:rgba(201,111,74,.14); --green:#7fae72; --green-soft:rgba(127,174,114,.12);
+       --blue:#6f9bc4; --blue-soft:rgba(111,155,196,.12); --purple:#a08cc0; --red:#c0605c; --red-soft:rgba(192,96,92,.12);
+       font-family:-apple-system,"PingFang SC","Segoe UI",sans-serif; font-size:13px; line-height:1.55; color:var(--text);
+       background:var(--bg); border:1px solid var(--line); border-radius:12px; overflow:hidden; display:flex; flex-direction:column; height:760px; user-select:none; }
+  .za .za-prose, .za .za-cbody, .za .za-bubble { user-select:text; }
+  .za * { box-sizing:border-box; margin:0; padding:0; }
+  .za .serif { font-family:"Noto Serif SC","Songti SC",serif; }
+  .za button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; }
+  .za ::selection { background:rgba(111,155,196,.35); }
+
+  .za-tb { display:flex; align-items:center; gap:10px; padding:8px 14px; background:var(--panel); border-bottom:1px solid var(--line); flex:none; }
+  .za-dots { display:flex; gap:6px; } .za-dots i { width:11px; height:11px; border-radius:50%; }
+  .za-dots i:nth-child(1){background:#ec6a5e}.za-dots i:nth-child(2){background:#f4bf4f}.za-dots i:nth-child(3){background:#61c554}
+  .za-tb .nm { color:var(--dim); font-size:12px; } .za-tb .nm b { color:var(--text); font-weight:500; }
+  .za-tb .sp { flex:1; }
+  .za-ib { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:7px; border:1px solid var(--line); background:var(--panel2); color:var(--dim); font-size:11.5px; }
+  .za-ib:hover { color:var(--text); border-color:#3a3d45; }
+  .za-ib.pri { background:var(--accent-soft); border-color:rgba(201,111,74,.45); color:var(--text); }
+  .za-chip { display:inline-flex; align-items:center; font-size:10.5px; border-radius:9px; padding:1px 9px; line-height:17px; border:1px solid var(--line); color:var(--dim); }
+  .za-chip.g { color:var(--green); border-color:rgba(127,174,114,.35); }
+  .za-chip.b { color:var(--blue); border-color:rgba(111,155,196,.4); }
+  .za-chip.r { color:var(--red); border-color:rgba(192,96,92,.4); }
+  .za-chip.a { color:var(--accent); border-color:rgba(201,111,74,.45); }
+  .za-badge { background:var(--accent); color:#fff; font-size:10px; border-radius:8px; padding:0 6px; line-height:15px; }
+
+  .za-body { display:flex; flex:1; min-height:0; }
+  .za-side { width:172px; flex:none; background:var(--panel); border-right:1px solid var(--line); padding:9px 7px; overflow-y:auto; }
+  .za-side .sec { font-size:10px; color:var(--faint); letter-spacing:.14em; margin:11px 7px 4px; }
+  .za-side .sec:first-child { margin-top:0; }
+  .za-nav { display:flex; align-items:center; gap:7px; width:100%; text-align:left; padding:5px 8px; border-radius:7px; color:var(--dim); font-size:12px; }
+  .za-nav:hover { color:var(--text); }
+  .za-nav.on { background:var(--accent-soft); color:var(--text); }
+  .za-nav .ch { margin-left:auto; font-size:10px; color:var(--faint); }
+  .za-nav.on .ch { color:var(--accent); }
+
+  .za-main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .za-view { flex:1; min-height:0; overflow-y:auto; }
+
+  /* 书架 */
+  .za-shelf { padding:18px 22px 24px; }
+  .za-shelf h1 { font-size:18px; font-weight:600; margin-bottom:14px; display:flex; align-items:center; gap:10px; }
+  .za-books { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:14px; }
+  .za-book { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; text-align:left; transition:transform .15s,border-color .15s; }
+  .za-book:hover { transform:translateY(-2px); border-color:rgba(201,111,74,.5); }
+  .za-cover { aspect-ratio:3/4; position:relative; display:grid; place-items:center; }
+  .za-cover .ci { position:absolute; inset:0; }
+  .za-cover .ct { position:relative; writing-mode:vertical-rl; font-size:21px; letter-spacing:.3em; color:#e8ddca; text-shadow:0 2px 12px rgba(0,0,0,.5); }
+  .za-cover .ca { position:absolute; bottom:9px; right:11px; font-size:9px; letter-spacing:.2em; color:rgba(232,221,202,.5); }
+  .za-bmeta { padding:9px 11px 11px; }
+  .za-bmeta .bt { font-size:12.5px; font-weight:600; }
+  .za-bmeta .bi { margin-top:3px; font-size:10.5px; color:var(--faint); }
+
+  /* 编辑器 */
+  .za-edhead { display:flex; align-items:baseline; gap:10px; padding:13px 20px 6px; }
+  .za-edhead h2 { font-size:15px; font-weight:600; }
+  .za-edhead .mt { color:var(--faint); font-size:11px; }
+  .za-edhead .sp { flex:1; }
+  .za-prose { max-width:640px; margin:0 auto; padding:4px 20px 8px; }
+  .za-prose p { text-indent:2em; font-size:14px; line-height:1.85; margin-bottom:11px; border-radius:6px; }
+  .za-prose .pend { display:inline-block; width:26px; text-align:center; color:var(--faint); opacity:0; cursor:pointer; text-indent:0; font-style:normal; }
+  .za-prose p:hover .pend { opacity:.7; }
+  .za-ghost { color:#6e6a63; font-style:italic; }
+  .za-caret { color:var(--accent); font-style:normal; animation:zacaret 1.1s steps(1) infinite; }
+  @keyframes zacaret { 50%{opacity:0} }
+  .za-kh { display:inline-flex; gap:4px; vertical-align:2px; margin-left:7px; font-size:10px; font-style:normal; color:var(--dim); border:1px solid var(--line); background:var(--panel2); border-radius:5px; padding:0 6px; line-height:17px; }
+  .za-kh kbd { font-family:inherit; color:var(--accent); }
+  .za-inkdot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--accent); opacity:.55; vertical-align:3px; margin-left:6px; }
+  .za-settled { background:var(--green-soft); border-radius:4px; }
+  .za-del { color:var(--faint); text-decoration:line-through; }
+
+  .za-branches { max-width:640px; margin:2px auto 10px; }
+  .za-bh { display:flex; align-items:center; gap:7px; margin-bottom:8px; font-size:11.5px; color:var(--dim); flex-wrap:wrap; }
+  .za-bh .sp { flex:1; }
+  .za-brow { display:flex; gap:9px; }
+  .za-bcard { flex:1; min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; text-align:left; }
+  .za-bcard.sel { border-color:var(--accent); background:var(--accent-soft); }
+  .za-bcard .bt { display:flex; align-items:center; gap:6px; font-size:12px; font-weight:600; margin-bottom:5px; }
+  .za-bcard .dot { width:7px; height:7px; border-radius:50%; }
+  .za-bcard .bx { font-size:11px; color:var(--dim); line-height:1.6; min-height:74px; }
+  .za-bcard .bf { margin-top:7px; font-size:10px; color:var(--faint); }
+  .za-bcard.picking { animation:zapulse .5s ease; }
+  @keyframes zapulse { 0%{transform:scale(.98)} 50%{transform:scale(1.01)} 100%{transform:scale(1)} }
+
+  .za-edtools { display:flex; gap:6px; padding:8px 20px; border-top:1px solid var(--line); background:var(--panel); flex-wrap:wrap; flex:none; }
+  .za-statusbar { display:flex; align-items:center; gap:9px; padding:6px 20px; background:var(--panel); border-top:1px solid var(--line); font-size:11px; color:var(--dim); flex:none; min-height:30px; }
+
+  /* 通用面板/表格 */
+  .za-pad { padding:16px 20px 22px; }
+  .za-panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; margin-bottom:13px; }
+  .za-panel h3 { font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:9px; margin-bottom:10px; flex-wrap:wrap; }
+  .za-panel h3 .n { font-weight:400; color:var(--faint); font-size:11px; }
+  .za-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .za-table th { text-align:left; color:var(--faint); font-weight:500; font-size:10.5px; padding:5px 9px; border-bottom:1px solid var(--line); }
+  .za-table td { padding:6px 9px; border-bottom:1px solid rgba(46,49,56,.5); vertical-align:top; }
+  .za-mono { font-family:ui-monospace,monospace; font-size:11px; color:var(--faint); }
+  .za-bar { height:8px; border-radius:4px; background:rgba(255,255,255,.06); position:relative; overflow:hidden; }
+  .za-bar i { position:absolute; inset:0 auto 0 0; border-radius:4px; }
+
+  /* Dock */
+  .za-dock { width:320px; flex:none; background:var(--panel); border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .za-dock.narrow { width:250px; }
+  .za-zb { position:absolute; right:0; top:0; bottom:0; width:4px; cursor:col-resize; }
+  .za-dh { display:flex; align-items:center; gap:7px; padding:8px 11px; border-bottom:1px solid var(--line); flex:none; }
+  .za-dh b { font-size:12px; font-weight:600; }
+  .za-dh .sp { flex:1; }
+  .za-dtabs { display:flex; gap:2px; background:var(--panel2); border-radius:8px; padding:2px; }
+  .za-dtabs button { font-size:10.5px; color:var(--faint); padding:2px 10px; border-radius:6px; }
+  .za-dtabs button.on { background:var(--accent-soft); color:var(--text); }
+  .za-dbody { flex:1; min-height:0; overflow-y:auto; padding:9px 10px; display:flex; flex-direction:column; gap:5px; }
+  .za-rh { display:flex; align-items:center; gap:6px; margin:6px 0 1px; color:var(--accent); font-size:10.5px; font-weight:600; }
+  .za-rh .ln { flex:1; height:1px; background:var(--line); }
+  .za-rh .t { color:var(--faint); font-weight:400; }
+  .za-bubble { background:var(--panel2); border-radius:8px; padding:6px 9px; font-size:11px; color:var(--dim); line-height:1.5; }
+  .za-bubble b { color:var(--text); font-weight:500; }
+  .za-bubble .sub { display:block; font-size:9.5px; color:var(--faint); margin-top:2px; }
+  .za-bubble.tool { background:var(--accent-soft); }
+  .za-bubble.ok { background:var(--green-soft); }
+  .za-bubble.err { background:var(--red-soft); color:var(--red); }
+  .za-dock .live { border-top:1px solid var(--line); padding:8px 11px 10px; background:rgba(111,155,196,.06); flex:none; }
+  .za-dock .lv { display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--blue); font-weight:600; }
+  .za-dock .spin { width:10px; height:10px; border:2px solid var(--blue); border-top-color:transparent; border-radius:50%; display:inline-block; animation:zaspin .9s linear infinite; }
+  @keyframes zaspin { to{transform:rotate(360deg)} }
+  .za-dock pre { margin-top:5px; font-family:ui-monospace,monospace; font-size:9.5px; color:var(--faint); line-height:1.5; white-space:pre-wrap; max-height:70px; overflow:hidden; }
+
+  /* 收件箱提案卡 */
+  .za-pcard { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:11px; padding:11px 13px; margin-bottom:10px; }
+  .za-pcard.acc { border-left-color:var(--green); opacity:.8; }
+  .za-pcard.rej { border-left-color:var(--red); opacity:.6; }
+  .za-phead { display:flex; align-items:center; gap:8px; }
+  .za-pkind { font-size:10px; border-radius:5px; padding:1px 8px; background:var(--accent-soft); color:var(--accent); }
+  .za-ptitle { font-size:12.5px; font-weight:600; }
+  .za-pmeta { margin-left:auto; font-size:10px; color:var(--faint); }
+  .za-pbody { margin-top:6px; font-size:11.5px; color:var(--dim); }
+  .za-prow { display:flex; align-items:center; gap:7px; padding:3px 0; }
+  .za-cat { font-size:10px; border-radius:5px; padding:0 8px; line-height:17px; background:var(--blue-soft); color:var(--blue); flex:none; }
+  .za-pact { display:flex; gap:7px; margin-top:9px; align-items:center; }
+  .za-btn { border-radius:7px; padding:3px 12px; font-size:11.5px; border:1px solid var(--line); background:var(--panel2); color:var(--dim); }
+  .za-btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:500; }
+  .za-btn.gh { border-color:transparent; background:transparent; }
+
+  /* 设定 */
+  .za-canon { display:flex; gap:12px; min-height:380px; }
+  .za-cgroups { width:190px; flex:none; border-right:1px solid var(--line); padding-right:10px; }
+  .za-cg { font-size:11px; color:var(--faint); letter-spacing:.1em; margin:9px 4px 4px; }
+  .za-ci { display:block; width:100%; text-align:left; font-size:12px; color:var(--dim); padding:4px 8px; border-radius:6px; }
+  .za-ci:hover { color:var(--text); }
+  .za-ci.on { background:var(--accent-soft); color:var(--text); }
+  .za-cbody { flex:1; min-width:0; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:13px 15px; font-size:12.5px; line-height:1.8; }
+  .za-cbody h4 { font-size:13px; margin-bottom:8px; }
+  .za-cbody .cm { display:inline-block; font-size:10px; border-radius:5px; padding:0 8px; line-height:17px; background:var(--blue-soft); color:var(--blue); margin-left:8px; vertical-align:2px; }
+
+  /* 弹层 */
+  .za-modal { position:absolute; inset:0; background:rgba(0,0,0,.55); display:grid; place-items:center; z-index:50; }
+  .za-modal .mbox { width:340px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; }
+  .za-modal h4 { font-size:14px; margin-bottom:10px; }
+  .za-modal input, .za-modal textarea { width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--text); font:inherit; font-size:12px; padding:6px 10px; outline:none; }
+  .za-modal .mrow { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+
+  .za-selmenu { position:fixed; width:300px; background:#22242b; border:1px solid #3a3d45; border-radius:11px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:10px 11px 9px; z-index:60; }
+  .za-selmenu .t { font-size:10px; color:var(--faint); margin-bottom:6px; }
+  .za-selmenu .row { display:flex; gap:5px; flex-wrap:wrap; }
+  .za-selmenu .mb { border:1px solid #3a3d45; background:#1e2026; color:var(--text); font-size:11.5px; border-radius:6px; padding:3px 10px; }
+  .za-selmenu .mb.hl { border-color:rgba(201,111,74,.5); background:var(--accent-soft); }
+  .za-selmenu input { margin-top:7px; width:100%; background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--dim); font-size:11px; padding:4px 8px; outline:none; }
+  .za-selmenu .land { display:flex; align-items:center; gap:5px; margin-top:8px; font-size:10px; color:var(--faint); flex-wrap:wrap; }
+  .za-selmenu .land span.l { border:1px solid #3a3d45; border-radius:5px; padding:1px 8px; color:var(--dim); }
+  .za-selmenu .land span.l.on { border-color:rgba(111,155,196,.55); color:var(--blue); background:var(--blue-soft); }
+
+  .za-toasts { position:absolute; bottom:14px; left:50%; transform:translateX(-50%); display:flex; flex-direction:column; gap:6px; z-index:70; align-items:center; }
+  .za-toast { background:#2a2d34; border:1px solid #3a3d45; color:var(--text); font-size:11.5px; border-radius:9px; padding:5px 14px; box-shadow:0 6px 18px rgba(0,0,0,.4); animation:zain .18s ease; }
+  @keyframes zain { from { opacity:0; transform:translateY(6px);} }
+  .za-focus .za-side, .za-focus .za-dock { display:none; }
+  .za-stat-bars { display:flex; align-items:flex-end; gap:10px; height:110px; padding:4px 6px 0; }
+  .za-sbar { flex:1; display:flex; flex-direction:column; align-items:center; gap:5px; }
+  .za-sbar i { display:block; width:100%; max-width:34px; border-radius:5px 5px 0 0; background:var(--accent-soft); border-top:2px solid var(--accent); }
+  .za-sbar span { font-size:9.5px; color:var(--faint); }
+  @media (prefers-reduced-motion: reduce) { .za * { animation:none !important; transition:none !important; } }
+</style>
+
+<div class="za-tb">
+  <div class="za-dots"><i></i><i></i><i></i></div>
+  <span class="nm" id="za-crumb">执笔 3.0 — <b>书架</b></span>
+  <span class="sp"></span>
+  <span class="za-chip" id="za-dshchip">DSH：未启动</span>
+  <button class="za-ib" data-act="focus-toggle" title="只留稿纸">专注</button>
+  <button class="za-ib" data-act="nav" data-screen="settings">设置</button>
+</div>
+
+<div class="za-body" id="za-body"></div>
+
+<div class="za-statusbar" id="za-status"></div>
+<div class="za-toasts" id="za-toasts"></div>
+<div id="za-layers"></div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const root = $('zhibi-app');
+  const now = () => { const d = new Date(); const p = (x)=>String(x).padStart(2,'0'); return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); };
+  const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  /* ───── 状态 ───── */
+  const S = {
+    screen: 'shelf', chapter: 12, dockOpen: true, dockTab: 'traj', focus: false,
+    running: null, stream: '',
+    chapters: [
+      { n:1, t:'交付说明', st:'定稿', w:120 }, { n:2, t:'北境来客', st:'定稿', w:3200 },
+      { n:3, t:'雪夜葬刀', st:'定稿', w:3100 }, { n:11, t:'旧账', st:'已润色', w:2980 },
+      { n:12, t:'断刀', st:'写作中', w:3214 }, { n:13, t:'旧约', st:'未规划', w:0 },
+    ],
+    prose: [
+      { t:'沈砚按着刀柄走进雨里。巷口的灯笼在风里晃，把他的影子拉长又压短，像一根随时会断的线。三个月了，那把断刀始终没有离开过他的腰——刀是师父留下的，缺口处还沾着北境的铁锈。', ink:true },
+      { t:'酒肆里坐着的人比他想的要多。靠窗那桌在赌钱，押的是明日漕帮开仓的价；角落里两个短打汉子压着嗓子说话，说的却是「赤星军」三个字。沈砚要了一角酒，背对着他们坐下，耳朵却支棱着。', ink:false },
+      { t:'「听说了吗，雁回山那边的老观又燃了灯。」', ink:false },
+      { t:'「嘘——那灯三十年前就该灭了。」', ink:false },
+      { t:'沈砚的手指在刀柄上收紧了一分。老观燃灯，是师父当年留下的暗号：灯亮，就是有人回来了。他没有回头，只是把酒一口饮尽。', ink:false },
+    ],
+    ghostSentences: [
+      '他没有回头，只是把酒一口饮尽——师兄，你终究还是走到这一步了吗。',
+      '灯影里，他仿佛看见三年前那个替他挡下第一刀的人。',
+      '刀在腰间轻轻一颤，像也在等一个答案。',
+    ],
+    ghostIdx: 0, ghostPara: null,
+    branches: null, branchSet: 0, branchSel: null,
+    branchPool: [
+      [
+        { k:'A · 复仇线', c:'#c96f4a', tag:'张力↑', x:'沈砚连夜出城，直奔雁回山。他要在灯灭之前见到那个人——哪怕刀刃相向。山道上雪没到脚踝，他想起的是师父咽气前那句「别去找他」。', f:'接 F03 伏笔 · 新埋「观灯人身份」' },
+        { k:'B · 师门线', c:'#6f9bc4', tag:'信息差↑', x:'来的不是师兄，是师兄的徒弟。少年跪在雪里，交出半块虎符，说师门三十年前的旧账，要沈砚亲手去翻。灯，是照给活人看的路。', f:'回收 E07 · 揭读者未知层' },
+        { k:'C · 温情线', c:'#7fae72', tag:'喘息位', x:'沈砚没有动。他给灯留了一夜的时间——若天亮灯还亮着，他便回去；若灭了，从此江湖两清。这一夜他和酒肆的赌客们掷了一回骰子。', f:'节奏降速 · 铺人物日常面' },
+      ],
+      [
+        { k:'A · 追兵线', c:'#c96f4a', tag:'危机↑', x:'酒肆的门被推开，风雪灌进来。三个北境口音的汉子抖落蓑衣，目光越过酒客，精准地落在沈砚腰间的断刀上。', f:'新危机 · 埋「北境追杀令」' },
+        { k:'B · 师门线', c:'#6f9bc4', tag:'信息差↑', x:'来的不是师兄，是师兄的徒弟。少年跪在雪里，交出半块虎符，说师门三十年前的旧账，要沈砚亲手去翻。', f:'回收 E07 · 揭读者未知层' },
+        { k:'C · 悬念线', c:'#a08cc0', tag:'谜面↑', x:'灯，在第三夜突然熄了。熄得毫无征兆，像被一只手掐灭。沈砚发现，酒肆里唯一没有惊讶的人，是掌柜。', f:'埋「掌柜身份」 · 悬念型钩子' },
+      ],
+    ],
+    proposals: [
+      { id:'p1', cap:'设定归类', kind:'canonClassify', title:'设定归类（4 篇）', st:'待确认', meta:'14:20 · 导入后自动',
+        items:[ {t:'雁回山旧观', c:'世界观'}, {t:'观灯暗号', c:'剧情大纲'}, {t:'沈砚', c:'势力人物', rn:'沈砚·断刀客'}, {t:'灵力枯竭症', c:'题材规则'} ] },
+    ],
+    clues: [
+      { id:'F03', t:'断刀缺口与北境铁锈', p:2, act:12, pace:'即将兑现', paceC:'p1', st:'回收中', note:'种下原文与第5章不一致 → 修复提案含「校正原文」' },
+      { id:'F04', t:'师父的临终遗言「别去找他」', p:4, act:12, pace:'到期提醒', paceC:'p2', st:'已升级' },
+      { id:'F06', t:'漕帮开仓价暗盘', p:8, act:9, pace:'长线', paceC:'p5', st:'烂账预警', note:'连续 9 章无动作' },
+    ],
+    canon: [
+      { t:'雁回山旧观', cat:null, x:'北境旧观，三十年前一夜改灯为号。观中燃灯为「有人归山」之约，灭灯为恩断义绝。' },
+      { t:'观灯暗号', cat:null, x:'灯亮=有人回来了；灯灭=恩断义绝。师父留下的最后一道暗号，与雁回山旧观直接相关。' },
+      { t:'沈砚', cat:null, x:'断刀客。腰间断刀为师父遗物，缺口处沾北境铁锈。三个月前自北境南归。' },
+      { t:'灵力枯竭症', cat:null, x:'本世界修士灵力会随年岁缓慢枯竭，唯「观灯」仪式可暂缓——构成寻山动机的题材规则。' },
+    ],
+    lines: [
+      { id:'L01', n:'断刀寻凶（主线）', pct:86, c:'var(--green)', st:'健康', sc:'g' },
+      { id:'L02', n:'师门旧案', pct:64, c:'var(--purple)', st:'推进中', sc:'p' },
+      { id:'L03', n:'温情线（酒肆群像）', pct:38, c:'#d9a05b', st:'放缓 5 章', sc:'o' },
+      { id:'L04', n:'漕帮暗流', pct:22, c:'var(--red)', st:'断线 12 章', sc:'r' },
+    ],
+    traj: [], trajCap: 60, acceptN: 86, rejectN: 17, propTotal: 412, aiRunningN: 0,
+    weekly: [1240, 2380, 980, 3120, 2600, 0, 1842],
+    testState: null,
+  };
+  const pendingN = () => S.proposals.filter(p => p.st === '待确认').length;
+
+  /* ───── 轨迹 ───── */
+  function traj(kind, text, sub) {
+    S.traj.push({ kind, text, sub, time: now() });
+    if (S.traj.length > S.trajCap) S.traj.shift();
+    if ($('za-dbody')) { const d = $('za-dbody'); d.scrollTop = d.scrollHeight; }
+  }
+  function aiRun(cap, steps, done) {
+    S.aiRunningN++;
+    renderStatus();
+    traj('turn', cap, null);
+    let i = 0, t = 300;
+    const step = () => {
+      if (i >= steps.length) {
+        S.aiRunningN = Math.max(0, S.aiRunningN - 1);
+        traj('ok', `${cap} 完成 · 新登记 1 条提案，待作者审阅`);
+        renderStatus(); renderDock();
+        if (done) done();
+        return;
+      }
+      const s = steps[i++];
+      if (s) traj(s.k || 'info', s.t, s.sub);
+      setTimeout(step, s && s.wait || 550);
+    };
+    setTimeout(step, t);
+  }
+
+  /* ───── 渲染 ───── */
+  function render() {
+    renderCrumb(); renderBody(); renderDock(); renderStatus();
+  }
+  function renderCrumb() {
+    const names = { shelf:'书架', editor:'第12章 · 断刀', outline:'大纲 · 时间线', clues:'伏笔台账', canon:'设定', memory:'记忆中枢', stats:'写作统计', inbox:'提案收件箱', settings:'设置' };
+    $('za-crumb').innerHTML = `执笔 3.0 — <b>${esc(names[S.screen] || '')}</b>`;
+    $('za-dshchip').textContent = 'DSH：已连接（sdk 子进程）';
+    $('za-dshchip').className = 'za-chip g';
+  }
+  function renderStatus() {
+    const el = $('za-status');
+    if (S.aiRunningN > 0) {
+      el.innerHTML = `<span class="za-dock"><span class="spin" style="vertical-align:-2px;margin-right:6px"></span></span> AI 运行中（${S.aiRunningN} 项）· 产出将进提案收件箱 <span style="flex:1"></span><span class="za-chip b">session.event 流 → 右侧轨迹窗</span>`;
+    } else if (pendingN() > 0) {
+      el.innerHTML = `✅ 空闲 · <b style="color:var(--green)">待裁决提案 ${pendingN()} 条</b>（收件箱/右侧「提案」页签） <span style="flex:1"></span><span class="note" style="color:var(--faint)">采纳前不落盘</span>`;
+    } else {
+      el.innerHTML = `空闲 · 一切就绪 <span style="flex:1"></span><span class="note" style="color:var(--faint)">人写正文，AI 研墨</span>`;
+    }
+  }
+
+  function renderBody() {
+    const b = $('za-body');
+    const side = S.focus ? '' : `<aside class="za-side">${sideNav()}</aside>`;
+    const dock = (S.focus || !S.dockOpen) ? '' : dockHtml();
+    b.className = 'za-body' + (S.focus ? ' za-focus' : '');
+    b.innerHTML = side + `<div class="za-main"><div class="za-view" id="za-view">${screenHtml()}</div></div>` + dock;
+    if (S.screen === 'editor') {
+      const v = $('za-view'); if (v) v.scrollTop = v.scrollHeight;
+      const d = $('za-dbody'); if (d) d.scrollTop = d.scrollHeight;
+    }
+  }
+
+  function sideNav() {
+    const nav = (screen, label, extra) => `<button class="za-nav ${S.screen===screen?'on':''}" data-act="nav" data-screen="${screen}">${label}${extra||''}</button>`;
+    const ch = S.chapters.map(c =>
+      `<button class="za-nav ${S.screen==='editor'&&S.chapter===c.n?'on':''}" data-act="open-ch" data-n="${c.n}"><span class="ch">${String(c.n).padStart(2,'0')}</span>${esc(c.t)}</button>`).join('');
+    return `
+      <div class="sec">书架</div>${nav('shelf','我的作品')}
+      <div class="sec">章节 · 卷一</div>${ch}
+      <div class="sec">规划</div>${nav('outline','大纲 · 时间线')}${nav('clues','伏笔台账')}${nav('canon','设定')}
+      <div class="sec">账房</div>${nav('memory','记忆中枢')}${nav('stats','写作统计')}
+      ${nav('inbox', '提案收件箱', pendingN()>0?`<span class="za-badge" style="margin-left:auto">${pendingN()}</span>`:'')}`;
+  }
+
+  function screenHtml() {
+    switch (S.screen) {
+      case 'shelf': return vShelf();
+      case 'editor': return vEditor();
+      case 'outline': return vOutline();
+      case 'clues': return vClues();
+      case 'canon': return vCanon();
+      case 'memory': return vMemory();
+      case 'stats': return vStats();
+      case 'inbox': return vInbox();
+      case 'settings': return vSettings();
+    }
+    return '';
+  }
+
+  function vShelf() {
+    return `<div class="za-shelf">
+      <h1>书架 <span class="note" style="font-weight:400;font-size:11px;color:var(--faint)">3 本 · 今日 1,842 字</span>
+        <span style="flex:1"></span><span class="za-chip g">今日 72% · 连续 14 天</span></h1>
+      <div class="za-books">
+        <button class="za-book" data-act="open-book">
+          <div class="za-cover" style="background:linear-gradient(160deg,#2a2033,#17181c 55%,#3a1f1a)"><div class="ci" style="background-image:radial-gradient(circle at 70% 30%, rgba(201,111,74,.55) 0 8px, transparent 9px), radial-gradient(circle at 72% 32%, rgba(232,221,202,.7) 0 3px, transparent 4px)"></div><div class="ct serif">赤星</div><div class="ca">kelthas</div></div>
+          <div class="za-bmeta"><div class="bt">赤星</div><div class="bi">仙侠 · 12.4 万字 · 40 章 · 刚刚编辑</div><div class="bi" style="margin-top:5px"><span class="za-chip g">写作中</span><span class="za-chip a">待裁决 1</span></div></div>
+        </button>
+        <div class="za-book"><div class="za-cover" style="background:linear-gradient(160deg,#1a2a33,#17181c 60%,#14324a)"><div class="ct serif">雾都异闻</div><div class="ca">kelthas</div></div><div class="za-bmeta"><div class="bt">雾都异闻</div><div class="bi">悬疑 · 3.1 万字 · 9 章</div></div></div>
+        <div class="za-book"><div class="za-cover" style="background:linear-gradient(160deg,#33261a,#17181c 55%,#4a3a14)"><div class="ct serif">炊烟记</div><div class="ca">kelthas</div></div><div class="za-bmeta"><div class="bt">炊烟记</div><div class="bi">现实 · 8,600 字 · 3 章</div></div></div>
+        <button class="za-book" data-act="new-book" style="border:1.5px dashed var(--line); background:transparent; display:grid; place-items:center; aspect-ratio:3/4;">
+          <div style="text-align:center"><div style="width:40px;height:40px;border-radius:50%;background:var(--panel2);display:grid;place-items:center;margin:0 auto;font-size:20px;color:var(--dim)">＋</div><div style="font-size:11px;color:var(--faint);margin-top:7px">新建作品</div></div>
+        </button>
+      </div>
+      <div class="note" style="margin-top:16px">点《赤星》进入主写作台——书卡上的「待裁决」就是收件箱里设定归类提案的提醒。</div>
+    </div>`;
+  }
+
+  function vEditor() {
+    const paras = S.prose.map((p, i) => {
+      let inner = esc(p.t);
+      if (S.ghost && S.ghost.para === i) {
+        inner += `<span class="za-ghost">${esc(S.ghost.s)}<span class="za-caret">▍</span><span class="za-kh"><kbd>Tab</kbd> 采纳这句</span><span class="za-kh"><kbd>Esc</kbd> 作废</span></span>`;
+      }
+      if (p.ink && !S.ghost?.para !== i) inner += `<span class="za-inkdot" title="此段有 AI 参与，可回看轨迹"></span>`;
+      return `<p data-p="${i}">${inner}<span class="pend" data-act="ghost" data-p="${i}" title="笔停在这里，让 AI 续一句">▁续</span></p>`;
+    }).join('');
+    let branches = '';
+    if (S.branches) {
+      branches = `<div class="za-branches"><div class="za-bh">AI 给了 3 个走向 · 第13章开头 <span class="za-chip b">每张 80-150 字 · 带伏笔影响</span><span class="sp"></span>
+        <button class="za-ib" data-act="branch-reroll">换一批</button><button class="za-ib" data-act="branch-none">全部不要</button></div><div class="za-brow">`;
+      branches += S.branches.map((b, i) => `<button class="za-bcard ${S.branchSel===i?'sel':''}" data-act="branch-pick" data-i="${i}">
+        <div class="bt"><span class="dot" style="background:${b.c}"></span>${esc(b.k)}<span class="za-chip" style="margin-left:auto">${b.tag}</span></div>
+        <div class="bx">${esc(b.x)}</div><div class="bf">${esc(b.f)}</div></button>`).join('') + '</div></div>';
+    } else if (S.branchSelDraft) {
+      branches = `<div class="za-branches"><div class="za-bh"><span class="za-chip g">✓ 已选「${esc(S.branchSelDraft.k)}」→ 展开为第13章草稿提案（收件箱可审）</span><span class="sp"></span><button class="za-ib" data-act="branch-gen">再看几个走向</button></div></div>`;
+    } else {
+      branches = `<div class="za-branches"><div class="za-bh"><button class="za-ib pri" data-act="branch-gen">✦ 给我几个走向（⌘⇧→）</button><span class="note" style="color:var(--faint);font-size:10.5px">第13章还没规划——让 AI 一次给 3 个走向供选</span></div></div>`;
+    }
+    const tools = [
+      ['ai-skeleton','搭骨架',''],['ai-pipeline','一键成章','pri'],['ai-validate','一键验证',''],
+      ['ai-deslop','去AI味',''],['ai-memory','让AI记一笔',''],['ai-inventory','AI盘点伏笔',''],
+    ].map(([a, l, c]) => `<button class="za-ib ${c}" data-act="${a}">${l}</button>`).join('');
+    return `<div class="za-edhead"><h2 class="serif">第12章 · 断刀</h2><span class="mt">第 3/40 章 · 3,214 字</span><span class="za-chip g">写作中</span><span class="sp"></span><span class="za-chip">快照 3</span></div>
+      <div class="za-view-inner"><div class="za-prose serif" id="za-prose">${paras}</div>${branches}</div>
+      <div class="za-edtools">${tools}<span style="flex:1"></span><span class="za-ib" title="覆盖/采纳前自动快照">快照</span></div>`;
+  }
+
+  function vOutline() {
+    return `<div class="za-pad">
+      <div class="za-panel"><h3>大纲实时对账 <span class="n">计划 vs 实际 · 采纳更新提案后大纲才变</span>
+        <span style="margin-left:auto"><button class="za-ib" data-act="ai-outsync">同步大纲（提案）</button> <button class="za-ib" data-act="ai-audit">全书连贯性审查</button></span></h3>
+        <div class="za-bubble" style="margin-bottom:10px"><b>4 条线：</b>2 健康 · 1 放缓 · 1 断线 ｜ 事件 18/23 已发生 · 2 疑似偏移 · 1 未发生</div>
+        <table class="za-table"><tr><th style="width:40px">线</th><th style="width:170px">名称</th><th>健康度</th><th style="width:90px">状态</th></tr>
+        ${S.lines.map(l => `<tr><td class="za-mono">${l.id}</td><td>${esc(l.n)}</td><td><div class="za-bar"><i style="width:${l.pct}%;background:${l.c}"></i></div></td><td class="${l.sc}">${l.st}</td></tr>`).join('')}</table>
+      </div>
+      <div class="za-panel"><h3>事件时间线 <span class="n">左栏只有你知道，右栏是读者被告知的——信息差就是悬念</span></h3>
+        <table class="za-table"><tr><th style="width:44px">事件</th><th style="width:52px">章</th><th>作者真相</th><th>读者已知</th><th style="width:130px">对账</th></tr>
+        <tr><td class="za-mono">E05</td><td>3</td><td>师兄假死脱队，留断刀与虎符各半</td><td>师兄死于北境伏击，沈砚亲手葬了他</td><td><span class="za-chip g">已发生</span></td></tr>
+        <tr><td class="za-mono">E07</td><td>12</td><td>观灯人实为师兄之徒，奉遗命交虎符</td><td style="color:var(--faint);font-style:italic">未揭示</td><td><span class="za-chip g">已发生</span></td></tr>
+        <tr><td class="za-mono">E11</td><td>9</td><td>漕帮密约易主</td><td>漕帮照常开仓</td><td><span class="za-chip r">疑似偏移</span></td></tr>
+        <tr><td class="za-mono">E14</td><td>13</td><td>老观燃灯三十年之期到</td><td style="color:var(--faint);font-style:italic">未揭示</td><td><span class="za-chip">未发生（计划本章）</span></td></tr></table>
+      </div>
+    </div>`;
+  }
+
+  function vClues() {
+    return `<div class="za-pad">
+      <div class="za-panel"><h3>伏笔台账 <span class="n">揭1埋1 · 五档节奏 · 种下原文回灌</span>
+        <span style="margin-left:auto"><button class="za-ib" data-act="ai-inventory">AI 盘点（提案）</button> <span class="za-chip g">健康度 82</span></span></h3>
+      <table class="za-table"><tr><th style="width:46px">编号</th><th>标题 / 详情</th><th style="width:80px">节奏</th><th style="width:56px">埋于</th><th style="width:70px">最近动作</th><th style="width:80px">状态</th></tr>
+      ${S.clues.map(c => `<tr><td class="za-mono" style="color:var(--accent)">${c.id}</td><td><b style="font-weight:600">${esc(c.t)}</b>${c.note?`<br><span class="note" style="color:var(--faint);font-size:10.5px">${esc(c.note)}</span>`:''}</td>
+        <td><span class="za-chip ${c.paceC}">${c.pace}</span></td><td>第${c.p}章</td><td>第${c.act}章</td><td>${esc(c.st)}</td></tr>`).join('')}</table>
+      <div class="note" style="margin-top:9px;font-size:10.5px;color:var(--faint)">提示：采纳收件箱里的「伏笔盘点」提案后，F08/F09 会出现在这张表里。</div>
+      </div>
+    </div>`;
+  }
+
+  function vCanon() {
+    const groups = ['世界观','势力人物','修炼体系','剧情大纲','题材规则','未分类'];
+    const items = S.canon.map((c, i) => ({ ...c, i })).filter(c => S.canonCat == null || c.cat === S.canonCat || (S.canonCat === '未分类' && !c.cat));
+    const cur = items.find(c => c.t === S.canonCur) || items[0] || S.canon[0];
+    return `<div class="za-pad"><div class="za-panel"><h3>设定 <span class="n">AI 归类提案采纳后自动分组</span>
+      <span style="margin-left:auto"><button class="za-ib" data-act="ai-classify">AI 归类（提案）</button></span></h3>
+      <div class="za-canon"><div class="za-cgroups">
+        ${groups.map(g => {
+          const list = S.canon.filter(c => (g === '未分类' ? !c.cat : c.cat === g));
+          if (g !== '未分类' && list.length === 0) return '';
+          return `<div class="za-cg">${g} ${list.length ? '·' + list.length : ''}</div>` + list.map(c =>
+            `<button class="za-ci ${cur && cur.t === c.t ? 'on':''}" data-act="canon-cur" data-t="${esc(c.t)}">${esc(c.t)}</button>`).join('');
+        }).join('')}
+      </div>
+      <div class="za-cbody serif">${cur ? `<h4>${esc(cur.t)}${cur.cat ? `<span class="cm">${esc(cur.cat)}</span>` : '<span class="cm" style="background:rgba(255,255,255,.07);color:var(--dim)">未分类</span>'}</h4>${esc(cur.x)}<div class="note" style="margin-top:10px;font-size:10.5px;color:var(--faint)">文件：canon/${esc(cur.t)}.md · 右键可改类别/复制/访达/删除</div>` : '（空）'}</div></div>
+      <div class="note" style="margin-top:9px;font-size:10.5px;color:var(--faint)">提示：去收件箱采纳「设定归类」提案，这里的条目会自动分组并改名。</div>
+      </div></div>`;
+  }
+
+  function vMemory() {
+    return `<div class="za-pad">
+      <div class="za-panel"><h3>事实账本 <span class="n">双时态：事实从何时起成立/失效</span></h3>
+      <table class="za-table"><tr><th>主语</th><th>谓语</th><th>宾语</th><th style="width:90px">生效</th><th style="width:70px">读者可见</th></tr>
+      <tr><td>沈砚</td><td>持有</td><td>断刀（师父遗物）</td><td>第1章起</td><td>✓</td></tr>
+      <tr><td>师兄</td><td>假死</td><td>留虎符半块</td><td>第3章起</td><td>✗ 暗线</td></tr>
+      <tr><td>观灯</td><td>意为</td><td>有人归山</td><td>第12章起</td><td>✓</td></tr></table></div>
+      <div class="za-panel"><h3>矛盾体检 <span class="n">确定性扫描 · 零 LLM 成本</span></h3>
+      <div class="za-bubble ok"><b>✓ 无矛盾</b> —— 23 条事实交叉核对通过（上次体检：第12章写入后）</div></div>
+      <div class="za-panel"><h3>长程档案卡 <span class="n">跨全书检索记忆</span>
+        <span style="margin-left:auto"><button class="za-ib" data-act="ai-dossier">提取最新章档案卡</button></span></h3>
+      <div class="za-bubble"><b>第11章 · 旧账</b> 场景：当铺夜议 ｜ 出场：沈砚、掌柜 ｜ 悬念：账本缺页<span class="sub">检索锚点：断刀、虎符、三十年、灯约</span></div>
+      <div class="za-bubble"><b>第12章 · 断刀</b> 场景：雨夜酒肆 ｜ 出场：沈砚、短打汉子×2 ｜ 悬念：老观燃灯<span class="sub">检索锚点：赤星军、雁回山、灯约</span></div>
+      </div>
+    </div>`;
+  }
+
+  function vStats() {
+    const days = ['一','二','三','四','五','六','日'];
+    const max = Math.max(...S.weekly, 1);
+    return `<div class="za-pad">
+      <div class="za-panel"><h3>本周写作 <span class="n">按净增字数记账（删字扣回、导入不计入）</span><span style="margin-left:auto"><span class="za-chip g">连续 14 天</span></span></h3>
+        <div class="za-stat-bars">${S.weekly.map((w, i) => `<div class="za-sbar"><i style="height:${Math.max(6, w / max * 90)}px" title="周${days[i]} ${w} 字"></i><span>周${days[i]}<br>${w}</span></div>`).join('')}</div>
+      </div>
+      <div class="za-panel"><h3>AI 协作账本 <span class="n">采纳率与拒收理由都进质量反馈回路</span></h3>
+        <table class="za-table"><tr><th>能力</th><th style="width:70px">提案</th><th style="width:70px">采纳</th><th style="width:110px">拒收理由回灌</th></tr>
+        <tr><td>搭骨架</td><td>21</td><td>19</td><td>2（钩子空泛×2）</td></tr>
+        <tr><td>草稿/修订</td><td>34</td><td>26</td><td>8（赶结尾/水字数）</td></tr>
+        <tr><td>伏笔盘点</td><td>9</td><td>9</td><td>0</td></tr>
+        <tr><td>设定归类</td><td>6</td><td>6</td><td>0</td></tr></table>
+        <div class="note" style="margin-top:8px;font-size:10.5px;color:var(--faint)">本次会话：采纳 ${S.acceptN - 86 + 0} · 拒收 ${S.rejectN - 17}（动态更新）</div>
+      </div>
+    </div>`;
+  }
+
+  function vInbox() {
+    const cards = S.proposals.map(p => {
+      const cls = p.st === '待确认' ? '' : p.st === '已采纳' ? 'acc' : 'rej';
+      let body = '';
+      if (p.kind === 'canonClassify') body = (p.items || []).map(it => `<div class="za-prow">${esc(it.t)} <span style="color:var(--faint);font-size:10px">→</span> <span class="za-cat">${esc(it.c)}</span>${it.rn ? `<span style="color:var(--text);font-size:11px">改名：${esc(it.rn)}</span>` : ''}</div>`).join('');
+      if (p.kind === 'clues') body = (p.items || []).map(it => `<div class="za-prow"><b class="za-mono" style="color:var(--accent)">${it.id}</b> ${esc(it.t)} <span class="note" style="color:var(--faint)">埋于第${it.p}章</span></div>`).join('');
+      if (p.kind === 'skeleton') body = `<div class="za-prow">节拍：雪夜叩门 → 虎符对峙 → 旧账翻页 → 观灯人现身 → 断线钩子</div><div class="za-prow">伏笔合同：F03 兑现 · F04 续期 · 新埋「观灯人身份」</div><div class="za-prow">章尾钩子：悬念型（挂具体物：半块虎符）· 闸门评分 82</div>`;
+      if (p.kind === 'draft') body = `<div class="za-prow">第13章草稿（由分支卡「${esc(p.src || 'B · 师门线')}」展开）· 612 字 · 采纳前不进正文</div>`;
+      if (p.kind === 'report') body = `<div class="za-prow">一致性审查：连续性 0 · 设定违背 1（灵力枯竭症 vs 第9章）· 伏笔合同 1 处待办</div>`;
+      const acted = p.st !== '待确认';
+      return `<div class="za-pcard ${cls}">
+        <div class="za-phead"><span class="za-pkind">${esc(p.cap)}</span><span class="za-ptitle">${esc(p.title)}</span><span class="za-pmeta">${esc(p.meta)}</span><span class="za-pmeta" style="margin-left:8px">${p.st}</span></div>
+        <div class="za-pbody">${body}${p.reason ? `<div class="za-prow" style="color:var(--faint)">拒收理由：${esc(p.reason)}（已回灌）</div>` : ''}</div>
+        ${acted ? '' : `<div class="za-pact"><button class="za-btn primary" data-act="prop-accept" data-id="${p.id}">${p.kind === 'skeleton' ? '批准骨架' : p.kind === 'canonClassify' ? '全部采纳' : '采纳'}</button>
+          <button class="za-btn" data-act="prop-reject" data-id="${p.id}">拒收（填理由）</button>
+          <span class="note" style="color:var(--faint);font-size:10px">${p.kind === 'canonClassify' ? '同题/撞名自动跳过' : p.kind === 'clues' ? '同 id 合并' : p.kind === 'draft' ? '采纳时自动存快照' : ''}</span></div>`}
+      </div>`;
+    }).join('');
+    return `<div class="za-pad">
+      <div class="za-panel" style="border-left:3px solid var(--blue)"><h3><span class="za-chip b">就地反馈</span> 规则演示 <span class="n">凡在窗口触发的 AI，结果就在窗口里过目；收件箱是留痕与逐条细调处</span></h3>
+      <div class="za-bubble ok"><b>✓ 设定归类 · 就地结果（演示：点右上「AI 归类」跑一次，结果会同时出现在这里与轨迹窗）</b></div></div>
+      ${cards || '<div class="za-bubble">收件箱为空。</div>'}
+    </div>`;
+  }
+
+  function vSettings() {
+    const t = S.testState;
+    return `<div class="za-pad">
+      <div class="za-panel"><h3>模型服务 <span class="n">OpenAI 兼容端点（DeepSeek / GLM / Kimi / Ollama / 局域网均只是换地址）</span></h3>
+      <div class="za-prow"><span class="za-chip">自定义端点</span></div>
+      <div class="za-prow"><span class="za-mono" style="width:70px">Base URL</span><span class="za-bubble" style="flex:1">http://192.168.31.75:8888/v1 <span class="note">（局域网 Unsloth，免 Key）</span></span></div>
+      <div class="za-prow"><span class="za-mono" style="width:70px">模型</span><span class="za-bubble" style="flex:1">qwen3-32b-unsloth</span></div>
+      <div class="za-prow" style="margin-top:6px"><button class="za-ib pri" data-act="test-conn">${t === 'testing' ? '测试中…' : '测试连接'}</button>
+        ${t === 'ok' ? '<span class="za-chip g">✅ 连通（38 ms）｜服务端模型 3 个｜当前模型在清单 ✓</span>' : ''}
+        ${t === 'fail' ? '<span class="za-chip r">❌ 连接超时——检查端点或防火墙</span>' : ''}</div>
+      </div>
+      <div class="za-panel"><h3>生成与上下文</h3>
+        <div class="za-prow"><span class="za-mono" style="width:110px">上下文包预算</span><span class="za-bubble">≈8,000 tokens</span><span class="note" style="color:var(--faint)">本地 8K 模型建议 ≤4000</span></div>
+        <div class="za-prow"><span class="za-mono" style="width:110px">正文自动保存</span><span class="za-chip g">永远先落盘</span></div>
+      </div>
+    </div>`;
+  }
+
+  /* ───── Dock ───── */
+  function dockHtml() {
+    return `<aside class="za-dock" id="za-dock">
+      <div class="za-dh"><b>Agent 轨迹</b>
+        ${S.aiRunningN ? `<span class="za-chip b"><span class="spin" style="vertical-align:-2px;margin-right:4px"></span>运行中</span>` : `<span class="note" style="color:var(--faint);font-size:10px">${S.traj.length} 条</span>`}
+        <span class="sp"></span>
+        <div class="za-dtabs">
+          <button class="${S.dockTab==='traj'?'on':''}" data-act="dock-tab" data-t="traj">轨迹</button>
+          <button class="${S.dockTab==='props'?'on':''}" data-act="dock-tab" data-t="props">提案 ${pendingN()}</button>
+          <button class="${S.dockTab==='chat'?'on':''}" data-act="dock-tab" data-t="chat">对话</button>
+        </div>
+        <button class="za-ib gh" data-act="dock-toggle" title="收起（⌘⇧J）">»</button>
+      </div>
+      <div class="za-dbody" id="za-dbody">${dockBody()}</div>
+      ${S.aiRunningN ? `<div class="live"><div class="lv"><span class="spin"></span>正在流式产出…</div><pre id="za-stream">${esc(S.stream)}</pre></div>` : ''}
+    </aside>`;
+  }
+  function dockBody() {
+    if (S.dockTab === 'props') {
+      const pend = S.proposals.filter(p => p.st === '待确认');
+      if (!pend.length) return '<div class="za-bubble">没有待审提案。AI 产出登记后会出现在这里，也可去收件箱逐条裁决。</div>';
+      return pend.map(p => `<div class="za-bubble tool"><b>${esc(p.title)}</b><span class="sub">${esc(p.cap)} · ${esc(p.meta)} · 点主界面「提案收件箱」逐条裁决</span></div>`).join('');
+    }
+    if (S.dockTab === 'chat') {
+      return `<div class="za-bubble"><b>问：</b>第12章结尾「师兄，你终究还是走到这一步了吗」和第3章的告别冲突吗？</div>
+      <div class="bub ok za-bubble ok"><b>答：</b>不冲突。第3章（E05）沈砚不知师兄假死，此处是读者已知/角色未知的信息差——正是悬念来源。<span class="sub">已备好一条埋点修复提案 → 提案页可采纳</span></div>
+      <div class="za-bubble" style="color:var(--faint)">（可读全书，仍只产提案——铁律在对话里也一样生效）</div>`;
+    }
+    return S.traj.map(e => {
+      const cls = e.kind === 'tool' ? 'tool' : e.kind === 'ok' ? 'ok' : e.kind === 'err' ? 'err' : '';
+      const head = e.kind === 'turn' ? `<div class="za-rh">▶ ${esc(e.text)} <span class="ln"></span><span class="t">${e.time}</span></div>` : '';
+      const body = e.kind === 'turn' ? '' : `<div class="za-bubble ${cls}">${e.kind === 'tool' ? '🛠 ' : e.kind === 'ok' ? '' : e.kind === 'err' ? '' : ''}<b>${esc(e.text)}</b>${e.sub ? `<span class="sub">${esc(e.sub)}</span>` : ''}<span class="sub" style="text-align:right">${e.time}</span></div>`;
+      return head + body;
+    }).join('') || '<div class="za-bubble">还没有轨迹。\n点任何 AI 按钮（搭骨架 / AI 归类 / 分支卡…），完整 agent 轨迹会像对话一样在这里展开。</div>';
+  }
+  function renderDock() {
+    const dock = $('za-dock');
+    if (!dock) { render(); return; }
+    const body = $('za-dbody');
+    const atBottom = !body || (body.scrollHeight - body.scrollTop - body.clientHeight < 40);
+    dock.outerHTML = dockHtml();
+    const nb = $('za-dbody');
+    if (nb && atBottom) nb.scrollTop = nb.scrollHeight;
+  }
+
+  /* ───── Toast / 弹层 ───── */
+  function toast(text) {
+    const t = document.createElement('div');
+    t.className = 'za-toast'; t.textContent = text;
+    $('za-toasts').appendChild(t);
+    setTimeout(() => t.remove(), 2600);
+  }
+  function rejectModal(id) {
+    $('za-layers').innerHTML = `<div class="za-modal" data-act="modal-close"><div class="mbox" data-stop="1">
+      <h4>拒收理由（回灌给 AI）</h4>
+      <textarea id="za-reason" rows="3" placeholder="例：后两拍赶结尾，钩子挂在「命运」上太空泛"></textarea>
+      <div class="mrow"><button class="za-btn gh" data-act="modal-close">取消</button><button class="za-btn primary" data-act="reject-confirm" data-id="${id}">拒收</button></div>
+    </div></div>`;
+    setTimeout(() => $('za-reason') && $('za-reason').focus(), 30);
+  }
+
+  /* ───── 动作 ───── */
+  function ensureDSH() {
+    if (!S.traj.length) traj('info', '已启动 DSH 运行时（--profile sdk）', 'novel-pack 已挂载：9 个工具');
+  }
+
+  const selMenuDefs = {
+    '拉深': '（同一段写得更细更满——小梦的招牌动作）',
+    '扩写': '（在原意上展开更多细节与回合）',
+    '缩写': '（收紧节奏，删冗余）',
+    '改写': '（换一种写法，保持事实）',
+    '去AI味改写': '（三 pass 文风改写 + 模型指纹反检）',
+  };
+
+  function doSelAction(kind, custom) {
+    const sel = S.lastSel;   // 先取选区再关菜单（closeSel 会清 lastSel）
+    closeSel();
+    if (!sel) return;
+    ensureDSH();
+    aiRun(`选区创作 · ${kind}`, [
+      { k:'info', t:`读取选区（${sel.len} 字）${custom ? ' · 自定义指令：' + custom : selMenuDefs[kind] || ''}` },
+      { k:'tool', t:'调用 zhibi_rewrite（M3 工具）', sub:'diff 预览模式 · 采纳前自动快照' },
+    ], () => {
+      // 应用：把选中文本替换为“deepened”版本并高亮
+      const p = S.prose[sel.p];
+      if (p && p.t.includes(sel.text)) {
+        const better = sel.text.length > 12
+          ? sel.text.slice(0, Math.ceil(sel.text.length * 1.35)).replace(/。$/, '') + '，' + (kind === '拉深' ? '雨声忽然大了，把整条巷子的灯火都搅成一片模糊的暖黄。' : kind === '缩写' ? '' : '细节处又多了一层不易察觉的凉意。') + '。'
+          : sel.text + '（改）';
+        p.t = p.t.replace(sel.text, better);
+        p.ink = true;
+      }
+      traj('ok', 'diff 已逐条采纳（快照已存）', '分叉点墨点已标记，可回看轨迹');
+      toast(`「${kind}」已按 diff 逐条采纳 · 快照已存`);
+      render();
+    });
+  }
+
+  let selEl = null;
+  function closeSel() { if (selEl) { selEl.remove(); selEl = null; } S.lastSel = null; }
+  function showSel(x, y, text, p) {
+    closeSel();
+    S.lastSel = { text, len: text.length, p };
+    selEl = document.createElement('div');
+    selEl.className = 'za-selmenu';
+    selEl.style.left = Math.min(x, (root.clientWidth || 900) - 320) + 'px';
+    selEl.style.top = Math.min(y + 8, (root.clientHeight || 700) - 190) + 'px';
+    selEl.innerHTML = `<div class="t">已选中 ${text.length} 字 · 选区创作</div>
+      <div class="row"><button class="mb hl" data-sel="拉深">拉深</button><button class="mb" data-sel="扩写">扩写</button><button class="mb" data-sel="缩写">缩写</button><button class="mb" data-sel="改写">改写</button><button class="mb" data-sel="去AI味改写">去AI味改写</button></div>
+      <input type="text" placeholder="自定义创作指令…（例：生成大纲）" data-custom="1">
+      <div class="land">结果落点 <span class="l on">diff 预览 · 逐条采纳（默认）</span><span class="l">替换选中</span><span class="l">插入选中后</span></div>`;
+    root.appendChild(selEl);
+    selEl.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-sel]');
+      if (b) doSelAction(b.getAttribute('data-sel'));
+    });
+    selEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { const v = selEl.querySelector('input').value.trim(); if (v) doSelAction('自定义', v); }
+    });
+  }
+
+  /* 提案副作用（采纳即生效） */
+  function applyProposal(p) {
+    p.st = '已采纳'; p.meta = now() + ' · 已采纳';
+    S.acceptN++;
+    if (p.kind === 'canonClassify') {
+      p.items.forEach(it => {
+        const c = S.canon.find(x => x.t === it.t);
+        if (c) { c.cat = it.c; if (it.rn) c.t = it.rn; }
+      });
+      if (S.screen === 'canon') S.canonCat = null;
+      traj('info', '设定页已按类别分组', '改名撞名自动跳过，不丢文档');
+    }
+    if (p.kind === 'clues') {
+      p.items.forEach(it => S.clues.push({ id: it.id, t: it.t, p: it.p, act: it.p, pace: '刚埋下', paceC: 'p3', st: '埋下' }));
+      traj('info', '伏笔台账已更新：' + p.items.map(i => i.id).join('、'));
+    }
+    if (p.kind === 'skeleton') {
+      const ch = S.chapters.find(c => c.n === 13); if (ch) ch.st = '骨架已定';
+      traj('info', '第13章骨架已批准——解锁「写草稿/分段写作」', '闸门评分 82 · 伏笔合同齐备');
+    }
+    if (p.kind === 'draft') {
+      traj('info', '第13章草稿 v1 已就位（未进正文）', '采纳草稿 = 覆盖正文前自动快照');
+    }
+    toast(`已采纳：${p.title}`);
+  }
+
+  /* ───── 事件总线 ───── */
+  const AI_DEFS = {
+    'ai-skeleton': () => { const p = addProp('章节骨架', 'skeleton', '第13章 · 旧约（骨架提案）', '14:32 · 闸门评分 82');
+      aiRun('搭骨架 · 第13章', [
+        { k:'info', t:'准备上下文与工具（9 个工具）', sub:'造包 ≈3.2K tokens · 法典：仙侠档 · 到期伏笔 F03/F04' },
+        { k:'tool', t:'调用 propose_skeleton', sub:'节拍 5 · 钩子「观灯人现身」· 伏笔合同齐备' },
+        { k:'ok', t:'已登记骨架提案', sub:'闸门评分 82 · 等作者批准' },
+      ]); return p; },
+    'ai-classify': () => { const p = addProp('设定归类', 'canonClassify', '设定归类（4 篇）', now() + ' · 就地+收件箱');
+      aiRun('设定归类', [
+        { k:'info', t:'读全部设定文档（4 篇 · 3.1K 字）' },
+        { k:'tool', t:'调用 propose_canon_classify', sub:'分类 + 规范改名建议（改名撞名自动跳过）' },
+        { k:'ok', t:'已登记归类提案（4 项）', sub:'就地过目 → 收件箱「全部采纳」' },
+      ], () => { S.screen = 'inbox'; render(); }); return p; },
+    'ai-inventory': () => { const p = addProp('线索埋点台账', 'clues', '伏笔盘点（2 条新增）', now() + ' · 全书扫描', { items: [
+        { id:'F08', t:'半块虎符', p:12 }, { id:'F09', t:'雁回山灯约三十年之期', p:12 } ] });
+      aiRun('AI 盘点伏笔', [
+        { k:'info', t:'全书连贯性扫描（本地 · 零 token）→ 2 处新钩子候选' },
+        { k:'tool', t:'调用 propose_clues', sub:'F08 半块虎符 · F09 雁回山灯约 · 种下原文已摘录' },
+        { k:'ok', t:'已登记伏笔提案（2 条）' },
+      ], () => { if (S.screen !== 'inbox') toast('伏笔提案已登记——收件箱采纳后入台账'); }); return p; },
+    'ai-validate': () => { const p = addProp('一致性验证', 'report', '第12章 · 一致性审查报告', now() + ' · 审草稿');
+      aiRun('一键验证 · 第12章', [
+        { k:'info', t:'确定性体检：字数/视角/分身两地/钩子具体度' },
+        { k:'tool', t:'调用 propose_validation', sub:'连续性 0 · 设定违背 1 · 伏笔合同 1 待办' },
+        { k:'ok', t:'报告已登记（只报告不代改）' },
+      ]); return p; },
+    'ai-deslop': () => { const p = addProp('去AI味', 'deslop', '第12章 · 去AI味建议（7 处）', now() + ' · 三 pass');
+      aiRun('去AI味 · 第12章', [
+        { k:'info', t:'本地 25 项扫描 → 7 处命中（措辞 4 / 结构 2 / 心理 1）' },
+        { k:'tool', t:'调用 propose_deslop', sub:'逐处 original/replacement · 采纳前自动快照' },
+        { k:'ok', t:'建议已登记 · 逐条采纳', sub:'过度修正反检：未见破碎短句指纹' },
+      ]); return p; },
+    'ai-memory': () => { const p = addProp('记忆提取', 'memoryPack', '第12章 · 记一笔（3 事实 + 1 伏笔候选）', now());
+      aiRun('让 AI 记一笔 · 第12章', [
+        { k:'tool', t:'调用 propose_memory', sub:'观灯=有人归山 · 师兄之徒南下 · 灯约三十年' },
+        { k:'ok', t:'记忆/伏笔候选已登记' },
+      ]); return p; },
+    'ai-dossier': () => { aiRun('提取档案卡 · 第12章', [
+        { k:'tool', t:'调用 propose_dossier', sub:'场景/人物/推进/悬念/关键细节（检索锚点）' },
+        { k:'ok', t:'档案卡提案已登记 · 采纳后入跨全书检索库' },
+      ]); return null; },
+    'ai-outsync': () => { const p = addProp('大纲同步', 'outlineUpdates', '大纲更新提案（L04 搁置 + E11 补场）', now());
+      aiRun('同步大纲', [
+        { k:'info', t:'宿主对账（双字组匹配）→ AI 补充建议 → 合并一份提案' },
+        { k:'ok', t:'大纲更新提案已登记 · 采纳后 L04 状态真实变化' },
+      ]); return p; },
+    'ai-audit': () => { aiRun('全书连贯性审查', [
+        { k:'info', t:'本地 20 类扫描：死者复出/位置跳跃/人称漂移/台账烂账…' },
+        { k:'ok', t:'发现 3 处（台账 2 · 偏移 1）——与埋点修复合并提案' },
+      ]); return addProp('全书连贯性审查', 'clueFixes', '连贯性发现 + 修复动作（3 条）', now()); },
+    'ai-pipeline': () => { const p = addProp('一键写作', 'draft', '第13章 草稿 v1（一键成章）', now());
+      aiRun('一键成章 · 第13章', [
+        { k:'info', t:'前置检查：骨架已批准 ✓（未批准时会停下并不代批）' },
+        { k:'info', t:'写草稿 → 一致性审查 → 去AI味，自动串到底' },
+        { k:'ok', t:'全产出进收件箱 · 停在「采纳」之前', sub:'采纳草稿 = 自动快照后写入正文' },
+      ]); return p; },
+  };
+
+  function addProp(cap, kind, title, meta, extra) {
+    const p = { id: 'p' + Math.random().toString(36).slice(2, 8), cap, kind, title, st: '待确认', meta, ...(extra || {}) };
+    S.proposals.unshift(p); S.propTotal++;
+    if (S.screen === 'inbox') render();
+    return p;
+  }
+
+  root.addEventListener('click', (e) => {
+    const actEl = e.target.closest('[data-act]');
+    if (!actEl) { if (selEl && !selEl.contains(e.target)) closeSel(); return; }
+    const act = actEl.getAttribute('data-act');
+    const id = actEl.getAttribute('data-id');
+
+    if (act === 'nav') { S.screen = actEl.getAttribute('data-screen'); ensureDSH(); render(); return; }
+    if (act === 'open-book') { S.screen = 'editor'; S.chapter = 12; render(); return; }
+    if (act === 'open-ch') { S.screen = 'editor'; S.chapter = Number(actEl.getAttribute('data-n')); render(); return; }
+    if (act === 'new-book') { toast('新建向导：书名/题材 chips/一句话核心 → 搭框架提案（原型略）'); return; }
+    if (act === 'dock-toggle') { S.dockOpen = false; render(); toast('轨迹面板已收起——顶部「轨迹」按钮或 ⌘⇧J 呼回'); return; }
+    if (act === 'focus-toggle') { S.focus = !S.focus; render(); if (S.focus) toast('专注模式：只留稿纸（侧栏/轨迹退场）'); return; }
+    if (act === 'dock-tab') { S.dockTab = actEl.getAttribute('data-t'); renderDock(); return; }
+    if (act === 'canon-cur') { S.canonCur = actEl.getAttribute('data-t'); render(); return; }
+
+    if (act === 'ghost') {
+      const p = Number(actEl.getAttribute('data-p'));
+      const s = S.ghostSentences[S.ghostIdx % S.ghostSentences.length];
+      S.ghost = { para: p, s }; S.ghostPara = p;
+      ensureDSH();
+      aiRun('续写幽灵', [ { k:'info', t:'轻量请求：1-2 句接续 · 不进收件箱', sub:'Tab 采纳即转正；Esc / 继续打字作废' } ]);
+      render();
+      return;
+    }
+    if (act === 'branch-gen') {
+      ensureDSH();
+      aiRun('分支 · 三个走向', [ { k:'info', t:'读最近 2 章 + 未回收伏笔 → 生成 3 个走向（各 80-150 字）' } ]);
+      S.branchSet++; S.branchSel = null; S.branchSelDraft = null;
+      S.branches = S.branchPool[S.branchSet % S.branchPool.length];
+      render(); return;
+    }
+    if (act === 'branch-reroll') {
+      S.branchSet++; S.branchSel = null; S.branchSelDraft = null;
+      S.branches = S.branchPool[S.branchSet % S.branchPool.length];
+      toast('换一批：重新生成 3 个走向');
+      aiRun('分支 · 换一批', [ { k:'info', t:'重生成 3 个走向' } ]);
+      render(); return;
+    }
+    if (act === 'branch-none') { S.branches = null; S.branchSel = null; S.branchSelDraft = null; render(); return; }
+    if (act === 'branch-pick') {
+      const i = Number(actEl.getAttribute('data-i'));
+      S.branchSel = i;
+      const b = S.branches[i];
+      const el = actEl.closest('.za-bcard'); if (el) el.classList.add('picking');
+      setTimeout(() => {
+        S.branchSelDraft = b; S.branches = null;
+        const p = addProp('一键写作', 'draft', '第13章 草稿 v1（分支「' + b.k + '」展开）', now(), { src: b.k });
+        aiRun('分支展开 · ' + b.k, [
+          { k:'info', t:'按选中走向展开为完整段落草稿（' + b.x.length * 4 + ' 字左右）' },
+          { k:'ok', t:'草稿提案已登记 · 采纳才进正文', sub:'铁律：展开也不直接落盘' },
+        ]);
+        render();
+      }, 420);
+      render(); return;
+    }
+
+    if (act === 'prop-accept') {
+      const p = S.proposals.find(x => x.id === id);
+      if (p) { applyProposal(p); render(); }
+      return;
+    }
+    if (act === 'prop-reject') { rejectModal(id); return; }
+    if (act === 'reject-confirm') {
+      const p = S.proposals.find(x => x.id === id);
+      const reason = ($('za-reason') || {}).value || '';
+      if (p) { p.st = '已拒绝'; p.meta = now() + ' · 已拒收'; p.reason = reason || '（未填）'; S.rejectN++; }
+      $('za-layers').innerHTML = '';
+      toast('已拒收 · 理由将回灌同类能力的下一次生成');
+      render(); return;
+    }
+    if (act === 'modal-close') { $('za-layers').innerHTML = ''; return; }
+
+    if (act === 'test-conn') {
+      S.testState = 'testing'; render();
+      setTimeout(() => { S.testState = Math.random() > 0.25 ? 'ok' : 'fail'; render(); }, 900);
+      return;
+    }
+
+    if (AI_DEFS[act]) {
+      ensureDSH();
+      AI_DEFS[act]();
+      render();
+      return;
+    }
+  });
+
+  /* 选区 → 选区菜单 */
+  root.addEventListener('mouseup', (e) => {
+    if (S.screen !== 'editor') return;
+    if (e.target.closest('.za-selmenu')) return;
+    const sel = window.getSelection();
+    const text = sel ? String(sel).trim() : '';
+    if (text.length >= 4 && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      const prose = document.getElementById('za-prose');
+      if (prose && prose.contains(range.commonAncestorContainer)) {
+        const rect = range.getBoundingClientRect();
+        const rroot = root.getBoundingClientRect();
+        showSel(rect.left - rroot.left + 40, rect.top - rroot.top + 30, text, 1);
+      }
+    } else if (selEl && !selEl.contains(e.target)) {
+      closeSel();
+    }
+  });
+
+  /* Tab / Esc 幽灵采纳 */
+  document.addEventListener('keydown', (e) => {
+    if (S.ghost && S.screen === 'editor') {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const p = S.prose[S.ghost.para];
+        if (p) {
+          p.t += S.ghost.s; p.ink = true;
+          S.ghostIdx++;
+          S.ghost = { para: S.ghost.para, s: S.ghostSentences[S.ghostIdx % S.ghostSentences.length] };
+          traj('ok', '幽灵句已采纳（转正 · 墨点标记）', '自动请求下一句——像拉一条句子溪流');
+          toast('已采纳一句 · 下一句已到（Esc 可停）');
+        }
+        render();
+      } else if (e.key === 'Escape') {
+        S.ghost = null; S.ghostIdx = 0;
+        traj('info', '幽灵续写作废（Esc）');
+        render();
+      }
+    }
+  });
+
+  window.__S = S; window.__dbg = { traj, applyProposal, addProp };
+  render();
+})();
+</script>
+</div>
+
+</body>
+</html>
