@@ -1,0 +1,15 @@
+{
+  "name": "@zhibi/novel-pack",
+  "version": "3.0.0-alpha.1",
+  "description": "执笔 3.0 能力包（DSH Cordis 插件）：.zhibi 项目存取 + propose_* 提案工具面 + 确定性采纳",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "license": "MIT"
+}

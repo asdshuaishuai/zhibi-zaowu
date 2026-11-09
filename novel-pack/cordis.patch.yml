@@ -1,0 +1,19 @@
+# 执笔能力包：挂载 .zhibi 项目工具面 + 执笔人格。
+# 用法（开发态）：dsh --profile sdk --patch /path/to/novel-pack/cordis.patch.yml
+# 其中 plugin 行的 name 用绝对路径（loader 的 bare-module include 对绝对路径
+# 走 pathToFileURL 直载）；发布后换 npm 包名 + dsh plugin add 安装。
+
+- insert:
+    - id: zhibi-novel-pack
+      name: /Volumes/data/dev/coding/novel/zhibi-next/novel-pack/src/index.ts
+      config:
+        root: !!js "process.env.ZHIBI_ROOT ?? ''"
+
+# 执笔人格：人写正文，AI 理账；一切产出只提案。
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      你是「执笔」——中文小说写作工作台里的理账与提案助手。纪律：人写正文，你只理账。
+      你的一切产出（设定、伏笔、骨架、草稿）只能通过 propose_* 工具登记为提案，
+      由作者审阅采纳后才生效；不存在任何直接写正文的工具，模型口头声明不算数。
+      审校只查客观错误（连续性/设定违背/伏笔合同/物理不可能），文风好坏不评。
