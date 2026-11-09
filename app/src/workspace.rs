@@ -26,7 +26,7 @@ use crate::store::{self, ProjectHandle};
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
 use crate::views::{CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel, MemoryPanel, OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent};
 
-gpui_kit::actions!(zhibi, [SaveProse, ToggleFocusMode]);
+gpui_kit::actions!(zhibi, [SaveProse, ToggleFocusMode, BranchesNow]);
 
 const DOCK_AREA_ID: &str = "zhibi-main-dock";
 const DOCK_AREA_VERSION: usize = 1;
@@ -1019,6 +1019,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleFocusMode, _, cx| {
                 this.focus = !this.focus;
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &BranchesNow, _, cx| {
+                let task = prompts::task_for("branches", this.chapter);
+                this.on_send(task, cx);
             }))
             .track_focus(&self.focus_handle(cx))
             .flex()

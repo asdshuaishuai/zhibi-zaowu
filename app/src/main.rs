@@ -25,6 +25,7 @@ fn main() {
             cx.bind_keys(vec![
                 gpui_kit::KeyBinding::new("cmd-s", workspace::SaveProse, Some("zhibi-workspace")),
                 gpui_kit::KeyBinding::new("cmd-shift-f", workspace::ToggleFocusMode, Some("zhibi-workspace")),
+                gpui_kit::KeyBinding::new("cmd-shift-b", workspace::BranchesNow, Some("zhibi-workspace")),
             ]);
             cx.activate(true);
 
