@@ -276,6 +276,168 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
         }),
     ),
 
+    // —— M3 补齐：提示词引用的其余提案工具 ——
+
+    textTool(
+      'propose_skeleton',
+      '提交章节骨架提案：4-6 节拍（建议字数/场景层/章尾钩子/伏笔合同）。骨架是写前契约，作者批准前不给写草稿。',
+      {
+        chapter: num('章节号'),
+        beats: {
+          type: 'array',
+          description: '节拍数组',
+          required: true,
+          items: {
+            type: 'object',
+            properties: {
+              title: str('节拍名'),
+              summary: str('这拍发生什么'),
+              suggestedWords: num('建议字数', false),
+              hook: str('章尾钩子（挂具体物）', false),
+            },
+            required: ['title', 'summary'],
+          },
+        },
+      },
+      (args) =>
+        guard(async () => {
+          const beats = Array.isArray(args.beats) ? args.beats : [];
+          if (beats.length === 0) return '没有可登记的节拍。';
+          const p = await store.addProposal({
+            capability: '章节骨架',
+            chapterNumber: Number(args.chapter),
+            title: `第${args.chapter}章 骨架（${beats.length} 拍）`,
+            note: '批准后解锁写草稿；采纳前正文不动。',
+            payload: { kind: 'skeleton', chapter: Number(args.chapter), beats },
+          });
+          return `已登记骨架提案（${p.id}），等待作者批准。`
+        }),
+    ),
+
+    textTool(
+      'propose_draft',
+      '提交整章草稿提案。草稿只能以提案形态存在：作者采纳前不进正文，采纳时自动快照可回滚。',
+      { chapter: num('章节号'), text: str('草稿全文（Markdown）') },
+      (args) =>
+        guard(async () => {
+          const text = String(args.text ?? '');
+          if (text.trim().length < 50) return '草稿太短，不登记。'
+          const p = await store.addProposal({
+            capability: '一键写作',
+            chapterNumber: Number(args.chapter),
+            title: `第${args.chapter}章 草稿 v1（${text.length} 字）`,
+            note: '采纳 = 自动快照后写入正文；拒绝 = 正文一字不动。',
+            payload: { kind: 'draft', chapter: Number(args.chapter), text },
+          });
+          return `已登记草稿提案（${p.id}），等待作者审阅。`
+        }),
+    ),
+
+    textTool(
+      'propose_validation',
+      '提交一致性验证报告提案：只查客观错误（连续性/设定违背/伏笔合同/物理不可能/动机断裂），只报告不代改。',
+      { chapter: num('章节号'), findings: { type: 'array', description: '发现数组（每条含类型/位置/证据/建议）', required: true, items: { type: 'object', properties: { kind: str('类型'), location: str('位置'), evidence: str('证据'), suggestion: str('建议') }, required: ['kind', 'evidence'] } } },
+      (args) =>
+        guard(async () => {
+          const findings = Array.isArray(args.findings) ? args.findings : [];
+          const p = await store.addProposal({
+            capability: '一致性验证',
+            chapterNumber: Number(args.chapter),
+            title: `第${args.chapter}章 验证报告（${findings.length} 处）`,
+            note: '报告只读；配套修复动作走伏笔/大纲提案。',
+            payload: { kind: 'report', chapter: Number(args.chapter), findings },
+          });
+          return `已登记验证报告提案（${p.id}）。`
+        }),
+    ),
+
+    textTool(
+      'propose_deslop',
+      '提交去AI味逐处建议提案：original/replacement/gate/reason，逐条采纳，首次采纳前自动快照。',
+      { chapter: num('章节号'), suggestions: { type: 'array', required: true, description: '逐处建议', items: { type: 'object', properties: { original: str('原文片段'), replacement: str('建议替换'), reason: str('为什么') }, required: ['original', 'replacement'] } } },
+      (args) =>
+        guard(async () => {
+          const suggestions = Array.isArray(args.suggestions) ? args.suggestions : [];
+          const p = await store.addProposal({
+            capability: '去AI味',
+            chapterNumber: Number(args.chapter),
+            title: `第${args.chapter}章 去AI味建议（${suggestions.length} 处）`,
+            note: '逐条采纳；采纳前自动快照。',
+            payload: { kind: 'deslop', chapter: Number(args.chapter), suggestions },
+          });
+          return `已登记去AI味提案 ${suggestions.length} 处（${p.id}）。`
+        }),
+    ),
+
+    textTool(
+      'propose_memory',
+      '提交记忆提案：双时态事实三元组 + 章摘要 + 伏笔候选。作者确认后入记忆中枢。',
+      { chapter: num('章节号'), facts: { type: 'array', required: true, description: '事实数组', items: { type: 'object', properties: { subject: str('主语'), predicate: str('谓语'), object: str('宾语'), publicToReader: { type: 'boolean', description: '读者是否已知' } }, required: ['subject', 'predicate', 'object'] } } },
+      (args) =>
+        guard(async () => {
+          const facts = Array.isArray(args.facts) ? args.facts : [];
+          const p = await store.addProposal({
+            capability: '记忆提取',
+            chapterNumber: Number(args.chapter),
+            title: `第${args.chapter}章 记忆（${facts.length} 事实）`,
+            note: '采纳后事实进记忆中枢，矛盾体检自动核对。',
+            payload: { kind: 'memoryPack', chapter: Number(args.chapter), facts },
+          });
+          return `已登记记忆提案（${p.id}）。`
+        }),
+    ),
+
+    textTool(
+      'propose_dossier',
+      '提交章节档案卡提案（长程记忆）：场景/出场/推进/拐点/悬念/关键细节。采纳后进跨全书检索库。',
+      { chapter: num('章节号'), headline: str('一句话本章'), scenes: { type: 'array', items: { type: 'string' }, description: '场景', required: false }, cast: { type: 'array', items: { type: 'string' }, description: '出场', required: false }, hooks: { type: 'array', items: { type: 'string' }, description: '悬念', required: false }, relics: { type: 'array', items: { type: 'string' }, description: '检索锚点（关键物件/台词）', required: false } },
+      (args) =>
+        guard(async () => {
+          const p = await store.addProposal({
+            capability: '档案卡提取',
+            chapterNumber: Number(args.chapter),
+            title: `第${args.chapter}章 档案卡（长程记忆）`,
+            note: '采纳后进跨全书检索记忆库。',
+            payload: { kind: 'dossier', chapter: Number(args.chapter), headline: String(args.headline ?? ''), scenes: args.scenes ?? [], cast: args.cast ?? [], hooks: args.hooks ?? [], relics: args.relics ?? [] },
+          });
+          return `已登记档案卡提案（${p.id}）。`
+        }),
+    ),
+
+    textTool(
+      'propose_clue_fixes',
+      '提交埋点修复提案：每条烂账配一个可一键采纳的修复动作（补埋/改期/回收/搁置/放弃/校正原文/补登记）。只改台账不动正文。',
+      { fixes: { type: 'array', required: true, description: '修复动作数组', items: { type: 'object', properties: { clueID: str('伏笔编号'), kind: str('动作类型'), detail: str('说明') }, required: ['clueID', 'kind'] } } },
+      (args) =>
+        guard(async () => {
+          const fixes = Array.isArray(args.fixes) ? args.fixes : [];
+          const p = await store.addProposal({
+            capability: '全书连贯性审查',
+            title: `埋点修复（${fixes.length} 条）`,
+            note: '只改台账与动作日志，不动正文。',
+            payload: { kind: 'clueFixes', fixes },
+          });
+          return `已登记埋点修复提案 ${fixes.length} 条（${p.id}）。`
+        }),
+    ),
+
+    textTool(
+      'propose_outline_updates',
+      '提交大纲更新提案：剧情线状态（健康/放缓/停滞/断线/待收束）与事件偏移的更新建议。采纳后大纲才是活文档。',
+      { updates: { type: 'array', required: true, description: '更新数组', items: { type: 'object', properties: { storylineID: str('故事线编号'), status: str('新状态', false), note: str('建议说明') }, required: ['note'] } } },
+      (args) =>
+        guard(async () => {
+          const updates = Array.isArray(args.updates) ? args.updates : [];
+          const p = await store.addProposal({
+            capability: '大纲同步',
+            title: `大纲更新提案（${updates.length} 条）`,
+            note: '采纳后故事线状态真实变化。',
+            payload: { kind: 'outlineUpdates', updates },
+          });
+          return `已登记大纲更新提案（${p.id}）。`
+        }),
+    ),
+
     // —— 确定性采纳（作者点“采纳”后由宿主调用；幂等保护） ——
 
     textTool(

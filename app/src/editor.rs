@@ -5,6 +5,7 @@ use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::Sizable;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, rgb,
@@ -15,6 +16,8 @@ pub enum EditorEvent {
     SendRequested(String),
     /// 显式保存（按钮）
     SaveRequested,
+    /// AI 能力按钮（capability 键，Workspace 映射为任务书）
+    RunCapability(String),
 }
 
 pub struct EditorPanel {
@@ -75,11 +78,34 @@ impl Render for EditorPanel {
                 });
             }));
 
+        let ai_buttons = crate::prompts::EDITOR_AI_BUTTONS
+            .iter()
+            .map(|b| {
+                let cap = b.capability.to_string();
+                Button::new(format!("ai-{cap}"))
+                    .xsmall()
+                    .label(b.label)
+                    .on_click(cx.listener(move |_this, _, _, cx| {
+                        cx.emit(EditorEvent::RunCapability(cap.clone()));
+                    }))
+            })
+            .collect::<Vec<_>>();
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(rgb(0x17181c))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .px_8()
+                    .pt_2()
+                    .flex_wrap()
+                    .children(ai_buttons),
+            )
             .child(
                 div()
                     .id("editor-scroll")

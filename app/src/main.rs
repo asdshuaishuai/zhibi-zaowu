@@ -4,6 +4,8 @@
 mod app_root;
 mod dsh;
 mod editor;
+mod inbox;
+mod prompts;
 mod shelf;
 mod store;
 mod trajectory;

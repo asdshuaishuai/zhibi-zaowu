@@ -318,3 +318,236 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 }
+
+// ───────────────────────── 提案（proposals/inbox.json）─────────────────────────
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Proposal {
+    pub id: String,
+    #[serde(default)]
+    pub capability: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub note: String,
+    pub payload: serde_json::Value,
+    #[serde(default = "default_status")]
+    pub status: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub decided_at: Option<String>,
+    #[serde(default)]
+    pub reject_reason: Option<String>,
+}
+
+fn default_status() -> String {
+    "待确认".into()
+}
+
+impl ProjectHandle {
+    pub fn proposals(&self) -> Vec<Proposal> {
+        let path = self.root.join("proposals").join("inbox.json");
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_proposals(&self, list: &[Proposal]) -> Result<(), String> {
+        let path = self.root.join("proposals").join("inbox.json");
+        let tmp = path.with_extension("json.tmp");
+        let json = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
+        std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    /// 确定性采纳（账房语义与 novel-pack apply_proposal 一致：同题保护/同 id 合并/
+    /// 归类按标题匹配）。返回 (applied, skipped 说明)。
+    pub fn accept_proposal(&self, id: &str) -> Result<(usize, Vec<String>), String> {
+        let mut list = self.proposals();
+        let idx = list.iter().position(|p| p.id == id).ok_or("提案不存在")?;
+        if list[idx].status != "待确认" {
+            return Err(format!("提案已处理（{}），拒绝重复采纳", list[idx].status));
+        }
+        let p = list[idx].clone();
+        let (applied, skipped) = self.apply_payload(&p.payload)?;
+        if applied == 0 {
+            return Err(format!("未入库：{}——提案保持待审", skipped.join("、")));
+        }
+        list[idx].status = "已采纳".into();
+        list[idx].decided_at = Some(iso_now());
+        self.save_proposals(&list)?;
+        Ok((applied, skipped))
+    }
+
+    pub fn reject_proposal(&self, id: &str, reason: &str) -> Result<(), String> {
+        let mut list = self.proposals();
+        let idx = list.iter().position(|p| p.id == id).ok_or("提案不存在")?;
+        if list[idx].status != "待确认" {
+            return Err("提案已处理".into());
+        }
+        list[idx].status = "已拒绝".into();
+        list[idx].decided_at = Some(iso_now());
+        list[idx].reject_reason = Some(reason.to_string());
+        self.save_proposals(&list)
+    }
+
+    fn apply_payload(&self, payload: &serde_json::Value) -> Result<(usize, Vec<String>), String> {
+        let kind = payload.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        let mut applied = 0usize;
+        let mut skipped: Vec<String> = Vec::new();
+        match kind {
+            "canon" => {
+                let docs = payload.get("docs").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+                for d in docs {
+                    let title = d.get("title").and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+                    if title.is_empty() { continue; }
+                    let file = self.canon_path(&title);
+                    if file.exists() {
+                        skipped.push(format!("设定「{title}」已存在（同题保护）"));
+                        continue;
+                    }
+                    let body = d.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                    std::fs::write(&file, body).map_err(|e| e.to_string())?;
+                    applied += 1;
+                }
+            }
+            "clues" => {
+                let incoming = payload.get("clues").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+                let mut clues = self.clues();
+                for c in incoming {
+                    let id = c.get("id").and_then(|i| i.as_str()).map(String::from)
+                        .unwrap_or_else(|| format!("F{}", clues.len() + 1));
+                    if let Some(pos) = clues.iter().position(|x| x.get("id").and_then(|i| i.as_str()) == Some(id.as_str())) {
+                        // 同 id 合并：作者维护字段不覆盖，只补空
+                        let existing = &mut clues[pos];
+                        for k in ["title", "detail", "plantedChapter"] {
+                            if existing.get(k).is_none() {
+                                if let Some(v) = c.get(k) {
+                                    if let Some(obj) = existing.as_object_mut() { obj.insert(k.into(), v.clone()); }
+                                }
+                            }
+                        }
+                        applied += 1;
+                    } else {
+                        let mut merged = c.clone();
+                        if let Some(obj) = merged.as_object_mut() {
+                            obj.insert("id".into(), serde_json::json!(id));
+                            obj.entry("status").or_insert(serde_json::json!("埋下"));
+                        }
+                        clues.push(merged);
+                        applied += 1;
+                    }
+                }
+                self.save_clues(&clues)?;
+            }
+            "canonClassify" => {
+                let items = payload.get("items").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+                for it in items {
+                    let title = it.get("title").and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+                    let file = self.canon_path(&title);
+                    if !file.exists() {
+                        skipped.push(format!("设定「{title}」未找到（标题可能已改）"));
+                        continue;
+                    }
+                    let category = it.get("category").and_then(|c| c.as_str()).unwrap_or("未分类");
+                    let body = std::fs::read_to_string(&file).unwrap_or_default();
+                    let body = body.strip_prefix(&format!("<!-- 类别:")).and_then(|b| b.split_once("-->\n").map(|(_, r)| r.to_string()))
+                        .unwrap_or_else(|| {
+                            // 已有类别头则替换；无则前插
+                            if let Some(rest) = body.strip_prefix("<!-- 类别:") {
+                                rest.split_once("-->\n").map(|(_, r)| r.to_string()).unwrap_or(body.clone())
+                            } else { body.clone() }
+                        });
+                    std::fs::write(&file, format!("<!-- 类别:{category} -->\n{body}")).map_err(|e| e.to_string())?;
+                    if let Some(rename) = it.get("rename").and_then(|r| r.as_str()) {
+                        let rfile = self.canon_path(rename);
+                        if !rename.trim().is_empty() && rename != title && !rfile.exists() {
+                            let _ = std::fs::rename(&file, &rfile);
+                        }
+                    }
+                    applied += 1;
+                }
+            }
+            "draft" => {
+                // 草稿：采纳 = 写入对应章正文（先自动快照）
+                let chapter = payload.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                let text = payload.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                if chapter == 0 { return Err("草稿缺章号".into()); }
+                self.snapshot_prose(chapter)?;
+                self.save_prose(chapter, text)?;
+                applied += 1;
+            }
+            "memo" | "report" | "deslop" | "skeleton" | "memoryPack" | "dossier" | "outlineUpdates" | "clueFixes" | "storylines" | "outlineEvents" => {
+                // M3 后续：这些 payload 的确定性落库逐个补齐；先如实报告未支持
+                return Err(format!("「{kind}」落库尚未实现（M3 后续）——提案保持待审"));
+            }
+            other => return Err(format!("未知提案类型：{other}")),
+        }
+        Ok((applied, skipped))
+    }
+
+    fn canon_path(&self, title: &str) -> PathBuf {
+        self.root.join("canon").join(format!("{}.md", safe_file_name(title)))
+    }
+
+    /// 设定文档列表（标题/类别/正文）——M5 设定页使用
+    #[allow(dead_code)]
+    pub fn canon_docs(&self) -> Vec<(String, String, String)> {
+        // (标题, 类别, 正文)
+        let dir = self.root.join("canon");
+        let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+        let mut out = Vec::new();
+        for e in entries.filter_map(|e| e.ok()) {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".md") { continue; }
+            let title = name.trim_end_matches(".md").to_string();
+            let body = std::fs::read_to_string(e.path()).unwrap_or_default();
+            let category = body
+                .strip_prefix("<!-- 类别:")
+                .and_then(|b| b.split_once("-->").map(|(c, _)| c.trim().to_string()))
+                .unwrap_or_else(|| "未分类".into());
+            let content = if category != "未分类" {
+                body.split_once("-->\n").map(|(_, r)| r.to_string()).unwrap_or(body)
+            } else { body };
+            out.push((title, category, content));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    fn clues(&self) -> Vec<serde_json::Value> {
+        self.root.join("clues.json")
+            .exists()
+            .then(|| std::fs::read_to_string(self.root.join("clues.json")).ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default())
+            .unwrap_or_default()
+    }
+
+    fn save_clues(&self, clues: &[serde_json::Value]) -> Result<(), String> {
+        let path = self.root.join("clues.json");
+        let tmp = path.with_extension("json.tmp");
+        let json = serde_json::to_string_pretty(clues).map_err(|e| e.to_string())?;
+        std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    pub fn snapshot_prose(&self, n: u32) -> Result<(), String> {
+        let dir = self.root.join("chapters").join(chapter_dir_name(n)).join("snapshots");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let src = self.prose(n);
+        let stamp = iso_now().replace([':', '-'], "");
+        std::fs::write(dir.join(format!("prose-{stamp}.md")), src).map_err(|e| e.to_string())
+    }
+}
+
+fn iso_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    epoch_to_iso8601(secs)
+}

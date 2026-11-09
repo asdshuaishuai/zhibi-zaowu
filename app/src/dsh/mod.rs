@@ -59,8 +59,31 @@ impl DshClient {
     /// （作为 ZHIBI_ROOT 环境变量交给 novel-pack 的 config.root）。
     pub fn spawn(root: &std::path::Path) -> Result<(Self, async_channel::Receiver<DshEvent>)> {
         let bin = std::env::var("ZHIBI_DSH_BIN").unwrap_or_else(|_| "dsh".to_string());
+        // novel-pack 能力包：ZHIBI_PACK_PATCH 指定；默认找仓库相对路径
+        let mut args: Vec<String> = vec!["--profile".into(), "sdk".into()];
+        let patch = std::env::var("ZHIBI_PACK_PATCH")
+            .ok()
+            .or_else(|| {
+                let cwd = std::path::Path::new("novel-pack/cordis.patch.yml");
+                cwd.exists().then(|| cwd.display().to_string())
+            })
+            .or_else(|| {
+                // 从可执行文件位置向上找仓库（target/debug → 仓库根）
+                let exe = std::env::current_exe().ok()?;
+                let mut dir = exe.parent()?;
+                for _ in 0..4 {
+                    let cand = dir.join("novel-pack").join("cordis.patch.yml");
+                    if cand.exists() { return Some(cand.display().to_string()); }
+                    dir = dir.parent()?;
+                }
+                None
+            });
+        if let Some(patch) = patch {
+            args.push("--patch".into());
+            args.push(patch);
+        }
         let mut child = Command::new(&bin)
-            .args(["--profile", "sdk"])
+            .args(&args)
             .env("ZHIBI_ROOT", root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

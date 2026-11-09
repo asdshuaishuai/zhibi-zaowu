@@ -2,6 +2,7 @@
 //! 职责：项目句柄、章节切换与正文保存、DSH 生命周期与事件分发。
 
 use anyhow::Result;
+use std::rc::Rc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{
     DockArea, DockEvent, DockLayout, DockPlacement, DockSkin, panel_handle,
@@ -18,6 +19,8 @@ use serde_json::Value;
 
 use crate::dsh::{DshClient, DshEvent, model_route};
 use crate::editor::{EditorEvent, EditorPanel};
+use crate::inbox::{InboxEvent, InboxPanel};
+use crate::prompts;
 use crate::store::{self, ProjectHandle};
 use crate::trajectory::{TrajKind, TrajectoryPanel};
 
@@ -33,8 +36,9 @@ impl EventEmitter<WorkspaceEvent> for Workspace {}
 
 pub struct Workspace {
     root: std::path::PathBuf,
-    handle: ProjectHandle,
+    handle: Rc<ProjectHandle>,
     dock_area: Entity<DockArea>,
+    inbox: Entity<InboxPanel>,
     /// 订阅保持；正文读写走 prose Entity
     #[allow(dead_code)]
     editor: Entity<EditorPanel>,
@@ -48,7 +52,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(root: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let handle = ProjectHandle::open(&root).expect("项目打开失败");
+        let handle = Rc::new(ProjectHandle::open(&root).expect("项目打开失败"));
         let mut chapters = handle.chapters();
         // 默认落到最近一章（有正文的最后一章），没有则建第 1 章
         let chapter = chapters
@@ -72,9 +76,25 @@ impl Workspace {
 
         let editor = cx.new(|cx| EditorPanel::new(window, cx, prose.clone()));
         let trajectory = cx.new(|cx| TrajectoryPanel::new(cx));
+        let inbox = cx.new(|cx| InboxPanel::new(window, cx, handle.clone()));
+
+        cx.subscribe_in(
+            &inbox,
+            window,
+            |this, _, ev: &InboxEvent, _window, cx| match ev {
+                InboxEvent::Accept(id) => this.accept_proposal(id, cx),
+                InboxEvent::Reject(id, reason) => this.reject_proposal(id, &reason, cx),
+                InboxEvent::Refresh => {
+                    this.inbox.update(cx, |panel, cx| panel.refresh(cx));
+                }
+            },
+        )
+        .detach();
 
         let center = DockLayout::tabs().panel_view(panel_handle(editor.clone()), cx);
-        let right = DockLayout::tabs().panel_view(panel_handle(trajectory.clone()), cx);
+        let right = DockLayout::tabs()
+            .panel_view(panel_handle(trajectory.clone()), cx)
+            .panel_view(panel_handle(inbox.clone()), cx);
         dock_area.update(cx, |area, cx| {
             area.set_center(center, window, cx);
             area.set_dock(DockPlacement::Right, right, window, cx);
@@ -89,6 +109,10 @@ impl Workspace {
             |this, _, ev: &EditorEvent, _window, cx| match ev {
                 EditorEvent::SendRequested(text) => this.on_send(text.clone(), cx),
                 EditorEvent::SaveRequested => this.save_current(cx),
+                EditorEvent::RunCapability(cap) => {
+                    let task = prompts::task_for(cap, this.chapter);
+                    this.on_send(task, cx);
+                }
             },
         )
         .detach();
@@ -97,6 +121,7 @@ impl Workspace {
             root,
             handle,
             dock_area,
+            inbox,
             editor,
             trajectory,
             prose,
@@ -105,6 +130,45 @@ impl Workspace {
             client: None,
             initialized: false,
         }
+    }
+
+    fn accept_proposal(&mut self, id: &str, cx: &mut Context<Self>) {
+        match self.handle.accept_proposal(id) {
+            Ok((applied, skipped)) => {
+                let note = if skipped.is_empty() {
+                    format!("采纳完成：{} 项入库", applied)
+                } else {
+                    format!("采纳完成：{} 项入库；跳过 {}", applied, skipped.join("、"))
+                };
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Info(note), cx);
+                });
+            }
+            Err(e) => {
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Fail(format!("采纳失败：{e}")), cx);
+                });
+            }
+        }
+        self.inbox.update(cx, |panel, cx| panel.refresh(cx));
+        self.chapters = self.handle.chapters();
+        cx.notify();
+    }
+
+    fn reject_proposal(&mut self, id: &str, reason: &str, cx: &mut Context<Self>) {
+        match self.handle.reject_proposal(id, reason) {
+            Ok(()) => {
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Info(format!("已拒收（理由将回灌）：{reason}")), cx);
+                });
+            }
+            Err(e) => {
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Fail(format!("拒收失败：{e}")), cx);
+                });
+            }
+        }
+        self.inbox.update(cx, |panel, cx| panel.refresh(cx));
     }
 
     fn word_count(&self, cx: &Context<Self>) -> usize {
@@ -228,6 +292,7 @@ impl Workspace {
                     ),
                     Err(e) => panel.push(TrajKind::Fail(format!("发送失败：{e}")), cx),
                 });
+                ws.inbox.update(cx, |panel, cx| panel.refresh(cx));
             });
         })
         .detach();
