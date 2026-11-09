@@ -551,3 +551,47 @@ fn iso_now() -> String {
         .unwrap_or(0);
     epoch_to_iso8601(secs)
 }
+
+// ───────────────────── 台账读取（真实文件名：storylines/events/stages/memory/dossiers）─────────────────────
+
+impl ProjectHandle {
+    fn read_array(&self, file: &str) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.root.join(file))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn storylines(&self) -> Vec<serde_json::Value> {
+        self.read_array("storylines.json")
+    }
+    pub fn events(&self) -> Vec<serde_json::Value> {
+        self.read_array("events.json")
+    }
+    pub fn memory_facts(&self) -> Vec<serde_json::Value> {
+        let path = self.root.join("memory.json");
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| {
+                let v: serde_json::Value = serde_json::from_str(&t).ok()?;
+                Some(v.get("facts")?.as_array()?.clone())
+            })
+            .unwrap_or_default()
+    }
+    pub fn daily_words(&self) -> Vec<(String, usize)> {
+        let path = self.root.join("project.json");
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| {
+                let v: serde_json::Value = serde_json::from_str(&t).ok()?;
+                let map = v.get("dailyWords")?.as_object()?;
+                let mut out: Vec<(String, usize)> = map
+                    .iter()
+                    .filter_map(|(k, n)| n.as_u64().map(|n| (k.clone(), n as usize)))
+                    .collect();
+                out.sort();
+                Some(out)
+            })
+            .unwrap_or_default()
+    }
+}

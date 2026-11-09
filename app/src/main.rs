@@ -9,6 +9,7 @@ mod prompts;
 mod shelf;
 mod store;
 mod trajectory;
+mod views;
 mod workspace;
 
 use gpui_kit::{

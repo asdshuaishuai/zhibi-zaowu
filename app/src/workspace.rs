@@ -23,6 +23,7 @@ use crate::inbox::{InboxEvent, InboxPanel};
 use crate::prompts;
 use crate::store::{self, ProjectHandle};
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
+use crate::views::{CanonPanel, MemoryPanel, OutlinePanel, StatsPanel, ViewEvent};
 
 const DOCK_AREA_ID: &str = "zhibi-main-dock";
 const DOCK_AREA_VERSION: usize = 1;
@@ -30,6 +31,27 @@ const DOCK_AREA_VERSION: usize = 1;
 #[derive(Debug, Clone)]
 pub enum WorkspaceEvent {
     BackToShelf,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum Mode {
+    Editor,
+    Outline,
+    Canon,
+    Memory,
+    Stats,
+}
+
+impl Mode {
+    fn label(&self) -> &'static str {
+        match self {
+            Mode::Editor => "章节",
+            Mode::Outline => "大纲 · 时间线",
+            Mode::Canon => "设定",
+            Mode::Memory => "记忆中枢",
+            Mode::Stats => "写作统计",
+        }
+    }
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -42,6 +64,11 @@ pub struct Workspace {
     /// 订阅保持；正文读写走 prose Entity
     #[allow(dead_code)]
     editor: Entity<EditorPanel>,
+    canon_view: Entity<CanonPanel>,
+    outline_view: Entity<OutlinePanel>,
+    memory_view: Entity<MemoryPanel>,
+    stats_view: Entity<StatsPanel>,
+    mode: Mode,
     trajectory: Entity<TrajectoryPanel>,
     prose: Entity<TextareaState>,
     chapters: Vec<store::ChapterInfo>,
@@ -89,6 +116,37 @@ impl Workspace {
                 }
             },
         )
+        .detach();
+
+        let canon_view = cx.new(|cx| CanonPanel::new(cx, handle.clone()));
+        let outline_view = cx.new(|cx| OutlinePanel::new(cx, handle.clone()));
+        let memory_view = cx.new(|cx| MemoryPanel::new(cx, handle.clone()));
+        let stats_view = cx.new(|cx| StatsPanel::new(cx, handle.clone()));
+
+        cx.subscribe_in(&canon_view, window, |this, _, ev: &ViewEvent, window, cx| match ev {
+            ViewEvent::RunCapability(cap) => {
+                let task = prompts::task_for(cap, this.chapter);
+                this.on_send(task, cx);
+                this.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Info("台账页触发——产出进收件箱，轨迹窗全程可见".into()), cx);
+                });
+                let _ = window;
+            }
+        })
+        .detach();
+        cx.subscribe_in(&outline_view, window, |this, _, ev: &ViewEvent, _window, cx| match ev {
+            ViewEvent::RunCapability(cap) => {
+                let task = prompts::task_for(cap, this.chapter);
+                this.on_send(task, cx);
+            }
+        })
+        .detach();
+        cx.subscribe_in(&memory_view, window, |this, _, ev: &ViewEvent, _window, cx| match ev {
+            ViewEvent::RunCapability(cap) => {
+                let task = prompts::task_for(cap, this.chapter);
+                this.on_send(task, cx);
+            }
+        })
         .detach();
 
         let center = DockLayout::tabs().panel_view(panel_handle(editor.clone()), cx);
@@ -145,6 +203,11 @@ impl Workspace {
             dock_area,
             inbox,
             editor,
+            canon_view,
+            outline_view,
+            memory_view,
+            stats_view,
+            mode: Mode::Editor,
             trajectory,
             prose,
             chapters,
@@ -191,6 +254,29 @@ impl Workspace {
             }
         }
         self.inbox.update(cx, |panel, cx| panel.refresh(cx));
+    }
+
+    fn switch_center(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == mode {
+            return;
+        }
+        // 离开编辑器先存正文
+        if self.mode == Mode::Editor {
+            self.save_current(cx);
+        }
+        self.mode = mode;
+        let view = match mode {
+            Mode::Editor => panel_handle(self.editor.clone()),
+            Mode::Outline => panel_handle(self.outline_view.clone()),
+            Mode::Canon => panel_handle(self.canon_view.clone()),
+            Mode::Memory => panel_handle(self.memory_view.clone()),
+            Mode::Stats => panel_handle(self.stats_view.clone()),
+        };
+        let center = DockLayout::tabs().panel_view(view, cx);
+        self.dock_area.update(cx, |area, cx| {
+            area.set_center(center, window, cx);
+        });
+        cx.notify();
     }
 
     fn word_count(&self, cx: &Context<Self>) -> usize {
@@ -563,7 +649,29 @@ impl Render for Workspace {
                 }
             })
         });
-        let menu = SidebarMenu::new().children(sidebar_items);
+        // 台账页导航（切换中央面板）
+        let mut nav_items: Vec<gpui_kit::component::sidebar::SidebarMenuItem> = Vec::new();
+        {
+            let weak = cx.weak_entity();
+            let mk = |label: &'static str, mode: Mode| {
+                let weak = weak.clone();
+                SidebarMenuItem::new(SharedString::from(label))
+                    .active(false)
+                    .on_click(move |_, window, cx| {
+                        if let Some(ws) = weak.upgrade() {
+                            ws.update(cx, |ws, cx| ws.switch_center(mode, window, cx));
+                        }
+                    })
+            };
+            nav_items.push(mk("✎ 稿纸", Mode::Editor));
+            nav_items.push(mk("大纲 · 时间线", Mode::Outline));
+            nav_items.push(mk("设定", Mode::Canon));
+            nav_items.push(mk("记忆中枢", Mode::Memory));
+            nav_items.push(mk("写作统计", Mode::Stats));
+        }
+        let menu = SidebarMenu::new()
+            .children(nav_items)
+            .children(sidebar_items);
         let sidebar = Sidebar::new("chapters")
             .header(
                 div()
