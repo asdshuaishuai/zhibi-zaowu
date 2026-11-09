@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["app"]
+
+[workspace.package]
+version = "3.0.0-dev"
+edition = "2024"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
