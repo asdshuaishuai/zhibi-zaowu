@@ -6,13 +6,13 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::component::dock::Panel as ComponentPanel;
 use gpui_kit::component::dock::BasePanel;
 use gpui_kit::{
-    AnyElement, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement,
+    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement,
     IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, Window, div, rgb, rgba,
 };

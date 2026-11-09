@@ -7,7 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::Sizable;
 use gpui_kit::{
-    AnyElement, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight,
+    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px, rgb,
 };
@@ -27,6 +27,10 @@ impl EventEmitter<ViewEvent> for OutlinePanel {}
 impl EventEmitter<PanelEvent> for MemoryPanel {}
 impl EventEmitter<ViewEvent> for MemoryPanel {}
 impl EventEmitter<PanelEvent> for StatsPanel {}
+impl EventEmitter<ViewEvent> for StatsPanel {}
+impl EventEmitter<PanelEvent> for CluesPanel {}
+impl EventEmitter<ViewEvent> for CluesPanel {}
+impl EventEmitter<PanelEvent> for CharactersPanel {}
 
 /* ───────────────────────── 设定 ───────────────────────── */
 
@@ -465,5 +469,144 @@ impl BasePanel for StatsPanel {
 impl ComponentPanel for StatsPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().text_sm().font_weight(FontWeight::MEDIUM).child("写作统计")
+    }
+}
+
+
+/* ───────────────────────── 伏笔台账 ───────────────────────── */
+
+pub struct CluesPanel {
+    focus_handle: FocusHandle,
+    handle: Rc<ProjectHandle>,
+}
+
+impl CluesPanel {
+    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        Self { focus_handle: cx.focus_handle(), handle }
+    }
+}
+
+impl Focusable for CluesPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for CluesPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let clues = self.handle.clues_full();
+        let mut rows = Vec::new();
+        for c in clues.iter().take(80) {
+            rows.push(row(vec![
+                (c.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string(), Some("accent")),
+                (c.get("title").and_then(|v| v.as_str()).unwrap_or("").chars().take(40).collect(), None),
+                (c.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string(), Some("blue")),
+                (format!("埋{}", c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0)), Some("dim")),
+                (format!("动{}", c.get("lastActionChapter").and_then(|v| v.as_u64()).unwrap_or(0)), Some("dim")),
+                (c.get("timing").and_then(|v| v.as_str()).unwrap_or("").to_string(), Some("faint")),
+            ]));
+        }
+        div()
+            .id("clues-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                div().flex().flex_col().p_3().gap_2()
+                    .child(
+                        div().flex().items_center().gap_3()
+                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("伏笔台账"))
+                            .child(
+                                Button::new("clues-inventory")
+                                    .xsmall()
+                                    .label("AI 盘点（提案）")
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ViewEvent::RunCapability("inventory"));
+                                    })),
+                            )
+                            .child(div().text_xs().text_color(rgb(0x5d5b57)).child(SharedString::from(format!("{} 条", clues.len())))),
+                    )
+                    .children(rows)
+                    .when_true(clues.is_empty(), |d| {
+                        d.child(div().text_xs().text_color(rgb(0x5d5b57)).child("（台账为空——「AI 盘点伏笔」可从正文重建）"))
+                    }),
+            )
+    }
+}
+
+impl BasePanel for CluesPanel {
+    fn panel_name(&self) -> &'static str {
+        "clues-view"
+    }
+}
+impl ComponentPanel for CluesPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().text_sm().font_weight(FontWeight::MEDIUM).child("伏笔台账")
+    }
+}
+
+/* ───────────────────────── 人物卡（别名归一） ───────────────────────── */
+
+pub struct CharactersPanel {
+    focus_handle: FocusHandle,
+    handle: Rc<ProjectHandle>,
+}
+
+impl CharactersPanel {
+    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        Self { focus_handle: cx.focus_handle(), handle }
+    }
+}
+
+impl Focusable for CharactersPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for CharactersPanel {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let aliases = self.handle.aliases();
+        let facts = self.handle.memory_facts();
+        let mut rows = Vec::new();
+        for a in aliases.iter().take(60) {
+            let canon = a.get("canonicalName").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+            let subs: Vec<String> = a
+                .get("aliases")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let appears = facts
+                .iter()
+                .filter(|f| f.get("subject").and_then(|s| s.as_str()) == Some(canon.as_str()))
+                .count();
+            rows.push(row(vec![
+                (canon, None),
+                (subs.join(" / "), Some("dim")),
+                (format!("{appears} 条事实"), Some("blue")),
+            ]));
+        }
+        div()
+            .id("characters-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                div().flex().flex_col().p_3().gap_2()
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("人物卡（别名归一）"))
+                    .children(rows)
+                    .when_true(aliases.is_empty(), |d| {
+                        d.child(div().text_xs().text_color(rgb(0x5d5b57)).child("（还没有别名档案——记忆提取/人物归一提案采纳后出现）"))
+                    }),
+            )
+    }
+}
+
+impl BasePanel for CharactersPanel {
+    fn panel_name(&self) -> &'static str {
+        "characters-view"
+    }
+}
+impl ComponentPanel for CharactersPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().text_sm().font_weight(FontWeight::MEDIUM).child("人物卡")
     }
 }

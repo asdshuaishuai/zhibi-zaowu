@@ -10,6 +10,7 @@ use gpui_kit::component::dock::{
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::Sizable;
 use gpui_kit::component::{IconName, TitleBar};
 use gpui_kit::{
     AppContext as _, AsyncApp, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
@@ -23,7 +24,7 @@ use crate::inbox::{InboxEvent, InboxPanel};
 use crate::prompts;
 use crate::store::{self, ProjectHandle};
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
-use crate::views::{CanonPanel, MemoryPanel, OutlinePanel, StatsPanel, ViewEvent};
+use crate::views::{CanonPanel, CharactersPanel, CluesPanel, MemoryPanel, OutlinePanel, StatsPanel, ViewEvent};
 
 const DOCK_AREA_ID: &str = "zhibi-main-dock";
 const DOCK_AREA_VERSION: usize = 1;
@@ -40,6 +41,8 @@ pub enum Mode {
     Canon,
     Memory,
     Stats,
+    Clues,
+    Characters,
 }
 
 impl Mode {
@@ -50,6 +53,8 @@ impl Mode {
             Mode::Canon => "设定",
             Mode::Memory => "记忆中枢",
             Mode::Stats => "写作统计",
+            Mode::Clues => "伏笔台账",
+            Mode::Characters => "人物卡",
         }
     }
 }
@@ -68,6 +73,8 @@ pub struct Workspace {
     outline_view: Entity<OutlinePanel>,
     memory_view: Entity<MemoryPanel>,
     stats_view: Entity<StatsPanel>,
+    clues_view: Entity<CluesPanel>,
+    characters_view: Entity<CharactersPanel>,
     mode: Mode,
     trajectory: Entity<TrajectoryPanel>,
     prose: Entity<TextareaState>,
@@ -122,6 +129,8 @@ impl Workspace {
         let outline_view = cx.new(|cx| OutlinePanel::new(cx, handle.clone()));
         let memory_view = cx.new(|cx| MemoryPanel::new(cx, handle.clone()));
         let stats_view = cx.new(|cx| StatsPanel::new(cx, handle.clone()));
+        let clues_view = cx.new(|cx| CluesPanel::new(cx, handle.clone()));
+        let characters_view = cx.new(|cx| CharactersPanel::new(cx, handle.clone()));
 
         cx.subscribe_in(&canon_view, window, |this, _, ev: &ViewEvent, window, cx| match ev {
             ViewEvent::RunCapability(cap) => {
@@ -142,6 +151,13 @@ impl Workspace {
         })
         .detach();
         cx.subscribe_in(&memory_view, window, |this, _, ev: &ViewEvent, _window, cx| match ev {
+            ViewEvent::RunCapability(cap) => {
+                let task = prompts::task_for(cap, this.chapter);
+                this.on_send(task, cx);
+            }
+        })
+        .detach();
+        cx.subscribe_in(&clues_view, window, |this, _, ev: &ViewEvent, _window, cx| match ev {
             ViewEvent::RunCapability(cap) => {
                 let task = prompts::task_for(cap, this.chapter);
                 this.on_send(task, cx);
@@ -207,6 +223,8 @@ impl Workspace {
             outline_view,
             memory_view,
             stats_view,
+            clues_view,
+            characters_view,
             mode: Mode::Editor,
             trajectory,
             prose,
@@ -271,6 +289,8 @@ impl Workspace {
             Mode::Canon => panel_handle(self.canon_view.clone()),
             Mode::Memory => panel_handle(self.memory_view.clone()),
             Mode::Stats => panel_handle(self.stats_view.clone()),
+            Mode::Clues => panel_handle(self.clues_view.clone()),
+            Mode::Characters => panel_handle(self.characters_view.clone()),
         };
         let center = DockLayout::tabs().panel_view(view, cx);
         self.dock_area.update(cx, |area, cx| {
@@ -668,6 +688,8 @@ impl Render for Workspace {
             nav_items.push(mk("设定", Mode::Canon));
             nav_items.push(mk("记忆中枢", Mode::Memory));
             nav_items.push(mk("写作统计", Mode::Stats));
+            nav_items.push(mk("伏笔台账", Mode::Clues));
+            nav_items.push(mk("人物卡", Mode::Characters));
         }
         let menu = SidebarMenu::new()
             .children(nav_items)
@@ -682,7 +704,18 @@ impl Render for Workspace {
                     .text_color(rgb(0xd8d5cf))
                     .child(SharedString::from(self.handle.title.clone())),
             )
-            .child(menu);
+            .child(menu)
+            .footer(
+                Button::new("new-chapter")
+                    .xsmall()
+                    .label("＋ 新建章")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let n = this.handle.next_chapter_number();
+                        let _ = this.handle.ensure_chapter(n);
+                        this.switch_center(Mode::Editor, window, cx);
+                        this.switch_chapter(n, window, cx);
+                    })),
+            );
 
         let current = self.chapters.iter().find(|c| c.n == self.chapter);
         let words = self.word_count(cx);
@@ -728,7 +761,8 @@ impl Render for Workspace {
                                     .text_color(rgb(0xd8d5cf))
                                     .child(SharedString::from(format!(
                                         "《{}》· {}",
-                                        self.handle.title, ch_title
+                                        self.handle.title,
+                                        if self.mode == Mode::Editor { ch_title.clone() } else { self.mode.label().to_string() }
                                     ))),
                             )
                             .child(

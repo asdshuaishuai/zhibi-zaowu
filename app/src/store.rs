@@ -578,6 +578,23 @@ impl ProjectHandle {
             })
             .unwrap_or_default()
     }
+    pub fn clues_full(&self) -> Vec<serde_json::Value> {
+        self.read_array("clues.json")
+    }
+    pub fn aliases(&self) -> Vec<serde_json::Value> {
+        let path = self.root.join("memory.json");
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| {
+                let v: serde_json::Value = serde_json::from_str(&t).ok()?;
+                Some(v.get("aliases")?.as_array()?.clone())
+            })
+            .unwrap_or_default()
+    }
+    pub fn next_chapter_number(&self) -> u32 {
+        self.chapters().last().map(|c| c.n + 1).unwrap_or(1)
+    }
+
     pub fn daily_words(&self) -> Vec<(String, usize)> {
         let path = self.root.join("project.json");
         std::fs::read_to_string(path)
