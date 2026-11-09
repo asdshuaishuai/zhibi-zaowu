@@ -321,8 +321,10 @@
 
   function renderBody() {
     const b = $('za-body');
-    const side = S.focus ? '' : `<aside class="za-side">${sideNav()}</aside>`;
-    const dock = (S.focus || !S.dockOpen) ? '' : dockHtml();
+    // 分层纪律：书架是独立首页，不挂工作台镶边（侧栏/轨迹 Dock 都不属于书架）
+    const chromeless = S.screen === 'shelf';
+    const side = (S.focus || chromeless) ? '' : `<aside class="za-side">${sideNav()}</aside>`;
+    const dock = (S.focus || chromeless || !S.dockOpen) ? '' : dockHtml();
     b.className = 'za-body' + (S.focus ? ' za-focus' : '');
     b.innerHTML = side + `<div class="za-main"><div class="za-view" id="za-view">${screenHtml()}</div></div>` + dock;
     if (S.screen === 'editor') {

@@ -55,11 +55,13 @@ pub struct DshClient {
 }
 
 impl DshClient {
-    /// 启动 `dsh --profile sdk` 子进程并开始读流。
-    pub fn spawn() -> Result<(Self, async_channel::Receiver<DshEvent>)> {
+    /// 启动 `dsh --profile sdk` 子进程并开始读流。root 传入打开的项目目录
+    /// （作为 ZHIBI_ROOT 环境变量交给 novel-pack 的 config.root）。
+    pub fn spawn(root: &std::path::Path) -> Result<(Self, async_channel::Receiver<DshEvent>)> {
         let bin = std::env::var("ZHIBI_DSH_BIN").unwrap_or_else(|_| "dsh".to_string());
         let mut child = Command::new(&bin)
             .args(["--profile", "sdk"])
+            .env("ZHIBI_ROOT", root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

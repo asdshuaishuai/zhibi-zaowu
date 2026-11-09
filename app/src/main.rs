@@ -1,8 +1,11 @@
 //! 执笔 3.0 —— 跨端 AI 小说写作工作台（GPUI 前端 + DSH agent 底座）。
-//! M1：窗口三栏骨架 + `dsh --profile sdk` 子进程连通，轨迹面板实时滚动。
+//! 两层结构：书架首页（与内容严格分层，参考旧版执笔）→ 打开作品进三栏工作区。
 
+mod app_root;
 mod dsh;
 mod editor;
+mod shelf;
+mod store;
 mod trajectory;
 mod workspace;
 
@@ -20,23 +23,17 @@ fn main() {
 
             let bounds = WindowBounds::Windowed(Bounds {
                 origin: point(px(80.), px(60.)),
-                size: Size {
-                    width: px(1440.),
-                    height: px(920.),
-                },
+                size: Size { width: px(1440.), height: px(920.) },
             });
             let options = WindowOptions {
                 window_bounds: Some(bounds),
-                window_min_size: Some(Size {
-                    width: px(960.),
-                    height: px(600.),
-                }),
+                window_min_size: Some(Size { width: px(960.), height: px(600.) }),
                 kind: WindowKind::Normal,
                 ..TitleBar::window_options()
             };
 
             let (handle, root) = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| workspace::Workspace::new(window, cx))
+                cx.new(|cx| app_root::AppRoot::new(window, cx))
             })
             .expect("执笔：打开主窗口失败");
 
@@ -47,7 +44,6 @@ fn main() {
                 })
                 .expect("failed to update window");
 
-            // 关掉窗口就退出应用
             root.update(cx, |_, cx| {
                 cx.on_release(|_, cx| {
                     cx.quit();
