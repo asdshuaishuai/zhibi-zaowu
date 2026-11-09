@@ -626,6 +626,33 @@ impl ProjectHandle {
         std::fs::write(&meta, json).map_err(|e| e.to_string())
     }
 
+    pub fn chapter_notes(&self, n: u32) -> String {
+        std::fs::read_to_string(
+            self.root.join("chapters").join(chapter_dir_name(n)).join("meta.json"),
+        )
+        .ok()
+        .and_then(|t| {
+            let v: serde_json::Value = serde_json::from_str(&t).ok()?;
+            v.get("notes").and_then(|x| x.as_str()).map(String::from)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn set_chapter_notes(&self, n: u32, notes: &str) -> Result<(), String> {
+        let dir = self.root.join("chapters").join(chapter_dir_name(n));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let meta = dir.join("meta.json");
+        let mut v: serde_json::Value = std::fs::read_to_string(&meta)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("notes".into(), serde_json::json!(notes));
+        }
+        let json = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+        std::fs::write(&meta, json).map_err(|e| e.to_string())
+    }
+
     pub fn chapter_word_target(&self) -> u32 {
         std::fs::read_to_string(self.root.join("project.json"))
             .ok()

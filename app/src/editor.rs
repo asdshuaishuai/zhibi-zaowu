@@ -31,6 +31,8 @@ pub struct EditorPanel {
     pub word_target: u32,
     /// 章标题（Workspace 切章时 set_value）
     pub title: Entity<InputState>,
+    /// 速记（随手记，喂「让AI记一笔」）
+    pub notes: Entity<InputState>,
     last_saved: String,
 }
 
@@ -48,7 +50,8 @@ impl EditorPanel {
                 cx,
             );
         });
-        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, last_saved: String::new() };
+        let notes = cx.new(|cx| InputState::new(window, cx).placeholder("速记：埋了什么、要改什么、下一步想写什么…（「让AI记一笔」会带上）"));
+        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, notes, last_saved: String::new() };
         // 正文一变就重渲染（字数/进度实时）
         cx.subscribe(&prose, |_, _, _: &InputEvent, cx| cx.notify()).detach();
         panel
@@ -167,6 +170,15 @@ impl Render for EditorPanel {
                     )
                     .child(
                         div()
+                            .text_xs()
+                            .text_color(rgb(0x5d5b57))
+                            .child(SharedString::from(format!(
+                                "对白占比 {}%",
+                                dialogue_share(&text)
+                            ))),
+                    )
+                    .child(
+                        div()
                             .flex_1()
                             .justify_end()
                             .text_xs()
@@ -177,6 +189,21 @@ impl Render for EditorPanel {
                                 format!("已自动保存 {}", self.last_saved)
                             })),
                     ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_8()
+                    .pt_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x5d5b57))
+                            .child("速记"),
+                    )
+                    .child(div().flex_1().child(Input::new(&self.notes.clone()))),
             )
             .child(
                 div()
@@ -261,4 +288,15 @@ impl Render for EditorPanel {
                     .child(send),
             )
     }
+}
+
+/// 对白占比：以「/“开头的行字数占总字数（网文结构信号，零 LLM）
+fn dialogue_share(text: &str) -> u32 {
+    let total = crate::store::count_words(text).max(1);
+    let spoken: usize = text
+        .lines()
+        .filter(|l| l.trim_start().starts_with('「') || l.trim_start().starts_with('“'))
+        .map(|l| crate::store::count_words(l))
+        .sum();
+    (spoken * 100 / total).min(100) as u32
 }

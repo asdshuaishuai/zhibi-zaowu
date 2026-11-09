@@ -129,6 +129,14 @@ impl Workspace {
         });
 
         let editor = cx.new(|cx| EditorPanel::new(window, cx, prose.clone(), handle.chapter_word_target()));
+        {
+            let title = chapters.iter().find(|c| c.n == chapter).map(|c| c.title.clone()).unwrap_or_default();
+            let notes = handle.chapter_notes(chapter);
+            editor.update(cx, |panel, cx| {
+                panel.title.update(cx, |state, cx| state.set_value(title.as_str(), window, cx));
+                panel.notes.update(cx, |state, cx| state.set_value(notes.as_str(), window, cx));
+            });
+        }
         let trajectory = cx.new(|cx| TrajectoryPanel::new(cx));
         let inbox = cx.new(|cx| InboxPanel::new(window, cx, handle.clone()));
 
@@ -353,7 +361,14 @@ impl Workspace {
                 EditorEvent::SendRequested(text) => this.on_send(text.clone(), cx),
                 EditorEvent::SaveRequested => this.save_current(cx),
                 EditorEvent::RunCapability(cap) => {
-                    let task = prompts::task_for(cap, this.chapter);
+                    let mut task = prompts::task_for(cap, this.chapter);
+                    if cap == "memory" {
+                        let notes = this.editor.read(cx).notes.read(cx).value().to_string();
+                        if !notes.trim().is_empty() {
+                            task.push_str("\n\n## 作者的随手记（请核实正文后一并归档或修正）\n");
+                            task.push_str(notes.trim());
+                        }
+                    }
                     this.on_send(task, cx);
                 }
                 EditorEvent::SelectionAction(kind) => {
@@ -505,6 +520,8 @@ impl Workspace {
         if !title.trim().is_empty() {
             let _ = self.handle.set_chapter_title(self.chapter, title.trim());
         }
+        let notes = self.editor.read(cx).notes.read(cx).value().to_string();
+        let _ = self.handle.set_chapter_notes(self.chapter, &notes);
         let stamp = {
             let secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -540,9 +557,13 @@ impl Workspace {
         self.prose.update(cx, |state, cx| {
             state.set_value(prose_text.as_str(), window, cx);
         });
+        let notes = self.handle.chapter_notes(n);
         self.editor.update(cx, |panel, cx| {
             panel.title.update(cx, |state, cx| {
                 state.set_value(title.as_str(), window, cx);
+            });
+            panel.notes.update(cx, |state, cx| {
+                state.set_value(notes.as_str(), window, cx);
             });
         });
         self.chapters = self.handle.chapters();
