@@ -17,13 +17,17 @@ zhibi-next/
 │       ├── main.rs        # 窗口启动
 │       ├── workspace.rs   # 工作台装配 + DSH 事件分发
 │       ├── editor.rs      # 稿纸编辑器（选区浮条轮询/进度/速记/分支卡）
-│       ├── canvas.rs      # 剧情画板 + 预言书（M7 结构视图双面板）
-│       ├── director.rs    # 导演台排期板（M7-3）
+│       ├── canvas.rs      # 剧情画板 + 预言书（M7/M8 结构视图，七维织网+世界线双态）
+│       ├── director.rs    # 导演台排期板（M7-3 + 预测候选）
+│       ├── bookinfo.rs    # 书目信息（题材/简介/目标章数/章字数目标）
 │       ├── trajectory.rs  # 右侧轨迹面板（对话式时间线）
 │       └── dsh/           # DSH sdk 子进程客户端（NDJSON JSON-RPC over stdio）
 ├── scripts/
 │   ├── dev.sh             # 一键起 GUI（自动 nvm 24）
-│   └── dsh-smoke.sh       # 无 GUI 协议冒烟（initialize → session/query）
+│   ├── dsh-smoke.sh       # 无 GUI 协议冒烟（node 引导 + initialize/session 事件流）
+│   ├── build_app.sh       # macOS .app 打包
+│   ├── build_app_linux.sh # Linux AppImage/tar.gz（原生机执行）
+│   └── build_app_windows.ps1 # Windows portable/NSIS（原生机执行）
 └── docs/
 ```
 
