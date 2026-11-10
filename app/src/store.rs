@@ -131,6 +131,25 @@ fn epoch_to_iso8601(secs: u64) -> String {
     )
 }
 
+impl ProjectHandle {
+    /// 书目信息（project.json 全量；缺文件回默认）。
+    pub fn project(&self) -> NovelProject {
+        read_project(&self.root).unwrap_or_default()
+    }
+
+    /// 书目信息写回（题材/简介/目标章数/章字数目标等；GUI 书目页唯一入口）。
+    pub fn save_project(&self, p: &NovelProject) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(p).map_err(|e| e.to_string())?;
+        atomic_write(&self.root.join("project.json"), &json)
+    }
+
+    /// 章字数目标（编辑器进度环的事实源）。
+    pub fn project_word_target(&self) -> u32 {
+        let t = self.project().chapter_word_target;
+        if t == 0 { 3000 } else { t }
+    }
+}
+
 fn read_project(dir: &Path) -> Option<NovelProject> {
     let text = std::fs::read_to_string(dir.join("project.json")).ok()?;
     serde_json::from_str(&text).ok()
@@ -606,6 +625,33 @@ mod tests {
         let cl = h.clues_full();
         assert_eq!(cl[0]["status"], serde_json::json!("已兑现"));
         assert_eq!(cl[0]["actionLog"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn project_meta_roundtrip() {
+        let home = temp_home("project");
+        unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("书目测试").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        let mut p = h.project();
+        assert_eq!(p.title, "书目测试");
+        p.genre = "武侠".into();
+        p.premise = "一把断刀撬动旧案".into();
+        p.target_chapters = 120;
+        p.chapter_word_target = 4200;
+        h.save_project(&p).unwrap();
+        let back = ProjectHandle::open(&dir).unwrap().project();
+        assert_eq!(back.genre, "武侠");
+        assert_eq!(back.target_chapters, 120);
+        assert_eq!(back.chapter_word_target, 4200);
+        assert_eq!(h.project_word_target(), 4200);
+        // 零值回退默认
+        let mut z = h.project();
+        z.chapter_word_target = 0;
+        h.save_project(&z).unwrap();
+        assert_eq!(ProjectHandle::open(&dir).unwrap().project_word_target(), 3000);
         let _ = std::fs::remove_dir_all(&home);
     }
 

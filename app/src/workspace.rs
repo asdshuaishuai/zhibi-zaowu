@@ -21,6 +21,7 @@ use serde_json::Value;
 use std::rc::Rc;
 
 use crate::chat::{ChatEvent, ChatMsg, ChatPanel};
+use crate::bookinfo::{BookInfoEvent, BookInfoPanel};
 use crate::canvas::{CanvasPanel, OracleEvent, OraclePanel};
 use crate::director::{DirectorEvent, DirectorPanel};
 use crate::dsh::{DshClient, DshEvent, model_route};
@@ -61,6 +62,7 @@ pub enum Mode {
     Canvas,
     Director,
     Oracle,
+    BookInfo,
 }
 
 impl Mode {
@@ -80,6 +82,7 @@ impl Mode {
             Mode::Canvas => "剧情画板",
             Mode::Director => "导演台",
             Mode::Oracle => "预言书",
+            Mode::BookInfo => "书目信息",
         }
     }
 
@@ -100,12 +103,13 @@ impl Mode {
             Mode::Canvas => IconName::Waypoints,
             Mode::Director => IconName::Kanban,
             Mode::Oracle => IconName::Sparkle,
+            Mode::BookInfo => IconName::Notebook,
         }
     }
 }
 
 /// 侧栏导航顺序（与原实现一致，只是改为数据表以便统一出行）。
-const NAV: [Mode; 14] = [
+const NAV: [Mode; 15] = [
     Mode::Editor,
     Mode::Outline,
     Mode::Canon,
@@ -116,6 +120,7 @@ const NAV: [Mode; 14] = [
     Mode::Canvas,
     Mode::Director,
     Mode::Oracle,
+    Mode::BookInfo,
     Mode::Graph,
     Mode::Snapshots,
     Mode::Import,
@@ -247,6 +252,7 @@ pub struct Workspace {
     canvas_view: Entity<CanvasPanel>,
     director_view: Entity<DirectorPanel>,
     oracle_view: Entity<OraclePanel>,
+    bookinfo_view: Entity<BookInfoPanel>,
     chat: Entity<ChatPanel>,
     /// 分支卡数据（与 EditorPanel 同步；采纳读这里）
     branches: Vec<String>,
@@ -349,6 +355,7 @@ impl Workspace {
         let canvas_view = cx.new(|cx| CanvasPanel::new(cx, handle.clone()));
         let director_view = cx.new(|cx| DirectorPanel::new(cx, handle.clone(), chapter));
         let oracle_view = cx.new(|cx| OraclePanel::new(window, cx, handle.clone()));
+        let bookinfo_view = cx.new(|cx| BookInfoPanel::new(window, cx, handle.clone()));
         let chat = cx.new(|cx| ChatPanel::new(window, cx));
 
         cx.subscribe_in(
@@ -580,6 +587,22 @@ impl Workspace {
         )
         .detach();
 
+// 书目信息保存成功：编辑器进度环分母立即生效
+        cx.subscribe_in(
+            &bookinfo_view,
+            window,
+            |this, _, ev: &BookInfoEvent, _window, cx| match ev {
+                BookInfoEvent::Saved { word_target } => {
+                    let wt = *word_target;
+                    this.editor.update(cx, |panel, cx| {
+                        panel.word_target = wt;
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+
 // 导演台：AI 核对走 DSH 会话（轨迹窗可见），拖卡改期是作者亲笔直写
         cx.subscribe(
             &director_view,
@@ -750,6 +773,7 @@ impl Workspace {
             canvas_view,
             director_view,
             oracle_view,
+            bookinfo_view,
             chat,
             branches: Vec::new(),
             toast: None,
@@ -934,6 +958,7 @@ impl Workspace {
                 panel_handle(self.director_view.clone())
             }
             Mode::Oracle => panel_handle(self.oracle_view.clone()),
+            Mode::BookInfo => panel_handle(self.bookinfo_view.clone()),
         };
         let center = DockLayout::tabs().panel_view(view, cx);
         self.dock_area.update(cx, |area, cx| {

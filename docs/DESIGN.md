@@ -192,7 +192,7 @@ zhibi-next/
 
 ## 8. 拍板记录（原「待定问题」，均已定案并落地）
 
-1. **DSH 接入形态：sdk 子进程**（NDJSON JSON-RPC over stdio）——已实现并 22 工具真实注册验证。
+1. **DSH 接入形态：sdk 子进程**（NDJSON JSON-RPC over stdio）——已实现并 23 工具真实注册验证（含作者主权工程化后的别名工具与令牌门）。
 2. **novel-pack 分发：随应用内置**，经 `cordis.patch.yml` 自动挂载；`dsh plugin --profile sdk add` 独立安装能力保留。
 3. **GPUI Kit 钉 0.9.0**（crates.io 源为准；git main 0.9.1 存在 API 漂移，不采用）——全仓零警告验证通过。
 

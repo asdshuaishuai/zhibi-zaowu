@@ -86,7 +86,7 @@ cargo build           # 仅构建
       预言书=世界线沙盒（α 基准/β… 推演只写 `worldlines.json`；影响清单逐条晋升→收件箱；
       `canonRevise` 采纳前自动备份 `canon/backups/`；衍生实体 `line:β` 归属标；
       假设 composer→`oracle_task` 进同一条 DSH 会话，轨迹窗全程可见）。
-      novel-pack 22 工具（M7 五工具在真实《断刀记验证》台账验证）；4 Rust 单测全绿
+      novel-pack 23 工具（M7 五工具 + propose_aliases 在真实《断刀记验证》台账验证）；19 Rust 单测全绿
 
 已知边界（如实，2026-11-10 复审计）：
 - 「选区创作」浮条**已解决**：库无 `SelectionChanged` 事件，但 `selected_text()` 可读 →

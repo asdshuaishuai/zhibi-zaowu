@@ -297,6 +297,39 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
     ),
 
     textTool(
+      'propose_aliases',
+      '提交人物别名归一提案：同一人物的本名与各种称谓（小名/绰号/敬称）归并到 canonicalName。作者采纳后进 memory.json.aliases——人物卡、画布人物维/关系维以它为事实源；同名归并、别名去重，作者维护的字段不覆盖。',
+      {
+        aliases: {
+          type: 'array',
+          description: '别名档案数组',
+          required: true,
+          items: {
+            type: 'object',
+            properties: {
+              canonicalName: str('本名（文档内统一指称）'),
+              aliases: { type: 'array', items: { type: 'string' }, description: '别名列表（不含本名本身）', required: true },
+              note: str('可选：依据（哪一章哪种称呼）', false),
+            },
+            required: ['canonicalName', 'aliases'],
+          },
+        },
+      },
+      (args) =>
+        guard(async () => {
+          const aliases: any[] = Array.isArray(args.aliases) ? args.aliases : []
+          if (aliases.length === 0) return '没有可登记的别名档案。'
+          const p = await store.addProposal({
+            capability: '人物别名归一',
+            title: `人物别名档案（${aliases.length} 人）`,
+            note: '采纳后进 memory.json.aliases；同名归并、别名去重。',
+            payload: { kind: 'aliases', aliases },
+          })
+          return `已登记别名提案 ${aliases.length} 人（${p.id}），等待作者审阅。`
+        }),
+    ),
+
+    textTool(
       'propose_canon_classify',
       '提交设定归类提案：对每篇设定文档给出分类与可选的规范化改名。按现有标题精确匹配；改名撞名会被跳过。',
       {
