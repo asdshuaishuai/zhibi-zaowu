@@ -900,6 +900,26 @@ fn payload_preview(payload: &Value, expanded: bool) -> PayloadPreview {
                 out.push(line);
             }
         }
+        "relations" => {
+            let rels = arr(payload, "relations");
+            out.total = rels.len();
+            for r in rels.iter().take(limit) {
+                let mut line = format!(
+                    "{} —{}→ {}",
+                    field(r, "from"),
+                    field(r, "predicate"),
+                    field(r, "to")
+                );
+                if let Some(public) = r.get("publicToReader").and_then(|v| v.as_bool()) {
+                    line.push_str(if public { " · 读者已知" } else { " · 暗线" });
+                }
+                let ev = field(r, "evidence");
+                if !ev.is_empty() {
+                    line.push_str(&format!("\n   依据：{}", one_line_clip(ev, max)));
+                }
+                out.push(line);
+            }
+        }
         "memoryPack" => {
             let facts = arr(payload, "facts");
             out.total = facts.len();
@@ -1021,6 +1041,7 @@ fn payload_unit(payload: &Value) -> Option<String> {
         "report" => arr(payload, "findings").len(),
         "deslop" => arr(payload, "suggestions").len(),
         "memoryPack" => arr(payload, "facts").len(),
+        "relations" | "aliases" => arr(payload, "relations").len().max(arr(payload, "aliases").len()),
         "clueFixes" => arr_any(payload, &["fixes", "clueFixes"]).len(),
         "outlineUpdates" => arr_any(payload, &["updates", "outlineUpdates"]).len(),
         _ => 1,
@@ -1062,6 +1083,10 @@ fn effect_of(payload: &Value) -> (String, String) {
         "deslop" => (
             format!("第{ch}章正文（命中处逐条替换）"),
             "首次替换前自动快照；未命中项跳过".into(),
+        ),
+        "relations" => (
+            "memory.json facts（subject/predicate/object，去重入账）".into(),
+            "采纳前 memory.json 备份到 snapshots/ledger/；关系图与人物卡立即挂边".into(),
         ),
         "memoryPack" => (
             "memory.json facts（去重入账）".into(),
@@ -1763,6 +1788,8 @@ fn summarize_payload(payload: &Value) -> String {
         "report" => format!("验证报告 {} 处发现（只报告不代改）", n("findings")),
         "deslop" => format!("去AI味 {} 处建议（一次采纳全部命中项）", n("suggestions")),
         "memoryPack" => format!("记忆 {} 条事实（双时态）", n("facts")),
+        "relations" => format!("人物关系 {} 条（入关系图）", n("relations")),
+        "aliases" => format!("别名档案 {} 人", n("aliases")),
         "dossier" => format!("档案卡：{} 场景 · {} 锚点", n("scenes"), n("relics")),
         "clueFixes" => format!("埋点修复 {} 条（只改台账）", n("fixes")),
         "outlineUpdates" => format!("大纲更新 {} 条建议", n("updates")),

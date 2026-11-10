@@ -723,6 +723,32 @@ mod tests {
     }
 
     #[test]
+    fn relations_payload_applies() {
+        let home = temp_home("relations");
+        unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("关系测试").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        let payload = serde_json::json!({ "kind": "relations", "relations": [
+            { "from": "沈砚", "predicate": "师从", "to": "老周", "chapter": 7, "publicToReader": true },
+            { "from": "钱九渊", "predicate": "敌对", "to": "沈砚", "chapter": 20 }
+        ]});
+        let (n, _) = h.apply_payload(&payload).unwrap();
+        assert_eq!(n, 2);
+        let facts = h.memory_facts();
+        assert!(facts.iter().any(|f| f["subject"] == serde_json::json!("沈砚")
+            && f["predicate"] == serde_json::json!("师从")
+            && f["object"] == serde_json::json!("老周")));
+        // 幂等：同边重复采纳不重复入账
+        let (n2, sk) = h.apply_payload(&serde_json::json!({ "kind": "relations", "relations": [
+            { "from": "沈砚", "predicate": "师从", "to": "老周" }
+        ]})).err().map(|e| (0usize, vec![e])).unwrap_or((0, vec![]));
+        assert_eq!(n2, 0);
+        assert!(!sk.is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn legacy_payload_without_kind() {
         let home = temp_home("legacy");
         unsafe { std::env::set_var("HOME", &home); }
@@ -1151,6 +1177,7 @@ pub fn payload_kind(payload: &serde_json::Value) -> String {
         ("suggestions", "deslop"),
         ("facts", "memoryPack"),
         ("aliases", "aliases"),
+        ("relations", "relations"),
         ("updates", "outlineUpdates"),
         ("outlineUpdates", "outlineUpdates"),
         ("headline", "dossier"),
@@ -1581,6 +1608,47 @@ impl ProjectHandle {
                 if hit == 0 { return Err("所有建议的 original 都未命中正文——提案保持待审".into()); }
                 self.save_prose(chapter, &text)?;
                 applied = hit;
+            }
+            "relations" => {
+                // 人物关系边 → memory.facts（subject/predicate/object）；关系图与人物卡立即挂边
+                let rels = payload.get("relations").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let path = self.root.join("memory.json");
+                let mut mem: serde_json::Value = std::fs::read_to_string(&path).ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let mut cur = mem.get("facts").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+                for r in rels {
+                    let from = r.get("from").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                    let pred = r.get("predicate").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                    let to = r.get("to").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                    if from.is_empty() || pred.is_empty() || to.is_empty() {
+                        skipped.push("缺 from/predicate/to".into());
+                        continue;
+                    }
+                    let dup = cur.iter().any(|f| {
+                        f.get("subject").and_then(|v| v.as_str()) == Some(from.as_str())
+                            && f.get("predicate").and_then(|v| v.as_str()) == Some(pred.as_str())
+                            && f.get("object").and_then(|v| v.as_str()) == Some(to.as_str())
+                    });
+                    if dup {
+                        skipped.push(format!("{from}-{pred}-{to} 已在账"));
+                        continue;
+                    }
+                    cur.push(serde_json::json!({
+                        "id": uuid_like(),
+                        "subject": from,
+                        "predicate": pred,
+                        "object": to,
+                        "fromChapter": r.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0),
+                        "publicToReader": r.get("publicToReader").and_then(|b| b.as_bool()).unwrap_or(true),
+                        "source": "relation",
+                        "note": r.get("evidence").and_then(|v| v.as_str()).unwrap_or(""),
+                    }));
+                    applied += 1;
+                }
+                if applied == 0 { return Err(format!("没有可入账的关系：{}", skipped.join("、"))); }
+                mem["facts"] = serde_json::json!(cur);
+                std::fs::write(&path, serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             }
             "memoryPack" => {
                 // 事实入账 memory.json.facts（subject+predicate+object+生效章 去重）

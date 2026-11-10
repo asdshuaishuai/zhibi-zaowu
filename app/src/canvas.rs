@@ -180,12 +180,12 @@ impl CanvasPanel {
         };
 
         let col = |kind: &str| match kind {
-            "storyline" => 50.,
-            "event" => 300.,
-            "character" => 540.,
-            "clue" => 760.,
-            "canon" => 980.,
-            _ => 700.,
+            "storyline" => 60.,
+            "event" => 420.,
+            "character" => 800.,
+            "clue" => 1120.,
+            "canon" => 1420.,
+            _ => 900.,
         };
         let mut counts = [0usize; 6];
         let push_col = |nodes: &mut Vec<CNode>, counts: &mut [usize; 6], kind: &'static str, id: String, label: String, meta: String, hidden: bool| {
@@ -197,7 +197,7 @@ impl CanvasPanel {
                 "canon" => 4,
                 _ => 5,
             };
-            let y = 60. + counts[ci] as f32 * (NODE_H + 44.);
+            let y = 60. + counts[ci] as f32 * (NODE_H + 92.);
             counts[ci] += 1;
             nodes.push(CNode { id, kind, label, meta, hidden, planned: false, x: col(kind), y });
         };
@@ -249,6 +249,26 @@ impl CanvasPanel {
         if want_canon {
             for (title, category, _) in self.handle.canon_docs() {
                 push_col(&mut nodes, &mut counts, "canon", format!("W:{title}"), title, category, false);
+            }
+        }
+
+        // 事件/伏笔数量多时单列太高、连线成束：总览维拆双列（事件两列、伏笔两列），
+        // 高度减半、边捆散开——参照常见分层图做法。
+        if matches!(self.dim, Dim::Overview) {
+            let mut ei = 0usize;
+            let mut ci = 0usize;
+            for n in nodes.iter_mut() {
+                if n.kind == "event" {
+                    n.x = 420. + (ei % 2) as f32 * 310.;
+                    n.y = 80. + (ei / 2) as f32 * (NODE_H + 92.);
+                    ei += 1;
+                } else if n.kind == "clue" {
+                    n.x = 1400. + (ci % 2) as f32 * 280.;
+                    n.y = 80. + (ci / 2) as f32 * (NODE_H + 92.);
+                    ci += 1;
+                } else if n.kind == "canon" {
+                    n.x += 360.;
+                }
             }
         }
 
@@ -345,8 +365,8 @@ impl CanvasPanel {
                 // 网格布局（4 列）
                 let mut ci = 0usize;
                 for n in nodes.iter_mut() {
-                    n.x = 50. + (ci % 4) as f32 * 210.;
-                    n.y = 60. + (ci / 4) as f32 * (NODE_H + 44.);
+                    n.x = 80. + (ci % 3) as f32 * 300.;
+                    n.y = 80. + (ci / 3) as f32 * (NODE_H + 92.);
                     ci += 1;
                 }
             }
@@ -382,8 +402,8 @@ impl CanvasPanel {
                         best = i;
                     }
                 }
-                let cx = 320f32;
-                let cy = 300f32;
+                let cx = 520f32;
+                let cy = 420f32;
                 let mut ring = 0usize;
                 for i in 0..n_count {
                     if i == best {
@@ -392,8 +412,8 @@ impl CanvasPanel {
                     } else {
                         let step = std::f32::consts::TAU / (n_count - 1).max(2) as f32;
                         let ang = step * ring as f32 - std::f32::consts::FRAC_PI_2;
-                        nodes[i].x = cx + 220. * ang.cos() - NODE_W / 2.;
-                        nodes[i].y = cy + 190. * ang.sin() - NODE_H / 2.;
+                        nodes[i].x = cx + 330. * ang.cos() - NODE_W / 2.;
+                        nodes[i].y = cy + 280. * ang.sin() - NODE_H / 2.;
                         ring += 1;
                     }
                 }
@@ -406,8 +426,8 @@ impl CanvasPanel {
                     ca.cmp(&cb)
                 });
                 for (i, n) in nodes.iter_mut().enumerate() {
-                    n.x = 50. + (i % 7) as f32 * 190.;
-                    n.y = 60. + (i / 7) as f32 * (NODE_H + 52.);
+                    n.x = 60. + (i % 5) as f32 * 250.;
+                    n.y = 80. + (i / 5) as f32 * (NODE_H + 96.);
                 }
                 for i in 0..nodes.len().saturating_sub(1) {
                     edges.push(CEdge { from: i, to: i + 1, kind: "influence", hidden: false, label: String::new() });
@@ -456,7 +476,7 @@ impl CanvasPanel {
                             };
                             let idx_in_col = nodes.iter().filter(|n: &&CNode| n.kind == kind).count();
                             let _ = ci;
-                            (col(kind), 60. + idx_in_col as f32 * (NODE_H + 44.))
+                            (col("event") + idx_in_col as f32 * 210., 80. + (idx_in_col % 3) as f32 * 150.)
                         };
                         nodes.push(CNode {
                             id: s(nj, "id"),
@@ -506,7 +526,7 @@ impl CanvasPanel {
                             hidden: false,
                             planned: false,
                             x: 480.,
-                            y: 60. + twist_i as f32 * (NODE_H + 44.),
+                            y: 80. + twist_i as f32 * (NODE_H + 84.),
                         });
                         twist_i += 1;
                         // 连该章事件（含该章所有事件）
@@ -672,14 +692,21 @@ impl Render for CanvasPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 边段预计算（stage 局部坐标；paint 里叠加 bounds 原点）
         let reader = self.reader;
-        let mut segs: Vec<(f32, f32, f32, f32, &'static str, bool)> = Vec::new();
+        // 选中节点时只亮与它相关的边，其余压到 28%（降噪：密集图的可读性关键）
+        let focus = self.sel.last().copied();
+        let mut segs: Vec<(f32, f32, f32, f32, &'static str, bool, f32)> = Vec::new();
         for e in &self.edges {
             if reader && e.hidden {
                 continue;
             }
             let a = &self.nodes[e.from];
             let b = &self.nodes[e.to];
-            segs.push((self.sx(a), self.sy(a), self.sx(b), self.sy(b), e.kind, e.hidden));
+            let alpha = match focus {
+                Some(f) if e.from == f || e.to == f => 0.95,
+                Some(_) => 0.28,
+                None => 0.55,
+            };
+            segs.push((self.sx(a), self.sy(a), self.sx(b), self.sy(b), e.kind, e.hidden, alpha));
         }
 
         let marquee_now = self.marquee;
@@ -708,7 +735,7 @@ impl Render for CanvasPanel {
                                 window.paint_path(path, hsla(theme::ACCENT()));
                             }
                         }
-                        for (x1, y1, x2, y2, kind, hidden) in &segs {
+                        for (x1, y1, x2, y2, kind, hidden, alpha) in &segs {
                             let color = if *hidden {
                                 theme::PURPLE()
                             } else {
@@ -718,7 +745,7 @@ impl Render for CanvasPanel {
                                     _ => theme::DIM(),
                                 }
                             };
-                            let mut b = PathBuilder::stroke(px(1.4));
+                            let mut b = PathBuilder::stroke(px(1.15));
                             if *hidden {
                                 b = b.dash_array(&[px(5.), px(5.)]);
                             }
@@ -732,7 +759,7 @@ impl Render for CanvasPanel {
                                 end,
                             );
                             if let Ok(path) = b.build() {
-                                window.paint_path(path, hsla(color));
+                                window.paint_path(path, hsla(color).opacity(*alpha));
                             }
                         }
                     },
@@ -1720,11 +1747,138 @@ impl Render for OraclePanel {
                     ),
             );
 
+        // —— 世界线并轨图：横轴=章节，α 是贯穿基线，其他线从各自分歧章分叉出去。
+        //    这是「线」的观感：平行时空，各自延伸，互不覆盖。
+        let lane_lines: Vec<(String, u32, usize, bool)> = lines
+            .iter()
+            .filter(|w| s(w, "id") != "α" && s(w, "status") != "已归档")
+            .map(|w| {
+                (
+                    s(w, "id"),
+                    w.get("forkedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                    w.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+                    self.selected.as_deref() == Some(s(w, "id").as_str()),
+                )
+            })
+            .collect();
+        let max_ch = self
+            .handle
+            .next_chapter_number()
+            .max(lane_lines.iter().map(|l| l.1).max().unwrap_or(0) + 4)
+            .max(12);
+        let lane_h = 34. + lane_lines.len().max(1) as f32 * 26.;
+        let lanes_el: gpui_kit::AnyElement = {
+            let alpha_color = theme::BLUE();
+            let dim_color = theme::FAINT();
+            let line_color = theme::LINE();
+            let acc = theme::ACCENT();
+            let lanes = lane_lines.clone();
+            div()
+                .relative()
+                .w_full()
+                .h(px(lane_h))
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            let w = bounds.size.width.as_f32();
+                            let h = bounds.size.height.as_f32();
+                            let ox = bounds.origin.x;
+                            let oy = bounds.origin.y;
+                            let pad_l = 44.0;
+                            let pad_r = 16.0;
+                            let track = w - pad_l - pad_r;
+                            let x_of = |ch: u32| pad_l + (ch as f32 / max_ch as f32) * track;
+                            let y0 = 16.0;
+                            // α 基线
+                            let mut b = PathBuilder::stroke(px(1.6));
+                            b.move_to(point(ox + px(pad_l), oy + px(y0)));
+                            b.line_to(point(ox + px(pad_l + track), oy + px(y0)));
+                            if let Ok(p) = b.build() { window.paint_path(p, hsla(alpha_color)); }
+                            // 章节刻度（每 5 章一道竖线）
+                            for ch in (5..=max_ch).step_by(5) {
+                                let x = x_of(ch);
+                                let mut t = PathBuilder::stroke(px(1.));
+                                t.move_to(point(ox + px(x), oy + px(y0 - 3.)));
+                                t.line_to(point(ox + px(x), oy + px(h - 4.)));
+                                if let Ok(p) = t.build() { window.paint_path(p, hsla(line_color)); }
+                            }
+                            // 各世界线：分叉曲线 + 横向延伸
+                            for (i, (_, fork, _, on)) in lanes.iter().enumerate() {
+                                let y = y0 + 26. * (i as f32 + 1.);
+                                let x_fork = x_of((*fork).min(max_ch));
+                                let c = if *on { acc } else { dim_color };
+                                let mut curve = PathBuilder::stroke(px(1.4));
+                                curve.move_to(point(ox + px(x_fork), oy + px(y0)));
+                                curve.cubic_bezier_to(
+                                    point(ox + px(x_fork + 18.), oy + px(y0)),
+                                    point(ox + px(x_fork + 18.), oy + px(y)),
+                                    point(ox + px((x_fork + 40.).min(w - pad_r)), oy + px(y)),
+                                );
+                                if let Ok(p) = curve.build() { window.paint_path(p, hsla(c)); }
+                                let mut l = PathBuilder::stroke(px(if *on { 1.8 } else { 1.2 }));
+                                l.move_to(point(ox + px((x_fork + 40.).min(w - pad_r)), oy + px(y)));
+                                l.line_to(point(ox + px(pad_l + track), oy + px(y)));
+                                if let Ok(p) = l.build() { window.paint_path(p, hsla(c)); }
+                                let mut tip = PathBuilder::stroke(px(2.2));
+                                tip.move_to(point(ox + px(pad_l + track), oy + px(y - 3.)));
+                                tip.line_to(point(ox + px(pad_l + track), oy + px(y + 3.)));
+                                if let Ok(p) = tip.build() { window.paint_path(p, hsla(c)); }
+                            }
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(4.))
+                        .top(px(4.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(13.))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .font_family(theme::FAMILY_MONO)
+                                .text_color(theme::BLUE())
+                                .child("α"),
+                        )
+                        .children(lane_lines.iter().map(|(id, _, _, on)| {
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .font_family(theme::FAMILY_MONO)
+                                .text_color(if *on { theme::ACCENT() } else { theme::FAINT() })
+                                .child(SharedString::from(id.clone()))
+                        })),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .right(px(4.))
+                        .bottom(px(2.))
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::FAINT())
+                        .child(SharedString::from(format!(
+                            "横轴 {max_ch} 章 · 各线自分歧章分出，平行延伸"
+                        ))),
+                )
+                .into_any_element()
+        };
+
         div()
             .size_full()
             .flex()
             .flex_col()
             .bg(theme::BG())
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px(theme::PAD_LG)
+                    .pt(theme::PAD_MD)
+                    .child(lanes_el),
+            )
             .child(
                 div()
                     .id("oracle-scroll")

@@ -18,6 +18,7 @@ use gpui_kit::component::table::{
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::Sizable;
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
@@ -918,10 +919,10 @@ impl Focusable for CharactersPanel {
 }
 
 impl Render for CharactersPanel {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let aliases = self.handle.aliases();
         let facts = self.handle.memory_facts();
-        let mut rows = Vec::new();
+        let mut cards = Vec::new();
         for a in aliases.iter().take(60) {
             let canon = a.get("canonicalName").and_then(|v| v.as_str()).unwrap_or("?").to_string();
             let subs: Vec<String> = a
@@ -929,25 +930,157 @@ impl Render for CharactersPanel {
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                 .unwrap_or_default();
-            let appears = facts
+            let mine: Vec<&serde_json::Value> = facts
                 .iter()
                 .filter(|f| f.get("subject").and_then(|s| s.as_str()) == Some(canon.as_str()))
-                .count();
-            rows.push(row(vec![
-                Cell::Text(canon),
-                Cell::Dim(subs.join(" / ")),
-                Cell::Chip(format!("{appears} 条事实"), Tone::Neutral),
-            ]));
+                .collect();
+            let first_ch = mine
+                .iter()
+                .filter_map(|f| f.get("fromChapter").and_then(|c| c.as_u64()))
+                .min();
+            cards.push(character_card(&canon, &subs, mine.len(), first_ch));
         }
         panel_root("characters-scroll").child(
             panel_col()
-                .child(sec_title("人物卡（别名归一）"))
-                .child(kit_table(&["人物", "别名", "关联"], rows))
+                .child(sec_title("人物卡"))
+                .child(
+                    div()
+                        .text_size(theme::FONT_LABEL)
+                        .text_color(theme::FAINT())
+                        .child("按别名归一聚合；事实来自记忆提取提案。AI 可用 propose_aliases / propose_memory 增补，采纳后自动入卡。"),
+                )
+                .child(div().flex().flex_wrap().gap(theme::GAP_GROUP).children(cards))
                 .when_true(aliases.is_empty(), |d| {
                     d.child(empty_hint("还没有别名档案", "记忆提取 / 人物归一提案采纳后，本名与别名会在这里归一。"))
                 }),
         )
     }
+}
+
+/// 人物卡（游戏卡牌式）：上部立绘位（首字巨印 + 渐变色带 + 朱砂角印），
+/// 下部称谓 / 别名 / 事实账。色带按人名哈希在四语义色相间轮换（与书封同一套语言）。
+fn character_card(
+    canon: &str,
+    aliases: &[String],
+    fact_count: usize,
+    first_chapter: Option<u64>,
+) -> gpui_kit::AnyElement {
+    let h = canon
+        .chars()
+        .fold(7u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
+    let hue = match h % 4 {
+        0 => theme::ACCENT(),
+        1 => theme::BLUE(),
+        2 => theme::GREEN(),
+        _ => theme::PURPLE(),
+    };
+    let glyph: String = canon.chars().take(1).collect();
+    div()
+        .w(px(224.))
+        .flex()
+        .flex_col()
+        .rounded(theme::RADIUS_CARD)
+        .bg(theme::PANEL())
+        .border_1()
+        .border_color(theme::LINE())
+        .overflow_hidden()
+        .shadow_sm()
+        .hover(|d| d.border_color(theme::ACCENT_BORDER()))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(132.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme::BG().blend(hue.alpha(0.20)))
+                .child(
+                    div()
+                        .font_family(theme::FAMILY_SERIF)
+                        .text_size(px(56.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme::COVER_TEXT())
+                        .child(SharedString::from(glyph)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .right(px(10.))
+                        .bottom(px(10.))
+                        .w(px(22.))
+                        .h(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .bg(theme::ACCENT().alpha(0.9))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_family(theme::FAMILY_SERIF)
+                                .text_color(theme::ON_ACCENT())
+                                .child("执"),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .top(px(0.))
+                        .right(px(0.))
+                        .h(px(3.))
+                        .bg(hue.alpha(0.75)),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme::GAP_SM)
+                .px(theme::PAD_MD)
+                .py(theme::PAD_SM)
+                .child(
+                    div()
+                        .font_family(theme::FAMILY_SERIF)
+                        .text_size(theme::FONT_TITLE_SM)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::TEXT())
+                        .child(SharedString::from(canon.to_string())),
+                )
+                .child(
+                    div()
+                        .text_size(theme::FONT_LABEL)
+                        .text_color(theme::DIM())
+                        .child(SharedString::from(if aliases.is_empty() {
+                            "（无别名）".to_string()
+                        } else {
+                            format!("又作：{}", aliases.join("、"))
+                        })),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_SM)
+                        .child(
+                            Tag::secondary()
+                                .outline()
+                                .child(SharedString::from(format!("{fact_count} 条事实"))),
+                        )
+                        .when(first_chapter.is_some(), |d| {
+                            d.child(
+                                Tag::secondary()
+                                    .outline()
+                                    .child(SharedString::from(format!(
+                                        "首见 第{}章",
+                                        first_chapter.unwrap_or(0)
+                                    ))),
+                            )
+                        }),
+                ),
+        )
+        .into_any_element()
 }
 
 impl BasePanel for CharactersPanel {

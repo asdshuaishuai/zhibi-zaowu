@@ -297,6 +297,42 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
     ),
 
     textTool(
+      'propose_relations',
+      '提交人物关系边提案：给定「谁—谓词—谁」（如 沈砚—师从—老周 / 钱九渊—敌对—沈砚），采纳后写入记忆事实，关系图与人物卡立即出现这条边。AI 可主动发现关系（读 get_outline/get_canon 后推断）或补全读者已知关系；作者可拒收、可继续用同一工具修正。',
+      {
+        relations: {
+          type: 'array',
+          description: '关系边数组',
+          required: true,
+          items: {
+            type: 'object',
+            properties: {
+              from: str('主体（人名，本名优先）'),
+              predicate: str('关系谓词：师从/父子/敌对/同乡/共谋/暗恋/主仆…（2-4 字）'),
+              to: str('客体（人名）'),
+              evidence: str('依据（哪章哪段；可为空）', false),
+              chapter: num('首次成立章号（可空）', false),
+              publicToReader: { type: 'boolean', description: '读者是否已知（暗线填 false）', required: false },
+            },
+            required: ['from', 'predicate', 'to'],
+          },
+        },
+      },
+      (args) =>
+        guard(async () => {
+          const relations: any[] = Array.isArray(args.relations) ? args.relations : []
+          if (relations.length === 0) return '没有可登记的关系边。'
+          const p = await store.addProposal({
+            capability: '人物关系',
+            title: `人物关系 ${relations.length} 条`,
+            note: '采纳后入记忆事实（subject=from / predicate / object=to），关系图与人物卡立即挂边。',
+            payload: { kind: 'relations', relations },
+          })
+          return `已登记人物关系提案 ${relations.length} 条（${p.id}），等待作者审阅。`
+        }),
+    ),
+
+    textTool(
       'propose_aliases',
       '提交人物别名归一提案：同一人物的本名与各种称谓（小名/绰号/敬称）归并到 canonicalName。作者采纳后进 memory.json.aliases——人物卡、画布人物维/关系维以它为事实源；同名归并、别名去重，作者维护的字段不覆盖。',
       {
@@ -860,6 +896,7 @@ function payloadKind(payload: Record<string, unknown>): string {
     ['suggestions', 'deslop'],
     ['facts', 'memoryPack'],
     ['aliases', 'aliases'],
+    ['relations', 'relations'],
     ['updates', 'outlineUpdates'],
     ['outlineUpdates', 'outlineUpdates'],
     ['headline', 'dossier'],
@@ -1177,6 +1214,37 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<ApplyResult
         applied: hit,
         message: `去AI味逐处替换 ${hit}/${suggestions.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}（首次替换前已快照）`,
       }
+    }
+    case 'relations': {
+      const relations: any[] = Array.isArray(payload.relations) ? payload.relations : []
+      const mem = await store.readJSON<Record<string, unknown>>('memory.json', {})
+      const cur = Array.isArray(mem['facts']) ? (mem['facts'] as any[]) : []
+      let added = 0
+      const skipped: string[] = []
+      for (const r of relations) {
+        const from = String(r.from ?? '').trim()
+        const pred = String(r.predicate ?? '').trim()
+        const to = String(r.to ?? '').trim()
+        if (!from || !pred || !to) { skipped.push('缺 from/predicate/to'); continue }
+        const dup = cur.some(
+          (f) => f.subject === from && f.predicate === pred && f.object === to,
+        )
+        if (dup) { skipped.push(`${from}-${pred}-${to} 已在账`); continue }
+        cur.push({
+          id: crypto.randomUUID(),
+          subject: from,
+          predicate: pred,
+          object: to,
+          fromChapter: Number(r.chapter) || 0,
+          publicToReader: r.publicToReader !== false,
+          source: 'relation',
+          note: String(r.evidence ?? ''),
+        })
+        added += 1
+      }
+      mem['facts'] = cur
+      await store.writeJSON('memory.json', mem)
+      return { applied: added, message: `人物关系入账 ${added}/${relations.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}` }
     }
     case 'memoryPack': {
       const chapter = Number(payload.chapter ?? 0)

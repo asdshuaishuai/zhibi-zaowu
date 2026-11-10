@@ -28,9 +28,14 @@ impl AppRoot {
         cx.subscribe_in(&ws, window, |this, _, ev: &WorkspaceEvent, window, cx| match ev {
             WorkspaceEvent::BackToShelf => {
                 this.workspace = None;
-                if let Some(shelf) = &this.shelf {
-                    shelf.update(cx, |shelf, cx| shelf.reload(window, cx));
-                }
+                // 进工作区时 shelf 被置 None（避免双份状态）；回来必须重建书架，
+                // 否则 render 落到空 div —— 就是黑屏。
+                let shelf = cx.new(|cx| ShelfView::new(window, cx));
+                cx.subscribe_in(&shelf, window, |this, _, ev: &ShelfEvent, window, cx| match ev {
+                    ShelfEvent::Open(dir) => this.open_project(dir.clone(), window, cx),
+                })
+                .detach();
+                this.shelf = Some(shelf);
                 cx.notify();
             }
         })
