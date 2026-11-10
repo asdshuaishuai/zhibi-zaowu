@@ -296,6 +296,9 @@ worldlines.json: [{
 2. **M8-2 ✅ 双态**：`propose_worldline` 增 kind 参数（what-if 默认/forecast 预测：fork=下一章、diffs 全为 add 计划）；`prompts::forecast_task`（读大纲→无则读成稿→预测三走向×节拍级节点）；OraclePanel 按 kind 分组（固化=自动只读卡；预测线/假设线分列）；「预测续写」composer 双模式按钮。
 3. **M8-3 ✅ 预测线→导演台联动**：导演台新增「预测候选」虚线列（扫描 forecast 线 add 型事件/故事线 diff，排除已晋升）；拖入章列 = `promote_diff_chapter`（带章号晋升→**plannedEvent 提案**，非直写台账——与实卡改期语义区分）；新提案 kind `plannedEvent` 双端确定性落库（events.json 追加 `E{seq}` happened=false revealed=false + plannedFrom 溯源）；实链验证：预测→排期→采纳=E01@13章入账且标记"待写成"，二次排期晋升被拒。
 
+4. **M8-4 ✅ 世界线增强（实机驱动）**：画布新增第八维「预言」——直接渲染世界线沙盒的 nodes/edges（node 卡标「线β · event/character/storyline」、预测/假设节点一律琥珀虚线、隐藏边紫虚线），左上「世界线：β」chip 可切换线；计划事件（happened=false）在总览/时间/事件维统一「计划(线X)」标 + 琥珀虚线框；预言书补 fork 章显示、归档/恢复按钮与「已归档」沉底分组、影响清单按 target 分组（事件→故事线→设定→人物→伏笔）并显示已排期章；α 固化卡文案收口为单行（固化 · 成稿 N 章 · 定事 N · 伏笔 N/N）。
+   - 实机验收（断刀记验证）：β 线五个节点/五条边全渲染、琥珀虚线计划卡、清单三组、归档按钮就位。
+
 ## 12. 作者主权设计原则（2026-11-10）
 
 > **哲学是底座，不是文案。** 本节只记录能落到结构件、工程约束或界面证据上的原则；

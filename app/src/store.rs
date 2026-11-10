@@ -656,6 +656,28 @@ mod tests {
     }
 
     #[test]
+    fn worldline_archive_toggle() {
+        let home = temp_home("wlarch");
+        unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("归档测试").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        let mut lines = h.worldlines();
+        lines.push(serde_json::json!({
+            "id": "β", "name": "预测线", "kind": "forecast", "premise": "x", "forkedChapter": 13,
+            "status": "已推演", "nodes": [{"id": "n1", "kind": "event", "label": "夜探", "x": 100, "y": 80}],
+            "edges": [], "diffs": [], "derived": {}
+        }));
+        h.save_worldlines(&lines).unwrap();
+        assert_eq!(h.toggle_worldline_archive("β").unwrap(), "已归档");
+        assert_eq!(h.worldlines()[1]["status"], serde_json::json!("已归档"));
+        assert_eq!(h.toggle_worldline_archive("β").unwrap(), "已推演");
+        assert!(h.toggle_worldline_archive("α").is_err());
+        assert!(h.toggle_worldline_archive("ω").is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn legacy_payload_without_kind() {
         let home = temp_home("legacy");
         unsafe { std::env::set_var("HOME", &home); }
@@ -2409,6 +2431,26 @@ impl ProjectHandle {
         }
         self.save_worldlines(&lines)?;
         Ok(id)
+    }
+
+    /// 世界线归档/恢复（预言书面板按钮；α 基准不可动）。
+    pub fn toggle_worldline_archive(&self, id: &str) -> Result<String, String> {
+        if id == "α" {
+            return Err("α 基准线不可归档".into());
+        }
+        let mut lines = self.worldlines();
+        let w = lines
+            .iter_mut()
+            .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(id))
+            .ok_or_else(|| format!("世界线不存在：{id}"))?;
+        let cur = w.get("status").and_then(|v| v.as_str()).unwrap_or("已推演");
+        let new = if cur == "已归档" { "已推演" } else { "已归档" };
+        if let Some(obj) = w.as_object_mut() {
+            obj.insert("status".into(), serde_json::json!(new));
+            obj.insert("updatedAt".into(), serde_json::json!(iso_now()));
+        }
+        self.save_worldlines(&lines)?;
+        Ok(new.to_string())
     }
 
     fn add_proposal_local(

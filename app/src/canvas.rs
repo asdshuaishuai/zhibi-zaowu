@@ -40,6 +40,8 @@ pub struct CNode {
     label: String,
     meta: String,
     hidden: bool, // 未揭示事件 = 暗线
+    /// 计划事件（happened=false，来自计划排期/预测线）：虚线框 + 计划标
+    planned: bool,
     x: f32,
     y: f32,
 }
@@ -63,9 +65,10 @@ pub enum Dim {
     Timeline,
     Events,
     Turns,
+    Oracle,
 }
 
-const DIMS: [(Dim, &'static str); 7] = [
+const DIMS: [(Dim, &'static str); 8] = [
     (Dim::Overview, "总览"),
     (Dim::Canon, "设定"),
     (Dim::Cast, "人物"),
@@ -73,6 +76,7 @@ const DIMS: [(Dim, &'static str); 7] = [
     (Dim::Timeline, "时间"),
     (Dim::Events, "事件"),
     (Dim::Turns, "转折"),
+    (Dim::Oracle, "预言"),
 ];
 
 enum Drag {
@@ -93,6 +97,8 @@ pub struct CanvasPanel {
     view: (f32, f32, f32), // x, y, k
     sel: Vec<usize>,
     drag: Option<Drag>,
+    /// 预言维选中的世界线 id（None=最新非归档线）
+    oracle_line: Option<String>,
     /// 橡皮筋（窗口坐标；paint 时直接画，窗口首帧未写回 stage 原点也不影响）
     marquee: Option<((f32, f32), (f32, f32))>,
     /// canvas prepaint 每帧写回的 stage 窗口原点 → 事件坐标可换算
@@ -117,6 +123,7 @@ impl CanvasPanel {
             view: (0., 0., 1.),
             sel: Vec::new(),
             drag: None,
+            oracle_line: None,
             marquee: None,
             stage_origin: Rc::new(RefCell::new(None)),
             absorb_click: false,
@@ -136,6 +143,7 @@ impl CanvasPanel {
             Dim::Timeline => "tl",
             Dim::Events => "ev",
             Dim::Turns => "tr",
+            Dim::Oracle => "or",
         };
         let state = self.handle.canvas_state();
         if let Some(v) = state.get("view") {
@@ -191,11 +199,11 @@ impl CanvasPanel {
             };
             let y = 60. + counts[ci] as f32 * (NODE_H + 44.);
             counts[ci] += 1;
-            nodes.push(CNode { id, kind, label, meta, hidden, x: col(kind), y });
+            nodes.push(CNode { id, kind, label, meta, hidden, planned: false, x: col(kind), y });
         };
 
         let want_lines = matches!(self.dim, Dim::Overview | Dim::Events);
-        let want_events = !matches!(self.dim, Dim::Canon | Dim::Cast | Dim::Relations);
+        let want_events = !matches!(self.dim, Dim::Canon | Dim::Cast | Dim::Relations | Dim::Oracle);
         let want_chars = matches!(self.dim, Dim::Overview | Dim::Cast | Dim::Relations);
         let want_clues = matches!(self.dim, Dim::Overview);
         let want_canon = matches!(self.dim, Dim::Overview | Dim::Canon);
@@ -405,6 +413,81 @@ impl CanvasPanel {
                     edges.push(CEdge { from: i, to: i + 1, kind: "influence", hidden: false, label: String::new() });
                 }
             }
+            Dim::Oracle => {
+                // 世界线沙盒：渲染一条预测/假设线的节点与边（AI simulate 写入的 nodes/edges）
+                let lines = self.handle.worldlines();
+                let pick = self.oracle_line.clone();
+                let w = lines
+                    .iter()
+                    .find(|w| {
+                        s(w, "id") != "α"
+                            && s(w, "status") != "已归档"
+                            && pick.as_deref().map(|p| s(w, "id") == p).unwrap_or(true)
+                    })
+                    .or_else(|| lines.iter().find(|w| s(w, "id") != "α"));
+                if let Some(w) = w {
+                    let lid = s(w, "id");
+                    let nn = w.get("nodes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    let has_xy = nn.iter().any(|n| {
+                        n.get("x").and_then(|v| v.as_f64()).unwrap_or(0.).abs() > 1.
+                            || n.get("y").and_then(|v| v.as_f64()).unwrap_or(0.).abs() > 1.
+                    });
+                    for (i, nj) in nn.iter().enumerate() {
+                        let raw_kind = s(nj, "kind");
+                        let kind: &'static str = match raw_kind.as_str() {
+                            "storyline" => "storyline",
+                            "character" => "character",
+                            "clue" => "clue",
+                            "canon" => "canon",
+                            _ => "event",
+                        };
+                        let (x, y) = if has_xy {
+                            (
+                                nj.get("x").and_then(|v| v.as_f64()).unwrap_or(0.) as f32,
+                                nj.get("y").and_then(|v| v.as_f64()).unwrap_or(0.) as f32,
+                            )
+                        } else {
+                            let ci = match kind {
+                                "storyline" => 0,
+                                "event" => 1,
+                                "character" => 2,
+                                "clue" => 3,
+                                _ => 4,
+                            };
+                            let idx_in_col = nodes.iter().filter(|n: &&CNode| n.kind == kind).count();
+                            let _ = ci;
+                            (col(kind), 60. + idx_in_col as f32 * (NODE_H + 44.))
+                        };
+                        nodes.push(CNode {
+                            id: s(nj, "id"),
+                            kind,
+                            label: s(nj, "label").chars().take(16).collect(),
+                            meta: format!("线{lid} · {}", if raw_kind.is_empty() { "event".to_string() } else { raw_kind }),
+                            hidden: false,
+                            planned: true, // 预测/假设本身就是「未定」——统一虚线
+                            x,
+                            y,
+                        });
+                    }
+                    let en = w.get("edges").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    for ej in en {
+                        let fid = s(&ej, "from");
+                        let tid = s(&ej, "to");
+                        if let (Some(fi), Some(ti)) = (
+                            nodes.iter().position(|n| n.id == fid),
+                            nodes.iter().position(|n| n.id == tid),
+                        ) {
+                            edges.push(CEdge {
+                                from: fi,
+                                to: ti,
+                                kind: "influence",
+                                hidden: ej.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false),
+                                label: s(&ej, "kind"),
+                            });
+                        }
+                    }
+                }
+            }
             Dim::Turns => {
                 // 事件主循环已建列；此处只加档案卡拐点节点与红边
                 let dossiers = self.handle.read_array("dossiers.json");
@@ -421,6 +504,7 @@ impl CanvasPanel {
                             label: txt.chars().take(16).collect(),
                             meta: format!("第{chap}章 拐点"),
                             hidden: false,
+                            planned: false,
                             x: 480.,
                             y: 60. + twist_i as f32 * (NODE_H + 44.),
                         });
@@ -436,6 +520,25 @@ impl CanvasPanel {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // 计划事件标记（happened=false，来自 plannedEvent 采纳或预测排期）：
+        // 虚线框 + 计划标，与已发生事件区分
+        for n in nodes.iter_mut() {
+            if n.kind != "event" {
+                continue;
+            }
+            if let Some(ev) = ev_all.iter().find(|e| s(e, "id") == n.id) {
+                if !ev.get("happened").and_then(|v| v.as_bool()).unwrap_or(true) {
+                    n.planned = true;
+                    let line = s(ev, "plannedFrom");
+                    n.meta = if line.is_empty() {
+                        format!("计划 · {}", n.meta)
+                    } else {
+                        format!("计划({line}) · {}", n.meta)
+                    };
                 }
             }
         }
@@ -469,6 +572,7 @@ impl CanvasPanel {
             Dim::Timeline => "tl",
             Dim::Events => "ev",
             Dim::Turns => "tr",
+            Dim::Oracle => "or",
         };
         let mut pos = serde_json::Map::new();
         // 合并旧值：只保留「其他维度」的 dim:id 键。旧版本留下的裸 id 键、已删除节点的
@@ -654,7 +758,14 @@ impl Render for CanvasPanel {
                 .py(px(6.))
                 .rounded(theme::RADIUS_PANEL)
                 .border_1()
-                .border_color(if sel { theme::ACCENT_BORDER() } else { theme::LINE() })
+                .border_color(if sel {
+                    theme::ACCENT_BORDER()
+                } else if n.planned {
+                    theme::AMBER()
+                } else {
+                    theme::LINE()
+                })
+                .when(n.planned && !sel, |d| d.border_dashed())
                 .bg(if sel { theme::ACCENT_SOFT() } else { theme::PANEL() })
                 .on_mouse_down(
                     MouseButton::Left,
@@ -953,7 +1064,72 @@ impl Render for CanvasPanel {
                 b.on_click(cx.listener(move |this, _, _, cx| this.set_dim(dd, cx)))
             }));
 
-        stage.child(side).child(bar).child(tabs)
+        // 预言维：世界线选择条（非 α 线逐条切换）
+        let mut oracle_switch: Option<gpui_kit::AnyElement> = None;
+        if self.dim == Dim::Oracle {
+            let lines: Vec<String> = self
+                .handle
+                .worldlines()
+                .iter()
+                .filter(|w| s(w, "id") != "α" && s(w, "status") != "已归档")
+                .map(|w| s(w, "id"))
+                .collect();
+            let cur = self.oracle_line.clone();
+            let mut row: Vec<gpui_kit::AnyElement> = vec![
+                div()
+                    .text_size(theme::FONT_TAG)
+                    .text_color(theme::FAINT())
+                    .child("世界线：")
+                    .into_any_element(),
+            ];
+            if lines.is_empty() {
+                row.push(
+                    div()
+                        .text_size(theme::FONT_TAG)
+                        .text_color(theme::FAINT())
+                        .child("（还没有预测/假设线——去「预言书」提假设或预测续写）")
+                        .into_any_element(),
+                );
+            }
+            for lid in lines {
+                let on = cur.as_deref().map(|c| c == lid).unwrap_or(false);
+                let pick = lid.clone();
+                let b = Button::new(SharedString::from(format!("wl-pick-{lid}")))
+                    .xsmall()
+                    .label(SharedString::from(lid.clone()));
+                let b = if on { b.primary() } else { b };
+                row.push(
+                    b.on_click(cx.listener(move |this, _, _, cx| {
+                        this.oracle_line = Some(pick.clone());
+                        this.refresh();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                );
+            }
+            oracle_switch = Some(
+                div()
+                    .absolute()
+                    .left(theme::PAD_LG)
+                    .top(px(52.))
+                    .flex()
+                    .items_center()
+                    .gap(theme::GAP_XS)
+                    .p(theme::GAP_XS)
+                    .rounded(theme::RADIUS_CARD)
+                    .border_1()
+                    .border_color(theme::LINE())
+                    .bg(theme::PANEL())
+                    .children(row)
+                    .into_any_element(),
+            );
+        }
+
+        let stage = match oracle_switch {
+            Some(sw) => stage.child(side).child(bar).child(tabs).child(sw),
+            None => stage.child(side).child(bar).child(tabs),
+        };
+        stage
     }
 }
 
@@ -1043,6 +1219,8 @@ impl Render for OraclePanel {
             let id = s(w, "id");
             if id == "α" {
                 0
+            } else if s(w, "status") == "已归档" {
+                3
             } else if s(w, "kind") == "forecast" {
                 1
             } else {
@@ -1058,7 +1236,10 @@ impl Render for OraclePanel {
             let is_alpha = id == "α";
             if !is_alpha {
                 let kind0 = s(w, "kind");
-                let (sect, color) = if kind0 == "forecast" {
+                let archived0 = s(w, "status") == "已归档";
+                let (sect, color) = if archived0 {
+                    ("已归档 · 只读封存（可恢复继续推演）", theme::FAINT())
+                } else if kind0 == "forecast" {
                     ("预测线 · 往哪织（按大纲/成稿向前推演）", theme::GREEN())
                 } else {
                     ("假设线 · 如果改（what-if 推演）", theme::AMBER())
@@ -1137,17 +1318,55 @@ impl Render for OraclePanel {
                                 let written = self.handle.chapters().iter().filter(|c| c.has_prose).count();
                                 let done = self.handle.clues_full().iter().filter(|c| s(c, "status") == "已兑现").count();
                                 let allc = self.handle.clues_full().len();
-                                format!("已固化织实：成稿 {written} 章 · 定事 {happened} · 伏笔兑现 {done}/{allc}（只读）")
+                                format!("固化 · 成稿 {written} 章 · 定事 {happened} · 伏笔 {done}/{allc}")
                             } else {
                                 premise.chars().take(60).collect::<String>()
                             })),
                     )
                     .child(
                         div()
-                            .text_size(theme::FONT_MICRO)
-                            .font_family(theme::FAMILY_MONO)
-                            .text_color(theme::FAINT())
-                            .child(SharedString::from(format!("节点 {n_nodes} · 影响 {n_diffs}"))),
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_SM)
+                            .when(!is_alpha, |d| {
+                                let fork_ch = w.get("forkedChapter").and_then(|v| v.as_u64()).unwrap_or(0);
+                                d.child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(theme::FONT_MICRO)
+                                        .font_family(theme::FAMILY_MONO)
+                                        .text_color(theme::FAINT())
+                                        .child(SharedString::from(format!(
+                                            "fork 第{fork_ch}章 · 节点 {n_nodes} · 影响 {n_diffs}"
+                                        ))),
+                                )
+                            })
+                            .when(is_alpha, |d| {
+                                d.child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(theme::FONT_MICRO)
+                                        .font_family(theme::FAMILY_MONO)
+                                        .text_color(theme::FAINT())
+                                        .child(SharedString::from(format!("节点 {n_nodes} · 影响 {n_diffs}"))),
+                                )
+                            })
+                            .when(!is_alpha, |d| {
+                                let arch_id = id.clone();
+                                let archived_now = s(w, "status") == "已归档";
+                                d.child(
+                                    Button::new(SharedString::from(format!("arch-{id}")))
+                                        .xsmall()
+                                        .label(if archived_now { "恢复" } else { "归档" })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            match this.handle.toggle_worldline_archive(&arch_id) {
+                                                Ok(st) => this.message = Some(format!("线{arch_id} → {st}").into()),
+                                                Err(e) => this.message = Some(format!("归档失败：{e}").into()),
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
                     )
                     .into_any_element(),
             );
@@ -1177,8 +1396,44 @@ impl Render for OraclePanel {
                         .into_any_element(),
                 );
             }
+            // 按 target 分组（事件→故事线→设定→人物→伏笔→其他），与原顺序无关
+            let mut by_group: Vec<(String, Vec<(usize, serde_json::Value)>)> = Vec::new();
             for (idx, d) in diffs.into_iter().enumerate() {
-                let target = s(&d, "target");
+                let t = s(&d, "target");
+                let key = if t.is_empty() { "其他".to_string() } else { t };
+                if let Some(g) = by_group.iter_mut().find(|(k, _)| *k == key) {
+                    g.1.push((idx, d));
+                } else {
+                    by_group.push((key, vec![(idx, d)]));
+                }
+            }
+            by_group.sort_by_key(|(k, _)| match k.as_str() {
+                "事件" => 0usize,
+                "故事线" => 1,
+                "设定" => 2,
+                "人物" => 3,
+                "伏笔" => 4,
+                _ => 5,
+            });
+            for (gi, (group, items)) in by_group.into_iter().enumerate() {
+                right.push(
+                    div()
+                        .pt(if gi == 0 { theme::PAD_XS } else { theme::PAD_MD })
+                        .pb(theme::PAD_XS)
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_SM)
+                        .child(
+                            div()
+                                .text_size(theme::FONT_TAG)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme::DIM())
+                                .child(SharedString::from(format!("{group} · {} 条", items.len()))),
+                        )
+                        .into_any_element(),
+                );
+                for (idx, d) in items {
+                let target = group.clone();
                 let tref = s(&d, "targetRef");
                 let before = if d.get("before").and_then(|b| b.as_str()).unwrap_or("—").is_empty() {
                     "—".to_string()
@@ -1243,7 +1498,13 @@ impl Render for OraclePanel {
                                                 .font_family(theme::FAMILY_MONO)
                                                 .text_size(theme::FONT_TAG)
                                                 .text_color(theme::FAINT())
-                                                .child(SharedString::from(format!("{target}·{tref}"))),
+                                                .child(SharedString::from(format!(
+                                                    "{target}·{tref}{}",
+                                                    d.get("scheduledChapter")
+                                                        .and_then(|v| v.as_u64())
+                                                        .map(|ch| format!(" → 第{ch}章"))
+                                                        .unwrap_or_default()
+                                                ))),
                                         )
                                         .child(
                                             div()
@@ -1278,6 +1539,7 @@ impl Render for OraclePanel {
                         .when(!promoted, move |d| d.child(promote_btn))
                         .into_any_element(),
                 );
+                }
             }
             // 衍生实体（line 归属标）
             let dv = w.get("derived").cloned().unwrap_or_else(|| serde_json::json!({}));
