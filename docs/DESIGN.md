@@ -190,11 +190,11 @@ zhibi-next/
 - **M5 全能力复刻**：审查/对账/去AI味/记忆/图谱/导入导出/统计。
 - **M6 跨端打包**：Win/Linux 适配 + 打包与自动更新。
 
-## 8. 待定问题（请拍板）
+## 8. 拍板记录（原「待定问题」，均已定案并落地）
 
-1. 1. DSH 接入形态：**sdk 子进程**（推荐，协议现成）vs ACP（更标准但为自动化设计）vs 进程内 Node 嵌入（最重）。我按 sdk 设计。
-3. novel-pack 随应用分发（内置插件，首次启动注册到 profile）vs 独立 npm 包（`dsh plugin add`）。倾向内置分发、保留独立安装能力。
-3. GPUI Kit 版本钉 0.9.0（gpui-pre 快照）——Rust 工具链需与该快照匹配，实施时先跑通 story gallery 再动工。
+1. **DSH 接入形态：sdk 子进程**（NDJSON JSON-RPC over stdio）——已实现并 22 工具真实注册验证。
+2. **novel-pack 分发：随应用内置**，经 `cordis.patch.yml` 自动挂载；`dsh plugin --profile sdk add` 独立安装能力保留。
+3. **GPUI Kit 钉 0.9.0**（crates.io 源为准；git main 0.9.1 存在 API 漂移，不采用）——全仓零警告验证通过。
 
 ## 10. 无限画板 · 导演台 · 预言书（世界线推演）
 
