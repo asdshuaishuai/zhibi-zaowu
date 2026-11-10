@@ -408,6 +408,27 @@ mod tests {
         assert_eq!(sl[0]["syncNote"], serde_json::json!("12 章无动作"));
         assert!(!dir.join("outline.json").exists(), "绝不产生旧合并文件");
 
+        // M8-3 预测排期：β 线 add 型 diff 定向第 9 章 → plannedEvent 提案 → 采纳入 events（happened=false）
+        let mut lines9 = handle.worldlines();
+        lines9.push(serde_json::json!({
+            "id": "β", "name": "预测测试", "premise": "后续", "kind": "forecast", "forkedChapter": 13, "status": "已推演",
+            "nodes": [], "edges": [],
+            "diffs": [{ "target": "事件", "targetRef": "L01", "kind": "add", "after": "主角夜探漕帮总舵", "reason": "虎符到期" }],
+            "derived": { "characters": [], "canon": [], "clues": [] }
+        }));
+        handle.save_worldlines(&lines9).unwrap();
+        std::fs::write(dir.join("storylines.json"), serde_json::to_string(&serde_json::json!([
+            { "id": "L01", "name": "主线", "status": "进行中" }
+        ])).unwrap()).unwrap();
+        let pid = handle.promote_diff_chapter("β", 0, 9).unwrap();
+        handle.accept_proposal(&pid).unwrap();
+        let ev = handle.events();
+        let planned = ev.iter().find(|e| e["objectiveFact"] == serde_json::json!("主角夜探漕帮总舵")).expect("计划事件已入账");
+        assert_eq!(planned["chapter"], serde_json::json!(9));
+        assert_eq!(planned["happened"], serde_json::json!(false), "计划≠成稿");
+        assert_eq!(planned["plannedFrom"], serde_json::json!("线β"));
+        assert!(handle.promote_diff_chapter("β", 0, 10).is_err(), "二次排期晋升被拒");
+
         // 不存在对象报错（导演台拒拖野卡）
         assert!(handle.set_event_chapter("E99", 1).is_err());
         let _ = std::fs::remove_dir_all(&home);
@@ -649,6 +670,36 @@ impl ProjectHandle {
                     std::fs::write(&file, body).map_err(|e| e.to_string())?;
                     applied += 1;
                 }
+            }
+            "plannedEvent" => {
+                // 预测排期采纳：计划事件入 events.json（happened=false 待写成）
+                let chapter = payload.get("chapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                if chapter == 0 || title.is_empty() {
+                    return Err("计划事件缺章号或内容".into());
+                }
+                let mut events = self.events();
+                let seq = events
+                    .iter()
+                    .filter_map(|e| e.get("id").and_then(|i| i.as_str()).and_then(|x| x.strip_prefix('E')).and_then(|n| n.parse::<u64>().ok()))
+                    .max()
+                    .map(|m| m + 1)
+                    .unwrap_or(1);
+                let mut entry = serde_json::Map::new();
+                entry.insert("id".into(), serde_json::json!(format!("E{seq:02}")));
+                entry.insert("chapter".into(), serde_json::json!(chapter));
+                entry.insert("objectiveFact".into(), serde_json::json!(title));
+                entry.insert("revealed".into(), serde_json::json!(false));
+                entry.insert("happened".into(), serde_json::json!(false));
+                if let Some(sid) = payload.get("storylineID").and_then(|v| v.as_str()) {
+                    if !sid.is_empty() {
+                        entry.insert("storylineIDs".into(), serde_json::json!([sid]));
+                    }
+                }
+                entry.insert("plannedFrom".into(), payload.get("from").cloned().unwrap_or(serde_json::json!("")));
+                events.push(serde_json::Value::Object(entry));
+                self.save_array("events.json", &events)?;
+                applied += 1;
             }
             "outlineUpdates" => {
                 let updates = payload.get("updates").and_then(|d| d.as_array()).cloned().unwrap_or_default();
@@ -1330,6 +1381,61 @@ impl ProjectHandle {
                 if let Some(obj) = line.as_object_mut() {
                     let cur = obj.get("diffs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
                     let mut new_diffs = cur;
+                    if diff_index < new_diffs.len() {
+                        new_diffs[diff_index] = d.clone();
+                    }
+                    obj.insert("diffs".into(), serde_json::json!(new_diffs));
+                }
+            }
+        }
+        self.save_worldlines(&lines)?;
+        Ok(id)
+    }
+
+    /// M8-3：带排期章号的晋升——预测 diff 定向到某章 → plannedEvent 提案。
+    pub fn promote_diff_chapter(&self, worldline_id: &str, diff_index: usize, chapter: u32) -> Result<String, String> {
+        let mut lines = self.worldlines();
+        let w = lines
+            .iter_mut()
+            .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(worldline_id))
+            .ok_or_else(|| format!("世界线不存在：{worldline_id}"))?;
+        let diffs = w.get("diffs").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+        let mut d = diffs.into_iter().nth(diff_index).ok_or("该影响不存在")?;
+        if d.get("promoted").and_then(|p| p.as_bool()).unwrap_or(false) {
+            return Err("该影响已晋升，拒绝重复".into());
+        }
+        let after = d.get("after").and_then(|a| a.as_str()).unwrap_or("").to_string();
+        let tref = d.get("targetRef").and_then(|t| t.as_str()).unwrap_or("").to_string();
+        let payload = serde_json::json!({
+            "kind": "plannedEvent",
+            "chapter": chapter,
+            "title": after,
+            "storylineID": tref,
+            "from": format!("线{worldline_id}"),
+        });
+        let id = uuid_like();
+        let mut plist = self.proposals();
+        plist.insert(0, Proposal {
+            id: id.clone(),
+            capability: "预言书·排期".into(),
+            title: format!("计划事件 → 第{chapter}章（线{worldline_id}）"),
+            note: format!("预测排期晋升：{after}"),
+            payload,
+            status: "待确认".into(),
+            created_at: iso_now(),
+            decided_at: None,
+            reject_reason: None,
+        });
+        self.save_proposals(&plist)?;
+        if let Some(obj) = d.as_object_mut() {
+            obj.insert("promoted".into(), serde_json::json!(true));
+            obj.insert("promotedProposalId".into(), serde_json::json!(id));
+            obj.insert("scheduledChapter".into(), serde_json::json!(chapter));
+        }
+        for line in lines.iter_mut() {
+            if line.get("id").and_then(|i| i.as_str()) == Some(worldline_id) {
+                if let Some(obj) = line.as_object_mut() {
+                    let mut new_diffs = obj.get("diffs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
                     if diff_index < new_diffs.len() {
                         new_diffs[diff_index] = d.clone();
                     }

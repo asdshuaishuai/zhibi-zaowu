@@ -294,4 +294,4 @@ worldlines.json: [{
 
 1. **M8-1 ✅ 画布维度化**：`Dim` 枚举 + 七维映射 + dim-keyed 持久化 + 顶栏页签。
 2. **M8-2 ✅ 双态**：`propose_worldline` 增 kind 参数（what-if 默认/forecast 预测：fork=下一章、diffs 全为 add 计划）；`prompts::forecast_task`（读大纲→无则读成稿→预测三走向×节拍级节点）；OraclePanel 按 kind 分组（固化=自动只读卡；预测线/假设线分列）；「预测续写」composer 双模式按钮。
-3. M8-3 预测线 → 导演台联动（预测事件卡拖入排期即晋升，随需推进）。
+3. **M8-3 ✅ 预测线→导演台联动**：导演台新增「预测候选」虚线列（扫描 forecast 线 add 型事件/故事线 diff，排除已晋升）；拖入章列 = `promote_diff_chapter`（带章号晋升→**plannedEvent 提案**，非直写台账——与实卡改期语义区分）；新提案 kind `plannedEvent` 双端确定性落库（events.json 追加 `E{seq}` happened=false revealed=false + plannedFrom 溯源）；实链验证：预测→排期→采纳=E01@13章入账且标记"待写成"，二次排期晋升被拒。

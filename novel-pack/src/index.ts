@@ -551,7 +551,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
     textTool(
       'promote_diff',
       '晋升一条世界线影响为正式提案（进收件箱，作者裁决后才改正典）。映射：设定add→canon 提案；设定change→canonRevise 提案（采纳时自动备份原文）；伏笔→clues 提案；事件/故事线→outlineUpdates 提案。同一条只能晋升一次。',
-      { worldlineId: str('世界线 id'), diffIndex: num('diffs 数组下标（从 0 起）') },
+      { worldlineId: str('世界线 id'), diffIndex: num('diffs 数组下标（从 0 起）'), targetChapter: num('可选：排期章号——事件/故事线 add 型 diff 带章晋升走 plannedEvent（计划事件）提案', false) },
       (args) =>
         guard(async () => {
           const wls = await store.worldlines()
@@ -563,7 +563,14 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
           if (d.promoted) return `该影响已晋升（提案 ${d.promotedProposalId ?? ''}），拒绝重复。`
           const after = String(d.after ?? '')
           const reason = String(d.reason ?? '')
+          const schedChap = Number(args.targetChapter) || 0
           let p
+          if (schedChap > 0 && (d.target === '事件' || d.target === '故事线') && d.kind === 'add') {
+            // M8-3 排期晋升：计划事件提案（采纳才入 events.json，happened=false）
+            p = await store.addProposal({ capability: '预言书·排期', title: `计划事件 → 第${schedChap}章（线${w.id}）`, note: `预测排期晋升：${after}`, payload: { kind: 'plannedEvent', chapter: schedChap, title: after, storylineID: String(d.targetRef ?? ''), from: `线${w.id}` } })
+            d.promoted = true
+            d.scheduledChapter = schedChap
+          } else
           switch (String(d.target)) {
             case '设定':
               if (d.kind === 'add') {
@@ -713,6 +720,27 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<string> {
         applied += 1
       }
       return `设定修订 ${applied}/${items.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}（已自动备份）`
+    }
+    case 'plannedEvent': {
+      const chapter = Number(payload.chapter ?? 0)
+      const title = String(payload.title ?? '').trim()
+      if (!chapter || !title) return '计划事件缺章号或内容'
+      const events = await store.readJSON<any[]>('events.json', [])
+      const seqs = events.map((e) => Number(String(e.id ?? '').replace(/^E/, '')) || 0)
+      const seq = (seqs.length ? Math.max(...seqs) : 0) + 1
+      const entry: Record<string, unknown> = {
+        id: `E${String(seq).padStart(2, '0')}`,
+        chapter,
+        objectiveFact: title,
+        revealed: false,
+        happened: false,
+      }
+      const sid = String(payload.storylineID ?? '')
+      if (sid) entry.storylineIDs = [sid]
+      entry.plannedFrom = String(payload.from ?? '')
+      events.push(entry)
+      await store.writeJSON('events.json', events)
+      return `计划事件 ${entry.id}「${title}」→ 第${chapter}章 入账（happened=false，待写成）`
     }
     case 'outlineUpdates': {
       const updates: any[] = Array.isArray(payload.updates) ? payload.updates : []

@@ -48,6 +48,14 @@ struct DCard {
     hidden: bool,
 }
 
+#[derive(Clone)]
+struct PredCard {
+    line: String,
+    idx: usize,
+    label: String,
+    tref: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum DirectorEvent {
     /// 让 AI 按骨架合同核对第 N 章（0=从本板窗口起点）
@@ -60,6 +68,8 @@ pub struct DirectorPanel {
     current: u32,
     cards: Vec<DCard>,
     pool: Vec<DCard>,
+    preds: Vec<PredCard>,
+    pred_drag: Option<usize>,
     drag: Option<DCard>,
     hover: Option<usize>,
     message: Option<SharedString>,
@@ -73,6 +83,8 @@ impl DirectorPanel {
             current,
             cards: Vec::new(),
             pool: Vec::new(),
+            preds: Vec::new(),
+            pred_drag: None,
             drag: None,
             hover: None,
             message: None,
@@ -122,11 +134,50 @@ impl DirectorPanel {
         }
         self.cards = cards;
         self.pool = pool;
+        // M8-3：预测线 add 型 diff 进候选池（拖入列=晋升为 plannedEvent 提案，非直写）
+        let mut preds = Vec::new();
+        for w in self.handle.worldlines() {
+            if s(&w, "kind") != "forecast" {
+                continue;
+            }
+            let line = s(&w, "id");
+            for (idx, d) in w.get("diffs").and_then(|x| x.as_array()).cloned().unwrap_or_default().into_iter().enumerate() {
+                if d.get("promoted").and_then(|p| p.as_bool()).unwrap_or(false) {
+                    continue;
+                }
+                let target = s(&d, "target");
+                if s(&d, "kind") == "add" && (target == "事件" || target == "故事线") {
+                    preds.push(PredCard {
+                        line: line.clone(),
+                        idx,
+                        label: s(&d, "after").chars().take(18).collect(),
+                        tref: s(&d, "targetRef"),
+                    });
+                }
+            }
+        }
+        self.preds = preds;
         self.drag = None;
+        self.pred_drag = None;
         self.hover = None;
     }
 
     fn drop_to(&mut self, col: usize, cx: &mut Context<Self>) {
+        // M8-3 预测卡：落列=带章号晋升（plannedEvent 提案，采纳才入 events.json）
+        if let Some(pi) = self.pred_drag.take() {
+            let chap = self.current + col as u32;
+            if let Some(p) = self.preds.get(pi) {
+                let (line, idx) = (p.line.clone(), p.idx);
+                match self.handle.promote_diff_chapter(&line, idx, chap) {
+                    Ok(pid) => self.message = Some(format!("预测线{line} 计划 → 第{chap}章 提案 {pid}（采纳才入账）").into()),
+                    Err(e) => self.message = Some(format!("排期晋升失败：{e}").into()),
+                }
+            }
+            self.refresh();
+            self.hover = None;
+            cx.notify();
+            return;
+        }
         let Some(card) = self.drag.take() else { return };
         let chap = self.current + col as u32;
         let res = match card.kind {
@@ -376,12 +427,88 @@ impl Render for DirectorPanel {
                             }
                         }))
                         .on_mouse_up(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                            if this.drag.is_some() {
+                            if this.drag.is_some() || this.pred_drag.is_some() {
                                 this.drop_to(i, cx);
                             }
                         })),
                 );
             board.push(col.into_any_element());
+        }
+
+        // M8-3 预测候选列：虚线卡，拖入章列=晋升为排期提案（不直写台账）
+        let mut pred_cards: Vec<AnyElement> = Vec::new();
+        for (pi, pc) in self.preds.clone().into_iter().enumerate() {
+            let dragging = self.pred_drag == Some(pi);
+            pred_cards.push(
+                div()
+                    .id(SharedString::from(format!("pred-{}-{}", pc.line, pc.idx)))
+                    .p(theme::PAD_SM)
+                    .rounded(theme::RADIUS_PANEL)
+                    .border_1()
+                    .border_dashed()
+                    .border_color(if dragging { theme::ACCENT_BORDER() } else { theme::GREEN_BORDER() })
+                    .bg(theme::PANEL2())
+                    .cursor_grab()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.pred_drag = Some(pi);
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_XS)
+                            .child(div().text_size(theme::FONT_TAG).text_color(theme::GREEN()).child("◇"))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(theme::FONT_TAG)
+                                    .text_color(theme::TEXT())
+                                    .child(SharedString::from(pc.label.clone())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme::FAMILY_MONO)
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::FAINT())
+                            .child(SharedString::from(format!("线{} · 采纳后入账", pc.line))),
+                    )
+                    .into_any_element(),
+            );
+        }
+        if !pred_cards.is_empty() {
+            board.push(
+                div()
+                    .w(px(COL_W))
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .rounded(theme::RADIUS_CARD)
+                    .border_1()
+                    .border_dashed()
+                    .border_color(theme::GREEN_BORDER())
+                    .bg(theme::PANEL())
+                    .child(
+                        div()
+                            .px(theme::PAD_SM)
+                            .py(theme::GAP_SM)
+                            .text_size(theme::FONT_LABEL)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::GREEN())
+                            .child("预测候选（拖入=排期提案）"),
+                    )
+                    .child(
+                        div().flex().flex_col().gap(theme::GAP_SM).p(theme::PAD_SM).children(pred_cards),
+                    )
+                    .into_any_element(),
+            );
         }
 
         // 待排期池（窗口外存量；拖入即改期）
