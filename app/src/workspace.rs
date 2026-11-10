@@ -527,6 +527,9 @@ impl Workspace {
                     let fork = if *fork == 0 { this.chapter } else { *fork };
                     this.on_send(prompts::oracle_task(premise, fork), cx);
                 }
+                OracleEvent::Forecast => {
+                    this.on_send(prompts::forecast_task(), cx);
+                }
                 OracleEvent::Promoted { worldline, proposal_id } => {
                     this.inbox.update(cx, |panel, cx| panel.refresh(cx));
                     let (wl, pid) = (worldline.clone(), proposal_id.clone());

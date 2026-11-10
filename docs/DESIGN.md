@@ -258,3 +258,40 @@ worldlines.json: [{
 - **M7-4 导演台幕带 ✅**：列间按 `stages.json` 的 `chapterStart/chapterEnd` 标注卷名（衬线 PURPLE）+ theme 副题，无阶段归属显「—」。
 - **框选成组的取舍**：gpui-pre 的 `MouseDownEvent`/`MouseMoveEvent` 的 `position` 为窗口坐标而非面板内坐标，橡皮筋命中会偏移；故 M7-4 先用 Shift 点选成组（无坐标歧义）；**M7-4b 已落地真·橡皮筋**：`canvas()` 的 prepaint 回调每帧把 stage 窗口原点写回 `Rc<RefCell<Option<..>>>`，鼠标事件坐标据此换算面板内坐标做命中测试（空白 Shift 拖拽出框，抬起即成组）。
 - 交互原型：`design/canvas.html`（三视图可点可拖，已从首页卡片接入）；测试 `worldline_promote_chain` 通过（沙盒→晋升→采纳→备份→幂等→视图态往返全链）。
+
+## 11. 世界线双态 × 多维织网画布（M8，2026-11-10 用户定案）
+
+用户口径：**世界线 = 已固化线 + 预测线**；**画布 = 把设定/剧情/关系/事件/转折按维度织成明确的网**。
+
+### 11.1 世界线双态（worldlines.json 增 `kind`）
+
+| kind | 语义 | 数据来源 | 写权限 |
+|---|---|---|---|
+| `base`（α） | 正典基准 | 全部台账 | 只读 |
+| `fixed` | **已固化**：已写完确定下来的剧情 | 自动派生：`happened=true` 事件 + 已成稿章节（只读视图，不落文件） | 只读展示 |
+| `forecast` | **预测线**：按大纲/设定（无大纲则按已成稿）推演后续剧情 | AI `forecast_task` → simulate 工具写沙盒；diffs=计划剧情，晋升走 outline/clues/skeleton 提案 | 沙盒 only |
+| `what-if` | 假设推演（原预言书能力） | 同上 | 沙盒 only |
+
+固化线给用户「织到哪了」的全景；预测线给用户「接下来往哪织」的可选路——都是整理辅助，铁律不变：预测晋升成提案、采纳才进正典。
+
+### 11.2 多维画布（CanvasPanel 顶栏维度页签）
+
+每维 = 节点类型子集 + 专属布局 + 专属边映射（全部真实数据，零臆造）：
+
+| 画布 | 节点 | 边 | 布局 |
+|---|---|---|---|
+| 总览 | 五类全量 | influence/plant/payoff/involve | 列式（现行） |
+| 设定 | canon（分类着色，meta=类别） | facts.object↔canon 命中边 | 网式（两排均布） |
+| 人物 | characters（canonical+aka） | involve（facts.subject×fromChapter→事件） | 列式 |
+| **关系** | characters | **subject→object 且两端可经别名表归一** → 人名↔人名边，label=predicate（获得/师徒/敌对…） | 中心辐射（主角居中） |
+| **时间** | events 按章 | chapter 顺序链边 + 挂线 storylines | 横轴时间线（每行 8 事件折行） |
+| 事件 | storylines+events | influence | 列式 |
+| **转折** | dossier.turns 弧线拐点 + events | 拐点→该章事件边（RED） | 章轴纵向 |
+
+视图态 `canvas.json` 的 `pos` 键升为 `"<dim>:<nodeId>"`（维度间互不踩踏）；边色沿用现有语义色板。
+
+### 11.3 切片
+
+1. **M8-1 ✅ 画布维度化**：`Dim` 枚举 + 七维映射 + dim-keyed 持久化 + 顶栏页签。
+2. **M8-2 ✅ 双态**：`propose_worldline` 增 kind 参数（what-if 默认/forecast 预测：fork=下一章、diffs 全为 add 计划）；`prompts::forecast_task`（读大纲→无则读成稿→预测三走向×节拍级节点）；OraclePanel 按 kind 分组（固化=自动只读卡；预测线/假设线分列）；「预测续写」composer 双模式按钮。
+3. M8-3 预测线 → 导演台联动（预测事件卡拖入排期即晋升，随需推进）。

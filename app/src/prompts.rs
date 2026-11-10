@@ -83,3 +83,13 @@ pub fn director_task(chapter: u32) -> String {
 给出本章的事件/伏笔挂接建议与冲突预警；需要落账的部分用 propose_clues / propose_outline_updates 提案，只报告不代改。"
     )
 }
+
+/// 预测续写任务书（M8）：固化线之后向前织——有大纲按大纲预测，无大纲按成稿预测。
+pub fn forecast_task() -> String {
+    "预测线推演：为本书开一条 forecast 线向后续写规划。\
+流程：1) get_world_state 读全图（已成稿事件/线状态/伏笔到期/设定）；2) 读最近成稿章节结尾与到期伏笔；\
+3) propose_worldline kind=forecast（fork=最新成稿下一章）；4) simulate_worldline 写入 2-3 个候选走向，\
+每走向=节拍级 event 节点链（label 含「走向A/B/C」）+ diffs（target=事件或故事线，kind=add，after=计划剧情一句话，\
+reason=依据哪条到期伏笔/线状态/设定铁律）；若本书有明确大纲（storylines 的 plannedPayoffChapter 等）以大纲为准，\
+否则纯按已成稿预测。铁律：预测只是计划——晋升才成提案，采纳才进正典。最后总结各走向与到期伏笔的呼应关系。".to_string()
+}

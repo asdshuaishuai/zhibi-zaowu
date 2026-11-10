@@ -921,7 +921,7 @@ fn iso_now() -> String {
 // ───────────────────── 台账读取（真实文件名：storylines/events/stages/memory/dossiers）─────────────────────
 
 impl ProjectHandle {
-    fn read_array(&self, file: &str) -> Vec<serde_json::Value> {
+    pub(crate) fn read_array(&self, file: &str) -> Vec<serde_json::Value> {
         std::fs::read_to_string(self.root.join(file))
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())

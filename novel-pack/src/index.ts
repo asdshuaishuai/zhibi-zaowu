@@ -467,7 +467,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
               clues: clues.map((c: any) => ({ id: c.id, title: c.title, status: c.status, plantedChapter: c.plantedChapter, lastActionChapter: c.lastActionChapter })),
               canon: titles.map((t) => ({ title: t })),
               characters: aliases.map((a: any) => ({ canonical: a.canonicalName ?? '?', aka: (a.aliases ?? []).join('、') })),
-              worldlines: wls.map((w) => ({ id: w.id, name: w.name, premise: w.premise, forkedChapter: w.forkedChapter, status: w.status, nodes: (w.nodes ?? []).length, diffs: (w.diffs ?? []).length, promoted: (w.diffs ?? []).filter((d: any) => d.promoted).length })),
+              worldlines: wls.map((w) => ({ id: w.id, name: w.name, kind: w.kind ?? 'what-if', premise: w.premise, forkedChapter: w.forkedChapter, status: w.status, nodes: (w.nodes ?? []).length, diffs: (w.diffs ?? []).length, promoted: (w.diffs ?? []).filter((d: any) => d.promoted).length })),
             },
             null,
             1,
@@ -478,13 +478,19 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
     textTool(
       'propose_worldline',
       '开一条世界线（预言书沙盒）：记名称/假设/分歧章。只写 worldlines.json 沙盒，绝不触碰正典。id 自动取希腊字母序（α 为正典基准，不可创建）。',
-      { name: str('世界线名，如「师兄未死」'), premise: str('一句假设（如果…）'), forkedChapter: num('分歧章号') },
+      { name: str('世界线名，如「师兄未死」'), premise: str('假设或预测方向（如果…/后续…）'), forkedChapter: num('分歧章号（forecast 线可传 0=自动取最新成稿下一章）'), kind: { type: 'string', description: 'what-if=假设推演（默认）forecast=预测线（基于大纲/成稿向前织）', required: false } },
       (args) =>
         guard(async () => {
           const wls = await store.worldlines()
           // 自愈：确保 α 基准行在（裸工具/未走 ensureDirs 时也不缺基准）
           if (!wls.some((w) => w.id === 'α')) {
-            wls.unshift({ id: 'α', name: '正典', premise: '当前事实基准', forkedChapter: 0, status: '基准', nodes: [], edges: [], diffs: [], derived: { characters: [], canon: [], clues: [] } })
+            wls.unshift({ id: 'α', name: '正典', premise: '当前事实基准', forkedChapter: 0, status: '基准', kind: 'base', nodes: [], edges: [], diffs: [], derived: { characters: [], canon: [], clues: [] } })
+          }
+          const kind = String(args.kind ?? 'what-if') === 'forecast' ? 'forecast' : 'what-if'
+          let fork = Number(args.forkedChapter) || 0
+          if (kind === 'forecast' && fork === 0) {
+            const written = await store.writtenChapters()
+            fork = (written.length ? written[written.length - 1] : 0) + 1
           }
           const greek = ['β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π']
           let id = ''
@@ -496,7 +502,8 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
             id,
             name: String(args.name ?? '').trim() || '未命名',
             premise: String(args.premise ?? '').trim(),
-            forkedChapter: Number(args.forkedChapter) || 0,
+            kind,
+            forkedChapter: fork,
             status: '推演中',
             createdAt: new Date().toISOString(),
             nodes: [],
@@ -506,7 +513,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
           }
           wls.push(w)
           await store.saveWorldlines(wls)
-          return `已开世界线 ${id}「${w.name}」（fork 第${w.forkedChapter}章）——沙盒已建，接下来用 simulate_worldline 写入推演结果。`
+          return `已开${kind === 'forecast' ? '预测线' : '假设线'} ${id}「${w.name}」（fork 第${w.forkedChapter}章）——沙盒已建，接下来用 simulate_worldline 写入推演结果。`
         }),
     ),
 

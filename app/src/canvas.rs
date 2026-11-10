@@ -48,9 +48,32 @@ pub struct CNode {
 pub struct CEdge {
     from: usize,
     to: usize,
-    kind: &'static str, // influence|plant|payoff
+    kind: &'static str, // influence|plant|payoff|involve|conflict
     hidden: bool,
+    /// 动态边标签（如关系谓词「师徒」）；空则用 kind 词
+    label: String,
 }
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Dim {
+    Overview,
+    Canon,
+    Cast,
+    Relations,
+    Timeline,
+    Events,
+    Turns,
+}
+
+const DIMS: [(Dim, &'static str); 7] = [
+    (Dim::Overview, "总览"),
+    (Dim::Canon, "设定"),
+    (Dim::Cast, "人物"),
+    (Dim::Relations, "关系"),
+    (Dim::Timeline, "时间"),
+    (Dim::Events, "事件"),
+    (Dim::Turns, "转折"),
+];
 
 enum Drag {
     Node(Vec<usize>, Point<Pixels>),
@@ -63,6 +86,7 @@ const NODE_H: f32 = 76.;
 
 pub struct CanvasPanel {
     focus_handle: FocusHandle,
+    dim: Dim,
     handle: Rc<ProjectHandle>,
     nodes: Vec<CNode>,
     edges: Vec<CEdge>,
@@ -84,6 +108,7 @@ impl CanvasPanel {
     pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
+            dim: Dim::Overview,
             handle,
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -98,8 +123,17 @@ impl CanvasPanel {
         this
     }
 
-    /// 正典 → 节点/边 重建；视图态（平移缩放/坐标/读者视角）从 canvas.json 恢复。
+    /// 正典 → 节点/边 重建（按当前维度）；视图态从 canvas.json 恢复（pos 键 dim:id）。
     pub fn refresh(&mut self) {
+        let dimkey = || match self.dim {
+            Dim::Overview => "ov",
+            Dim::Canon => "ca",
+            Dim::Cast => "ch",
+            Dim::Relations => "rl",
+            Dim::Timeline => "tl",
+            Dim::Events => "ev",
+            Dim::Turns => "tr",
+        };
         let state = self.handle.canvas_state();
         if let Some(v) = state.get("view") {
             self.view = (
@@ -110,150 +144,307 @@ impl CanvasPanel {
         }
         self.reader = state.get("reader").and_then(|r| r.as_bool()).unwrap_or(false);
 
+        let mut nodes: Vec<CNode> = Vec::new();
+        let mut edges: Vec<CEdge> = Vec::new();
+        let ev_all = self.handle.events();
+        let facts = self.handle.memory_facts();
+        let aliases_all = self.handle.aliases();
+
+        // 别名归一表：所有名字形态 → canonicalName
+        let mut alias_map: Vec<(String, String)> = Vec::new();
+        for a in &aliases_all {
+            let canon = s(a, "canonicalName");
+            if canon.is_empty() {
+                continue;
+            }
+            alias_map.push((canon.clone(), canon.clone()));
+            if let Some(arr) = a.get("aliases").and_then(|v| v.as_array()) {
+                for x in arr.iter().filter_map(|v| v.as_str()) {
+                    alias_map.push((x.to_string(), canon.clone()));
+                }
+            }
+        }
+        let resolve = |name: &str| -> Option<String> {
+            alias_map.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+        };
+
         let col = |kind: &str| match kind {
             "storyline" => 50.,
             "event" => 300.,
             "character" => 540.,
             "clue" => 760.,
-            _ => 980.,
+            "canon" => 980.,
+            _ => 700.,
         };
-        let mut counts = [0usize; 5];
-        let mut nodes: Vec<CNode> = Vec::new();
+        let mut counts = [0usize; 6];
+        let push_col = |nodes: &mut Vec<CNode>, counts: &mut [usize; 6], kind: &'static str, id: String, label: String, meta: String, hidden: bool| {
+            let ci = match kind {
+                "storyline" => 0,
+                "event" => 1,
+                "character" => 2,
+                "clue" => 3,
+                "canon" => 4,
+                _ => 5,
+            };
+            let y = 60. + counts[ci] as f32 * (NODE_H + 44.);
+            counts[ci] += 1;
+            nodes.push(CNode { id, kind, label, meta, hidden, x: col(kind), y });
+        };
 
-        for l in self.handle.storylines() {
-            let id = s(&l, "id");
-            nodes.push(CNode {
-                kind: "storyline",
-                label: s(&l, "name"),
-                meta: s(&l, "status"),
-                hidden: false,
-                x: col("storyline"),
-                y: 60. + counts[0] as f32 * (NODE_H + 44.),
-                id,
-            });
-            counts[0] += 1;
-        }
-        for e in self.handle.events() {
-            let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
-            let fact = s(&e, "objectiveFact");
-            let chap = e.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0);
-            nodes.push(CNode {
-                kind: "event",
-                id: s(&e, "id"),
-                label: fact.chars().take(14).collect(),
-                meta: format!("第{chap}章 · {}", if revealed { "读者已知" } else { "未揭示·暗线" }),
-                hidden: !revealed,
-                x: col("event"),
-                y: 60. + counts[1] as f32 * (NODE_H + 44.),
-            });
-            counts[1] += 1;
-        }
-        for a in self.handle.aliases() {
-            let canon = s(&a, "canonicalName");
-            let aka = a
-                .get("aliases")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("、"))
-                .unwrap_or_default();
-            nodes.push(CNode {
-                kind: "character",
-                id: format!("A:{canon}"),
-                label: canon,
-                meta: aka,
-                hidden: false,
-                x: col("character"),
-                y: 60. + counts[2] as f32 * (NODE_H + 44.),
-            });
-            counts[2] += 1;
-        }
-        for c in self.handle.clues_full() {
-            let planted = c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0);
-            nodes.push(CNode {
-                kind: "clue",
-                id: s(&c, "id"),
-                label: s(&c, "title"),
-                meta: format!("{} · 埋第{planted}章", s(&c, "status")),
-                hidden: false,
-                x: col("clue"),
-                y: 60. + counts[3] as f32 * (NODE_H + 44.),
-            });
-            counts[3] += 1;
-        }
-        for (title, category, _) in self.handle.canon_docs().into_iter().take(10) {
-            nodes.push(CNode {
-                kind: "canon",
-                id: format!("W:{title}"),
-                label: title,
-                meta: category,
-                hidden: false,
-                x: col("canon"),
-                y: 60. + counts[4] as f32 * (NODE_H + 44.),
-            });
-            counts[4] += 1;
-        }
+        let want_lines = matches!(self.dim, Dim::Overview | Dim::Events);
+        let want_events = !matches!(self.dim, Dim::Canon | Dim::Cast | Dim::Relations);
+        let want_chars = matches!(self.dim, Dim::Overview | Dim::Cast | Dim::Relations);
+        let want_clues = matches!(self.dim, Dim::Overview);
+        let want_canon = matches!(self.dim, Dim::Overview | Dim::Canon);
 
-        // 恢复持久化坐标
-        if let Some(pos) = state.get("pos").and_then(|p| p.as_object()) {
-            for n in nodes.iter_mut() {
-                if let Some(xy) = pos.get(&n.id).and_then(|v| v.as_array()) {
-                    if xy.len() == 2 {
-                        n.x = xy[0].as_f64().unwrap_or(n.x as f64) as f32;
-                        n.y = xy[1].as_f64().unwrap_or(n.y as f64) as f32;
-                    }
-                }
+        if want_lines {
+            for l in self.handle.storylines() {
+                push_col(&mut nodes, &mut counts, "storyline", s(&l, "id"), s(&l, "name"), s(&l, "status"), false);
+            }
+        }
+        if want_events {
+            for e in &ev_all {
+                let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
+                let fact = s(e, "objectiveFact");
+                let chap = e.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0);
+                push_col(
+                    &mut nodes,
+                    &mut counts,
+                    "event",
+                    s(e, "id"),
+                    fact.chars().take(14).collect(),
+                    format!("第{chap}章 · {}", if revealed { "读者已知" } else { "未揭示·暗线" }),
+                    !revealed,
+                );
+            }
+        }
+        if want_chars {
+            for a in &aliases_all {
+                let canon = s(a, "canonicalName");
+                let aka = a
+                    .get("aliases")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("、"))
+                    .unwrap_or_default();
+                push_col(&mut nodes, &mut counts, "character", format!("A:{canon}"), canon, aka, false);
+            }
+        }
+        if want_clues {
+            for c in self.handle.clues_full() {
+                let planted = c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0);
+                push_col(&mut nodes, &mut counts, "clue", s(&c, "id"), s(&c, "title"), format!("{} · 埋第{planted}章", s(&c, "status")), false);
+            }
+        }
+        if want_canon {
+            for (title, category, _) in self.handle.canon_docs().into_iter().take(10) {
+                push_col(&mut nodes, &mut counts, "canon", format!("W:{title}"), title, category, false);
             }
         }
 
-        // 边（数据驱动：事件挂线 / 伏笔埋收 / 事实牵线）
-        let mut edges: Vec<CEdge> = Vec::new();
-        // involve：记忆事实 subject=人名、fromChapter=事件章 → 人物↔事件
-        for f in self.handle.memory_facts() {
-            let subj = s(&f, "subject");
-            let ch = f.get("fromChapter").and_then(|v| v.as_u64());
-            let Some(ci) = nodes.iter().position(|n| n.kind == "character" && n.label == subj) else { continue };
-            for e in self.handle.events() {
-                if e.get("chapter").and_then(|v| v.as_u64()) == ch {
-                    if let Some(ei) = nodes.iter().position(|n| n.id == s(&e, "id")) {
-                        let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
-                        let has = edges.iter().any(|x| (x.from == ci && x.to == ei) || (x.from == ei && x.to == ci));
-                        if !has {
-                            edges.push(CEdge { from: ci, to: ei, kind: "involve", hidden: !revealed && f.get("publicToReader").and_then(|p| p.as_bool()) == Some(false) });
+        // —— 分维边与专布局 ——
+        match self.dim {
+            Dim::Overview | Dim::Events | Dim::Cast => {
+                // 线→事件
+                for e in &ev_all {
+                    let eid = s(e, "id");
+                    let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
+                    if let Some(sids) = e.get("storylineIDs").and_then(|x| x.as_array()).cloned() {
+                        for sid in sids.iter().filter_map(|x| x.as_str()) {
+                            if let (Some(fi), Some(ti)) = (
+                                nodes.iter().position(|n| n.id == sid),
+                                nodes.iter().position(|n| n.id == eid),
+                            ) {
+                                edges.push(CEdge { from: fi, to: ti, kind: "influence", hidden: !revealed, label: String::new() });
+                            }
+                        }
+                    }
+                }
+                if matches!(self.dim, Dim::Overview) {
+                    // 伏笔埋/收
+                    for c in self.handle.clues_full() {
+                        let cid = s(&c, "id");
+                        let planted = c.get("plantedChapter").and_then(|v| v.as_u64());
+                        let last = c.get("lastActionChapter").and_then(|v| v.as_u64());
+                        let status = s(&c, "status");
+                        for e in &ev_all {
+                            let ch = e.get("chapter").and_then(|v| v.as_u64());
+                            let eid = s(e, "id");
+                            if let (Some(ci), Some(ei)) = (
+                                nodes.iter().position(|n| n.id == cid),
+                                nodes.iter().position(|n| n.id == eid),
+                            ) {
+                                if planted.is_some() && planted == ch {
+                                    edges.push(CEdge { from: ci, to: ei, kind: "plant", hidden: false, label: String::new() });
+                                }
+                                if status == "已兑现" && last.is_some() && last == ch {
+                                    edges.push(CEdge { from: ei, to: ci, kind: "payoff", hidden: false, label: String::new() });
+                                }
+                            }
+                        }
+                    }
+                }
+                // 人物↔事件（facts subject×chapter）
+                if matches!(self.dim, Dim::Overview | Dim::Cast) {
+                    for f in &facts {
+                        let subj = s(f, "subject");
+                        let Some(canon) = resolve(&subj) else { continue };
+                        let ch = f.get("fromChapter").and_then(|v| v.as_u64());
+                        let Some(ci) = nodes.iter().position(|n| n.kind == "character" && n.label == canon) else { continue };
+                        for e in &ev_all {
+                            if e.get("chapter").and_then(|v| v.as_u64()) == ch {
+                                if let Some(ei) = nodes.iter().position(|n| n.id == s(e, "id")) {
+                                    let has = edges.iter().any(|x| (x.from == ci && x.to == ei) || (x.from == ei && x.to == ci));
+                                    let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
+                                    if !has {
+                                        edges.push(CEdge {
+                                            from: ci,
+                                            to: ei,
+                                            kind: "involve",
+                                            hidden: !revealed,
+                                            label: s(f, "predicate"),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Dim::Canon => {
+                // 设定网格 + facts.object 命中标题 → 人物牵设定
+                let titles: Vec<String> = nodes.iter().filter(|n| n.kind == "canon").map(|n| n.label.clone()).collect();
+                for f in &facts {
+                    let obj = s(f, "object");
+                    let Some(hit) = titles.iter().find(|t| !t.is_empty() && (obj == **t || obj.contains(t.as_str()) || t.contains(&obj))).cloned() else { continue };
+                    let Some(wi) = nodes.iter().position(|n| n.kind == "canon" && n.label == hit) else { continue };
+                    let subj_canon = resolve(&s(f, "subject"));
+                    let from = subj_canon
+                        .as_ref()
+                        .and_then(|c| nodes.iter().position(|n| n.kind == "canon" && n.label == *c));
+                    // 主体不是设定则连「事件锚」跳过；网内只留设定↔设定（人名不建节点）
+                    if let Some(fi) = from {
+                        if fi != wi {
+                            let has = edges.iter().any(|x| (x.from == fi && x.to == wi) || (x.from == wi && x.to == fi));
+                            if !has {
+                                edges.push(CEdge { from: fi, to: wi, kind: "influence", hidden: false, label: s(f, "predicate") });
+                            }
+                        }
+                    }
+                }
+                // 网格布局（4 列）
+                let mut ci = 0usize;
+                for n in nodes.iter_mut() {
+                    n.x = 50. + (ci % 4) as f32 * 210.;
+                    n.y = 60. + (ci / 4) as f32 * (NODE_H + 44.);
+                    ci += 1;
+                }
+            }
+            Dim::Relations => {
+                // 人名↔人名谓词边（两端均经别名表归一）
+                for f in &facts {
+                    let Some(a) = resolve(&s(f, "subject")) else { continue };
+                    let Some(b) = resolve(&s(f, "object")) else { continue };
+                    if a == b {
+                        continue;
+                    }
+                    let (Some(fi), Some(ti)) = (
+                        nodes.iter().position(|n| n.kind == "character" && n.label == a),
+                        nodes.iter().position(|n| n.kind == "character" && n.label == b),
+                    ) else {
+                        continue;
+                    };
+                    let pred = s(f, "predicate");
+                    let has = edges.iter().any(|x| x.from == fi && x.to == ti && x.label == pred);
+                    if !has {
+                        edges.push(CEdge { from: fi, to: ti, kind: "influence", hidden: false, label: pred });
+                    }
+                }
+                // 中心辐射：出度最大者居中，其余圆周
+                let n_count = nodes.len().max(1);
+                let mut best = 0usize;
+                let mut best_deg = -1isize;
+                for i in 0..n_count {
+                    let deg = edges.iter().filter(|e| e.from == i || e.to == i).count() as isize;
+                    if deg > best_deg {
+                        best_deg = deg;
+                        best = i;
+                    }
+                }
+                let cx = 320f32;
+                let cy = 300f32;
+                let mut ring = 0usize;
+                for i in 0..n_count {
+                    if i == best {
+                        nodes[i].x = cx - NODE_W / 2.;
+                        nodes[i].y = cy - NODE_H / 2.;
+                    } else {
+                        let step = std::f32::consts::TAU / (n_count - 1).max(2) as f32;
+                        let ang = step * ring as f32 - std::f32::consts::FRAC_PI_2;
+                        nodes[i].x = cx + 220. * ang.cos() - NODE_W / 2.;
+                        nodes[i].y = cy + 190. * ang.sin() - NODE_H / 2.;
+                        ring += 1;
+                    }
+                }
+            }
+            Dim::Timeline => {
+                // 章序时间线：横向折行 + 顺序链
+                nodes.sort_by(|a, b| {
+                    let ca = ev_all.iter().find(|e| s(e, "id") == a.id).and_then(|e| e.get("chapter")).and_then(|v| v.as_u64()).unwrap_or(0);
+                    let cb = ev_all.iter().find(|e| s(e, "id") == b.id).and_then(|e| e.get("chapter")).and_then(|v| v.as_u64()).unwrap_or(0);
+                    ca.cmp(&cb)
+                });
+                for (i, n) in nodes.iter_mut().enumerate() {
+                    n.x = 50. + (i % 7) as f32 * 190.;
+                    n.y = 60. + (i / 7) as f32 * (NODE_H + 52.);
+                }
+                for i in 0..nodes.len().saturating_sub(1) {
+                    edges.push(CEdge { from: i, to: i + 1, kind: "influence", hidden: false, label: String::new() });
+                }
+            }
+            Dim::Turns => {
+                // 事件主循环已建列；此处只加档案卡拐点节点与红边
+                let dossiers = self.handle.read_array("dossiers.json");
+                let mut twist_i = 0usize;
+                for d in &dossiers {
+                    let chap = d.get("chapter").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let turns = d.get("turns").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    for (ti, t) in turns.iter().enumerate() {
+                        let Some(txt) = t.as_str() else { continue };
+                        let node_i = nodes.len();
+                        nodes.push(CNode {
+                            id: format!("D{chap}T{ti}"),
+                            kind: "twist",
+                            label: txt.chars().take(16).collect(),
+                            meta: format!("第{chap}章 拐点"),
+                            hidden: false,
+                            x: 480.,
+                            y: 60. + twist_i as f32 * (NODE_H + 44.),
+                        });
+                        twist_i += 1;
+                        // 连该章事件（含该章所有事件）
+                        for e in &ev_all {
+                            if e.get("chapter").and_then(|v| v.as_u64()) != Some(chap) {
+                                continue;
+                            }
+                            let eid = s(e, "id");
+                            if let Some(ei) = nodes.iter().position(|n| n.kind == "event" && n.id == eid) {
+                                edges.push(CEdge { from: node_i, to: ei, kind: "conflict", hidden: false, label: "转折于".into() });
+                            }
                         }
                     }
                 }
             }
         }
-        for e in self.handle.events() {
-            let eid = s(&e, "id");
-            let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
-            if let Some(sids) = e.get("storylineIDs").and_then(|x| x.as_array()).cloned() {
-                for sid in sids.iter().filter_map(|x| x.as_str()) {
-                    if let (Some(fi), Some(ti)) = (
-                        nodes.iter().position(|n| n.id == sid),
-                        nodes.iter().position(|n| n.id == eid),
-                    ) {
-                        edges.push(CEdge { from: fi, to: ti, kind: "influence", hidden: !revealed });
-                    }
-                }
-            }
-        }
-        for c in self.handle.clues_full() {
-            let cid = s(&c, "id");
-            let planted = c.get("plantedChapter").and_then(|v| v.as_u64());
-            let last = c.get("lastActionChapter").and_then(|v| v.as_u64());
-            let status = s(&c, "status");
-            for e in self.handle.events() {
-                let ch = e.get("chapter").and_then(|v| v.as_u64());
-                let eid = s(&e, "id");
-                if let (Some(ci), Some(ei)) = (
-                    nodes.iter().position(|n| n.id == cid),
-                    nodes.iter().position(|n| n.id == eid),
-                ) {
-                    if planted.is_some() && planted == ch {
-                        edges.push(CEdge { from: ci, to: ei, kind: "plant", hidden: false });
-                    }
-                    if status == "已兑现" && last.is_some() && last == ch {
-                        edges.push(CEdge { from: ei, to: ci, kind: "payoff", hidden: false });
+
+        // 恢复持久化坐标（dim:id 键）
+        if let Some(pos) = state.get("pos").and_then(|p| p.as_object()) {
+            let dk = dimkey();
+            for n in nodes.iter_mut() {
+                let key = format!("{dk}:{}", n.id);
+                if let Some(xy) = pos.get(&key).and_then(|v| v.as_array()) {
+                    if xy.len() == 2 {
+                        n.x = xy[0].as_f64().unwrap_or(n.x as f64) as f32;
+                        n.y = xy[1].as_f64().unwrap_or(n.y as f64) as f32;
                     }
                 }
             }
@@ -266,9 +457,24 @@ impl CanvasPanel {
     }
 
     fn save_state(&self) {
+        let dimkey = match self.dim {
+            Dim::Overview => "ov",
+            Dim::Canon => "ca",
+            Dim::Cast => "ch",
+            Dim::Relations => "rl",
+            Dim::Timeline => "tl",
+            Dim::Events => "ev",
+            Dim::Turns => "tr",
+        };
         let mut pos = serde_json::Map::new();
+        // 合并旧值：只覆盖本维键，别的维位置保留
+        if let Some(old) = self.handle.canvas_state().get("pos").and_then(|p| p.as_object()) {
+            for (k, v) in old {
+                pos.insert(k.clone(), v.clone());
+            }
+        }
         for n in &self.nodes {
-            pos.insert(n.id.clone(), serde_json::json!([n.x, n.y]));
+            pos.insert(format!("{dimkey}:{}", n.id), serde_json::json!([n.x, n.y]));
         }
         let v = serde_json::json!({
             "view": { "x": self.view.0, "y": self.view.1, "k": self.view.2 },
@@ -297,16 +503,34 @@ impl CanvasPanel {
             } else {
                 continue;
             };
-            let kind = match e.kind {
-                "plant" => "埋设",
-                "payoff" => "兑现",
-                "involve" => "牵涉",
-                _ => "影响",
+            let kind = if !e.label.is_empty() {
+                e.label.clone()
+            } else {
+                match e.kind {
+                    "plant" => "埋设".to_string(),
+                    "payoff" => "兑现".to_string(),
+                    "involve" => "牵涉".to_string(),
+                    "conflict" => "转折".to_string(),
+                    _ => "影响".to_string(),
+                }
             };
             out.push((format!("{kind}{dir}{}", if e.hidden { "·暗" } else { "" }), name));
         }
         out.truncate(12);
         out
+    }
+
+    /// 切换画布维度：先存当前维视图态再重建（pos 键按维隔离）
+    fn set_dim(&mut self, d: Dim, cx: &mut Context<Self>) {
+        if d == self.dim {
+            return;
+        }
+        self.save_state();
+        self.dim = d;
+        self.view = (0., 0., 1.);
+        self.refresh();
+        self.save_state();
+        cx.notify();
     }
 
     fn zoom(&mut self, f: f32, cx: &mut Context<Self>) {
@@ -408,6 +632,7 @@ impl Render for CanvasPanel {
                 "event" => theme::BLUE(),
                 "character" => theme::GREEN(),
                 "clue" => theme::AMBER(),
+                "twist" => theme::RED(),
                 _ => theme::PURPLE(),
             };
             let node = div()
@@ -679,7 +904,28 @@ impl Render for CanvasPanel {
                 )
             });
 
-        stage.child(side).child(bar)
+        // 维度页签（织网镜头切换）
+        let tabs = div()
+            .absolute()
+            .left(theme::PAD_LG)
+            .bottom(theme::PAD_LG)
+            .flex()
+            .items_center()
+            .gap(theme::GAP_XS)
+            .p(theme::GAP_XS)
+            .rounded(theme::RADIUS_CARD)
+            .border_1()
+            .border_color(theme::LINE())
+            .bg(theme::PANEL())
+            .children(DIMS.iter().map(|(d, name)| {
+                let on = self.dim == *d;
+                let dd = *d;
+                let b = Button::new(SharedString::from(format!("dim-{name}"))).xsmall().label(*name);
+                let b = if on { b.primary() } else { b };
+                b.on_click(cx.listener(move |this, _, _, cx| this.set_dim(dd, cx)))
+            }));
+
+        stage.child(side).child(bar).child(tabs)
     }
 }
 
@@ -708,6 +954,8 @@ impl ComponentPanel for CanvasPanel {
 #[derive(Debug, Clone)]
 pub enum OracleEvent {
     Simulate { premise: String, fork: u32 },
+    /// 预测续写（M8）：fork 自动=最新成稿下一章，AI 按大纲/成稿向前织
+    Forecast,
     /// 晋升成功：宿主刷新收件箱/轨迹
     Promoted { worldline: String, proposal_id: String },
 }
@@ -761,13 +1009,46 @@ impl Focusable for OraclePanel {
 
 impl Render for OraclePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let lines = self.handle.worldlines();
+        let mut lines = self.handle.worldlines();
+        // M8 双态分组：α 固化基准 → 预测线（往哪织）→ 假设线（如果改）
+        lines.sort_by_key(|w| {
+            let id = s(w, "id");
+            if id == "α" {
+                0
+            } else if s(w, "kind") == "forecast" {
+                1
+            } else {
+                2
+            }
+        });
 
-        // —— 左列：世界线列表 ——
+        // —— 左列：世界线列表（分组） ——
         let mut list: Vec<AnyElement> = Vec::new();
+        let mut sect_now = String::new();
         for w in &lines {
             let id = s(w, "id");
             let is_alpha = id == "α";
+            if !is_alpha {
+                let kind0 = s(w, "kind");
+                let (sect, color) = if kind0 == "forecast" {
+                    ("预测线 · 往哪织（按大纲/成稿向前推演）", theme::GREEN())
+                } else {
+                    ("假设线 · 如果改（what-if 推演）", theme::AMBER())
+                };
+                if sect_now != sect {
+                    sect_now = sect.to_string();
+                    list.push(
+                        div()
+                            .pt(theme::GAP_MD)
+                            .pb(theme::GAP_XS)
+                            .text_size(theme::FONT_TAG)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(color)
+                            .child(SharedString::from(sect))
+                            .into_any_element(),
+                    );
+                }
+            }
             let name = s(w, "name");
             let premise = s(w, "premise");
             let status = s(w, "status");
@@ -824,7 +1105,11 @@ impl Render for OraclePanel {
                             .line_height(relative(1.45))
                             .text_color(theme::DIM())
                             .child(SharedString::from(if is_alpha {
-                                "当前事实基准 · 只读".to_string()
+                                let happened = self.handle.events().iter().filter(|e| e.get("happened").and_then(|v| v.as_bool()).unwrap_or(true)).count();
+                                let written = self.handle.chapters().iter().filter(|c| c.has_prose).count();
+                                let done = self.handle.clues_full().iter().filter(|c| s(c, "status") == "已兑现").count();
+                                let allc = self.handle.clues_full().len();
+                                format!("已固化织实：成稿 {written} 章 · 定事 {happened} · 伏笔兑现 {done}/{allc}（只读）")
                             } else {
                                 premise.chars().take(60).collect::<String>()
                             })),
@@ -1044,7 +1329,7 @@ impl Render for OraclePanel {
                         Button::new("oracle-run")
                             .primary()
                             .xsmall()
-                            .label("开线推演")
+                            .label("假设推演")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let p = this.premise.read(cx).value().trim().to_string();
                                 if p.is_empty() {
@@ -1061,6 +1346,16 @@ impl Render for OraclePanel {
                                     .unwrap_or(0);
                                 cx.emit(OracleEvent::Simulate { premise: p, fork: f });
                                 this.message = Some("已交给 AI 推演（右侧轨迹窗可见全程）".into());
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("oracle-forecast")
+                            .xsmall()
+                            .label("预测续写")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.emit(OracleEvent::Forecast);
+                                this.message = Some("预测线已交给 AI：fork 自动取最新成稿下一章（轨迹窗可见）".into());
                                 cx.notify();
                             })),
                     ),
