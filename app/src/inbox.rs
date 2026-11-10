@@ -386,8 +386,35 @@ fn obj_field<'a>(o: &'a serde_json::Map<String, Value>, key: &str) -> &'a str {
     o.get(key).and_then(|x| x.as_str()).unwrap_or("")
 }
 
-fn arr<'a>(v: &'a Value, key: &str) -> &'a [Value] {
-    v.get(key).and_then(|x| x.as_array()).map(|a| a.as_slice()).unwrap_or(&[])
+/// 取数组：支持直接数组与旧版（Swift 时代）`{"_0":[…],"_1":[…]}` 索引包裹。
+fn arr<'a>(v: &'a Value, key: &str) -> Vec<&'a Value> {
+    match v.get(key) {
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(Value::Object(o)) => {
+            let mut keys: Vec<&String> = o.keys().collect();
+            keys.sort_by_key(|k| k.trim_start_matches('_').parse::<usize>().unwrap_or(usize::MAX));
+            let mut out = Vec::new();
+            for k in keys {
+                if let Some(inner) = o.get(k).and_then(|x| x.as_array()) {
+                    out.extend(inner.iter());
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// 旧版（Swift）payload 的数组键不同：fixes→clueFixes、updates→outlineUpdates。
+/// 按优先顺序取第一个非空数组，兼容包裹解码。
+fn arr_any<'a>(v: &'a Value, keys: &[&str]) -> Vec<&'a Value> {
+    for k in keys {
+        let a = arr(v, k);
+        if !a.is_empty() {
+            return a;
+        }
+    }
+    Vec::new()
 }
 
 /// 数组条目可能是字符串，也可能是带 text/summary/title 的对象（dossier 的 advanced/turns）。
@@ -602,7 +629,7 @@ fn payload_basis(payload: &Value) -> Vec<BasisItem> {
             push_ref_value(v, "来源", &mut out);
         }
     }
-    for key in ["docs", "clues", "items", "beats", "suggestions", "findings", "facts", "fixes", "updates"] {
+    for key in ["docs", "clues", "items", "beats", "suggestions", "findings", "facts", "fixes", "clueFixes", "updates", "outlineUpdates"] {
         for item in arr(payload, key) {
             for ref_key in REF_KEYS {
                 if let Some(v) = item.get(ref_key) {
@@ -624,7 +651,7 @@ fn payload_basis(payload: &Value) -> Vec<BasisItem> {
 
 /// 既有字段推导：这些字段本身就是「指向既有材料」的坐标或原文。
 fn derived_basis(payload: &Value, out: &mut Vec<BasisItem>) {
-    match field(payload, "kind") {
+    match crate::store::payload_kind(payload).as_str() {
         "report" => {
             for f in arr(payload, "findings") {
                 let loc = field(f, "location");
@@ -649,7 +676,7 @@ fn derived_basis(payload: &Value, out: &mut Vec<BasisItem>) {
             }
         }
         "clueFixes" => {
-            for fx in arr(payload, "fixes") {
+            for fx in arr_any(payload, &["fixes", "clueFixes"]) {
                 let id = field(fx, "clueID");
                 if id.is_empty() {
                     continue;
@@ -662,7 +689,7 @@ fn derived_basis(payload: &Value, out: &mut Vec<BasisItem>) {
             }
         }
         "outlineUpdates" => {
-            for u in arr(payload, "updates") {
+            for u in arr_any(payload, &["updates", "outlineUpdates"]) {
                 let id = field(u, "storylineID");
                 if id.is_empty() {
                     continue;
@@ -741,12 +768,12 @@ fn default_unit(kind: &str) -> &'static str {
 
 /// payload → 可渲染的条目预览。未知类型退化为原始 payload（不猜结构）。
 fn payload_preview(payload: &Value, expanded: bool) -> PayloadPreview {
-    let kind = field(payload, "kind");
+    let kind = crate::store::payload_kind(payload);
     let limit = if expanded { PREVIEW_ITEMS_EXPANDED } else { PREVIEW_ITEMS_COLLAPSED };
     let max = if expanded { PREVIEW_CHARS_EXPANDED } else { PREVIEW_CHARS_COLLAPSED };
-    let mut out = PayloadPreview::new(default_unit(kind));
+    let mut out = PayloadPreview::new(default_unit(&kind));
 
-    match kind {
+    match kind.as_str() {
         "canon" => {
             let docs = arr(payload, "docs");
             out.total = docs.len();
@@ -910,6 +937,7 @@ fn payload_preview(payload: &Value, expanded: bool) -> PayloadPreview {
                 out.clipped |= items.len() > shown;
                 let joined = items
                     .iter()
+                    .copied()
                     .take(shown)
                     .filter_map(value_text)
                     .collect::<Vec<_>>()
@@ -920,7 +948,7 @@ fn payload_preview(payload: &Value, expanded: bool) -> PayloadPreview {
             out.total = out.lines.len().max(1);
         }
         "clueFixes" => {
-            let fixes = arr(payload, "fixes");
+            let fixes = arr_any(payload, &["fixes", "clueFixes"]);
             out.total = fixes.len();
             for fx in fixes.iter().take(limit) {
                 let mut line = format!("{} · {}", field(fx, "clueID"), field(fx, "kind"));
@@ -936,7 +964,7 @@ fn payload_preview(payload: &Value, expanded: bool) -> PayloadPreview {
             }
         }
         "outlineUpdates" => {
-            let updates = arr(payload, "updates");
+            let updates = arr_any(payload, &["updates", "outlineUpdates"]);
             out.total = updates.len();
             for u in updates.iter().take(limit) {
                 let status = field(u, "status");
@@ -985,7 +1013,7 @@ fn payload_effect(payload: &Value) -> (String, String, Option<String>) {
 
 /// 多条目提案的实际采纳粒度（apply_payload 以提案为单位，不拆条目）。
 fn payload_unit(payload: &Value) -> Option<String> {
-    let n = match field(payload, "kind") {
+    let n = match crate::store::payload_kind(payload).as_str() {
         "canon" => arr(payload, "docs").len(),
         "clues" => arr(payload, "clues").len(),
         "canonClassify" | "canonRevise" => arr(payload, "items").len(),
@@ -993,8 +1021,8 @@ fn payload_unit(payload: &Value) -> Option<String> {
         "report" => arr(payload, "findings").len(),
         "deslop" => arr(payload, "suggestions").len(),
         "memoryPack" => arr(payload, "facts").len(),
-        "clueFixes" => arr(payload, "fixes").len(),
-        "outlineUpdates" => arr(payload, "updates").len(),
+        "clueFixes" => arr_any(payload, &["fixes", "clueFixes"]).len(),
+        "outlineUpdates" => arr_any(payload, &["updates", "outlineUpdates"]).len(),
         _ => 1,
     };
     if n > 1 {
@@ -1006,7 +1034,7 @@ fn payload_unit(payload: &Value) -> Option<String> {
 
 fn effect_of(payload: &Value) -> (String, String) {
     let ch = chapter_of(payload);
-    match field(payload, "kind") {
+    match crate::store::payload_kind(payload).as_str() {
         "canon" => (
             "设定库（同题不覆盖）".into(),
             "同题跳过；新增篇可直接删除".into(),
@@ -1220,8 +1248,8 @@ fn pending_card(
     let preview = if expanded { payload_preview(&p.payload, true) } else { collapsed };
     let basis = payload_basis(&p.payload);
     let effect = payload_effect(&p.payload);
-    let kind = field(&p.payload, "kind");
-    let kind = if kind.is_empty() { "?" } else { kind };
+    let kind = crate::store::payload_kind(&p.payload);
+    let kind = if kind.is_empty() { "?".to_string() } else { kind };
     let summary = summarize_payload(&p.payload);
 
     let mut card = div()
@@ -1705,9 +1733,21 @@ impl Render for InboxPanel {
 }
 
 fn summarize_payload(payload: &Value) -> String {
-    let kind = field(payload, "kind");
-    let n = |key: &str| arr(payload, key).len();
-    match kind {
+    let kind = crate::store::payload_kind(payload);
+    let n = |key: &str| {
+        // 旧版键名兼容：fixes→clueFixes、updates→outlineUpdates
+        let legacy = match key {
+            "fixes" => "clueFixes",
+            "updates" => "outlineUpdates",
+            _ => "",
+        };
+        if legacy.is_empty() {
+            arr(payload, key).len()
+        } else {
+            arr_any(payload, &[key, legacy]).len()
+        }
+    };
+    match kind.as_str() {
         "canon" => format!("{} 篇设定文档（同题不覆盖）", n("docs")),
         "clues" => format!("{} 条伏笔（同 id 合并）", n("clues")),
         "canonClassify" => format!("{} 篇归类/改名", n("items")),

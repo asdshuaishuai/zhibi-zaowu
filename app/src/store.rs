@@ -656,6 +656,51 @@ mod tests {
     }
 
     #[test]
+    fn legacy_payload_without_kind() {
+        let home = temp_home("legacy");
+        unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("旧格式").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        std::fs::write(dir.join("clues.json"), serde_json::to_string(&serde_json::json!([
+            { "id": "F01", "title": "虎符", "status": "埋下", "plantedChapter": 1 }
+        ])).unwrap()).unwrap();
+        // Swift 时代 payload：没有 kind，键即类型
+        // 旧版真实形状：{"_0":[…]} 包裹 + action/evidence/newTargetChapter 字段
+        let legacy = serde_json::json!({ "clueFixes": { "_0": [{ "clueID": "F01", "kind": "回收", "action": "第3章兑现" }] } });
+        assert_eq!(payload_kind(&legacy), "clueFixes");
+        let res = h.apply_payload(&legacy);
+        if let Err(e) = &res { eprintln!("LEGACY-ERR: {e}"); }
+        let (applied, _) = res.unwrap();
+        assert_eq!(applied, 1);
+        assert_eq!(h.clues_full()[0]["status"], serde_json::json!("已兑现"));
+        // 推断顺序：clueFixes 先于 clues；docs→canon；items 带 category→canonClassify
+        assert_eq!(payload_kind(&serde_json::json!({"clueFixes": [], "clues": []})), "clueFixes");
+        assert_eq!(payload_kind(&serde_json::json!({"docs": []})), "canon");
+        assert_eq!(payload_kind(&serde_json::json!({"items": [{"title":"x","category":"世界观"}]})), "canonClassify");
+        assert_eq!(payload_kind(&serde_json::json!({"items": [{"title":"x","content":"y"}]})), "canonRevise");
+
+        // 旧版事件级大纲同步：{"outlineUpdates":{"_0":[…eventID+kind+newChapter…]}}
+        std::fs::write(dir.join("events.json"), serde_json::to_string(&serde_json::json!([
+            { "id": "E01", "chapter": 1, "objectiveFact": "捡刀", "revealed": false, "happened": false }
+        ])).unwrap()).unwrap();
+        let sync = serde_json::json!({ "outlineUpdates": { "_0": [
+            { "eventID": "E01", "kind": "事件已发生", "evidence": "第1章正文命中" },
+            { "eventID": "E01", "kind": "事件改期", "newChapter": 5, "evidence": "计划3实际5" },
+            { "eventID": "E01", "kind": "读者已知", "newChapter": 6, "reason": "章末钩子已交给读者" }
+        ] } });
+        assert_eq!(payload_kind(&sync), "outlineUpdates");
+        let (n, _) = h.apply_payload(&sync).unwrap();
+        assert_eq!(n, 3);
+        let ev = h.events();
+        assert_eq!(ev[0]["happened"], serde_json::json!(true));
+        assert_eq!(ev[0]["chapter"], serde_json::json!(6));
+        assert_eq!(ev[0]["revealed"], serde_json::json!(true));
+        assert_eq!(ev[0]["readerKnowledge"], serde_json::json!("章末钩子已交给读者"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn worldline_promote_chain() {
         let (home, _guard) = use_home("m7");
         let dir = create_project("世界线测试").unwrap();
@@ -1021,6 +1066,71 @@ fn default_status() -> String {
     "待确认".into()
 }
 
+/// 提案 payload 的 kind：显式字段优先；旧版（Swift 时代）payload 没有 kind 字段，
+/// 按键签名推断——老项目提案也能预览与采纳（双端同语义）。
+pub fn payload_kind(payload: &serde_json::Value) -> String {
+    if let Some(k) = payload.get("kind").and_then(|k| k.as_str()) {
+        if !k.is_empty() {
+            return k.to_string();
+        }
+    }
+    // 顺序敏感：clueFixes 先于 clues；docs 先于 items
+    for (key, kind) in [
+        ("clueFixes", "clueFixes"),
+        ("clues", "clues"),
+        ("docs", "canon"),
+        ("beats", "skeleton"),
+        ("findings", "report"),
+        ("suggestions", "deslop"),
+        ("facts", "memoryPack"),
+        ("aliases", "aliases"),
+        ("updates", "outlineUpdates"),
+        ("outlineUpdates", "outlineUpdates"),
+        ("headline", "dossier"),
+        ("scenes", "dossier"),
+        ("relics", "dossier"),
+    ] {
+        if payload.get(key).is_some() {
+            return kind.to_string();
+        }
+    }
+    if let Some(items) = payload.get("items").and_then(|v| v.as_array()) {
+        if items.iter().any(|i| i.get("category").is_some()) {
+            return "canonClassify".to_string();
+        }
+        return "canonRevise".to_string();
+    }
+    if payload.get("text").is_some() {
+        return "draft".to_string();
+    }
+    String::new()
+}
+
+/// 取数组：显式 kind 下为直接数组；旧版（Swift）payload 是 `{"_0":[…],"_1":[…]}` 包装。
+/// 两种都认，返回扁平数组；keys 按优先顺序尝试。
+fn payload_array(payload: &serde_json::Value, keys: &[&str]) -> Vec<serde_json::Value> {
+    for key in keys {
+        let Some(v) = payload.get(*key) else { continue };
+        if let Some(arr) = v.as_array() {
+            return arr.clone();
+        }
+        if let Some(obj) = v.as_object() {
+            let mut ks: Vec<&String> = obj.keys().collect();
+            ks.sort_by_key(|k| k.trim_start_matches('_').parse::<usize>().unwrap_or(usize::MAX));
+            let mut out = Vec::new();
+            for k in ks {
+                if let Some(arr) = obj.get(k).and_then(|x| x.as_array()) {
+                    out.extend(arr.iter().cloned());
+                }
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+    }
+    Vec::new()
+}
+
 impl ProjectHandle {
     /// 宽松读取（UI 展示）：坏 JSON 当空。写路径一律用 proposals_checked。
     pub fn proposals(&self) -> Vec<Proposal> {
@@ -1084,7 +1194,8 @@ impl ProjectHandle {
     }
 
     fn apply_payload(&self, payload: &serde_json::Value) -> Result<(usize, Vec<String>), String> {
-        let kind = payload.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        let kind = payload_kind(payload);
+        let kind = kind.as_str();
         let mut applied = 0usize;
         let mut skipped: Vec<String> = Vec::new();
         match kind {
@@ -1210,9 +1321,64 @@ impl ProjectHandle {
                 applied += 1;
             }
             "outlineUpdates" => {
-                let updates = payload.get("updates").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+                let updates = payload_array(payload, &["updates", "outlineUpdates"]);
                 let mut lines = self.read_array_checked("storylines.json")?;
+                // 旧版（Swift）同步条目是事件级：eventID + kind（事件已发生/事件改期/读者已知）+ newChapter
+                let mut events = self.events();
+                let mut events_dirty = false;
+                for u in &updates {
+                    let Some(eid) = u.get("eventID").and_then(|v| v.as_str()) else { continue };
+                    let k = u.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    let new_ch = u.get("newChapter").and_then(|v| v.as_u64());
+                    let reason = u.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+                    let Some(pos) = events.iter().position(|e| e.get("id").and_then(|i| i.as_str()) == Some(eid)) else {
+                        skipped.push(format!("事件 {eid} 不存在"));
+                        continue;
+                    };
+                    let ok = match k {
+                        "事件已发生" => {
+                            if let Some(obj) = events[pos].as_object_mut() {
+                                obj.insert("happened".into(), serde_json::json!(true));
+                                if let Some(ch) = new_ch { obj.insert("chapter".into(), serde_json::json!(ch)); }
+                            }
+                            true
+                        }
+                        "事件改期" => {
+                            if let Some(ch) = new_ch {
+                                if let Some(obj) = events[pos].as_object_mut() {
+                                    obj.insert("chapter".into(), serde_json::json!(ch));
+                                }
+                                true
+                            } else {
+                                skipped.push(format!("事件 {eid} 改期缺 newChapter"));
+                                false
+                            }
+                        }
+                        "读者已知" => {
+                            if let Some(obj) = events[pos].as_object_mut() {
+                                obj.insert("revealed".into(), serde_json::json!(true));
+                                if !reason.is_empty() {
+                                    obj.insert("readerKnowledge".into(), serde_json::json!(reason));
+                                }
+                                if let Some(ch) = new_ch { obj.insert("chapter".into(), serde_json::json!(ch)); }
+                            }
+                            true
+                        }
+                        _ => { skipped.push(format!("事件 {eid} 未知更新类型「{k}」")); false }
+                    };
+                    if ok {
+                        events_dirty = true;
+                        applied += 1;
+                    }
+                }
+                if events_dirty {
+                    self.snapshot_ledger_files(&["events.json"])?;
+                    self.save_array("events.json", &events)?;
+                }
                 for u in updates {
+                    if u.get("eventID").is_some() {
+                        continue;
+                    }
                     let sid = u.get("storylineID").and_then(|i| i.as_str()).unwrap_or("").to_string();
                     if let Some(pos) = lines.iter().position(|l| l.get("id").and_then(|i| i.as_str()) == Some(sid.as_str())) {
                         let l = &mut lines[pos];
@@ -1492,7 +1658,7 @@ impl ProjectHandle {
             }
             "clueFixes" => {
                 // 埋点修复动作落台账（只动 clues.json 与动作日志，不动正文）
-                let fixes = payload.get("fixes").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let fixes = payload_array(payload, &["fixes", "clueFixes"]); // 旧版键 + _0 包裹都认
                 // 动作发生章 = 最近成稿章（有正文的最大章），与 TS writtenChapters 口径一致；
                 // 旧实现取最大章目录，空章目录会把动作章推高。
                 let latest = self.last_written_chapter();
@@ -1500,7 +1666,12 @@ impl ProjectHandle {
                 for fx in fixes {
                     let cid = fx.get("clueID").and_then(|v| v.as_str()).unwrap_or("");
                     let k = fx.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                    let detail = fx.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+                    let detail = fx
+                        .get("detail")
+                        .or_else(|| fx.get("action"))
+                        .or_else(|| fx.get("evidence"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let Some(pos) = clues.iter().position(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid)) else {
                         skipped.push(format!("{cid} 不在台账（补登记类请先走伏笔盘点提案）"));
                         continue;
@@ -1508,7 +1679,7 @@ impl ProjectHandle {
                     // 补埋/改期必须真正改埋设章；目标章优先取显式字段，其次从 detail 解析
                     // 「最后一个第N章」（「由第3章改到第9章」→ 9，不能写首个数 3）。
                     // 解析不到就跳过，不能只写一条日志假装已修。
-                    let explicit = ["plantedChapter", "chapter", "toChapter"]
+                    let explicit = ["plantedChapter", "newTargetChapter", "chapter", "toChapter"]
                         .iter()
                         .find_map(|key| fx.get(*key).and_then(chapter_value));
                     let target_chapter = explicit.or_else(|| {

@@ -815,6 +815,58 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
 
 // —— 提案落库（与执笔 Swift applyPayloadDetailed 语义一致） ——
 
+/** payload 的 kind：显式字段优先；旧版（Swift 时代）payload 无 kind，按键签名推断（与 Rust 同序）。 */
+/** 取数组：直接数组或旧版 `{"_0":[…]}` 包裹；keys 按优先序（与 Rust payload_array 同语义）。 */
+function payloadArray(payload: Record<string, unknown>, keys: string[]): any[] {
+  for (const key of keys) {
+    const v = payload[key]
+    if (Array.isArray(v)) return v
+    if (v && typeof v === 'object') {
+      const obj = v as Record<string, unknown>
+      const ks = Object.keys(obj).sort((a, b) => {
+        const na = Number(a.replace(/^_/, '')), nb = Number(b.replace(/^_/, ''))
+        return (Number.isNaN(na) ? Number.MAX_SAFE_INTEGER : na) - (Number.isNaN(nb) ? Number.MAX_SAFE_INTEGER : nb)
+      })
+      const out: any[] = []
+      for (const k of ks) {
+        const arr = obj[k]
+        if (Array.isArray(arr)) out.push(...arr)
+      }
+      if (out.length > 0) return out
+    }
+  }
+  return []
+}
+
+function payloadKind(payload: Record<string, unknown>): string {
+  const explicit = payload['kind']
+  if (typeof explicit === 'string' && explicit.length > 0) return explicit
+  const order: Array<[string, string]> = [
+    ['clueFixes', 'clueFixes'],
+    ['clues', 'clues'],
+    ['docs', 'canon'],
+    ['beats', 'skeleton'],
+    ['findings', 'report'],
+    ['suggestions', 'deslop'],
+    ['facts', 'memoryPack'],
+    ['aliases', 'aliases'],
+    ['updates', 'outlineUpdates'],
+    ['outlineUpdates', 'outlineUpdates'],
+    ['headline', 'dossier'],
+    ['scenes', 'dossier'],
+    ['relics', 'dossier'],
+  ]
+  for (const [k, kind] of order) {
+    if (payload[k] !== undefined) return kind
+  }
+  if (Array.isArray(payload['items'])) {
+    const items = payload['items'] as any[]
+    return items.some((i) => i && typeof i === 'object' && 'category' in i) ? 'canonClassify' : 'canonRevise'
+  }
+  if (payload['text'] !== undefined) return 'draft'
+  return ''
+}
+
 type ApplyResult = { applied: number; message: string }
 
 /** 写路径严格读：坏 JSON 或类型不符直接拒绝，避免把用户台账覆盖成空表。 */
@@ -834,7 +886,7 @@ async function readObjectChecked(store: NovelStore, rel: string): Promise<Record
 
 async function applyPayload(store: NovelStore, p: Proposal): Promise<ApplyResult> {
   const payload = p.payload ?? {}
-  switch (payload.kind) {
+  switch (payloadKind(payload)) {
     case 'canon': {
       const docs: any[] = Array.isArray(payload.docs) ? payload.docs : []
       if (docs.length === 0) return { applied: 0, message: '没有可入库的设定文档' }
@@ -986,12 +1038,40 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<ApplyResult
       return { applied: 1, message: `计划事件 ${entry.id}「${title}」→ 第${chapter}章 入账（happened=false，待写成）` }
     }
     case 'outlineUpdates': {
-      const updates: any[] = Array.isArray(payload.updates) ? payload.updates : []
+      const updates: any[] = payloadArray(payload as Record<string, unknown>, ['updates', 'outlineUpdates'])
       if (updates.length === 0) return { applied: 0, message: '没有可同步的大纲更新' }
+      // 旧版（Swift）事件级同步：eventID + kind（事件已发生/事件改期/读者已知）+ newChapter
+      const events: any[] = await store.readJSON<any[]>('events.json', [])
+      let eventsDirty = false
+      let eventApplied = 0
+      for (const u of updates) {
+        if (!u || typeof u.eventID !== 'string') continue
+        const idx = events.findIndex((e) => e.id === u.eventID)
+        if (idx < 0) continue
+        const e = events[idx]
+        if (u.kind === '事件已发生') {
+          e.happened = true
+          if (Number(u.newChapter) > 0) e.chapter = Number(u.newChapter)
+          eventsDirty = true
+          eventApplied += 1
+        } else if (u.kind === '事件改期' && Number(u.newChapter) > 0) {
+          e.chapter = Number(u.newChapter)
+          eventsDirty = true
+          eventApplied += 1
+        } else if (u.kind === '读者已知') {
+          e.revealed = true
+          if (u.reason) e.readerKnowledge = String(u.reason)
+          if (Number(u.newChapter) > 0) e.chapter = Number(u.newChapter)
+          eventsDirty = true
+          eventApplied += 1
+        }
+      }
+      if (eventsDirty) await store.writeJSON('events.json', events)
+      const storylineUpdates = updates.filter((u) => u && typeof u.eventID !== 'string')
       const lines = await readArrayChecked(store, 'storylines.json')
       let applied = 0
       const skipped: string[] = []
-      for (const u of updates) {
+      for (const u of storylineUpdates) {
         const l = lines.find((x) => x.id === String(u.storylineID))
         if (!l) {
           skipped.push(`[${u.storylineID}] 未找到`)
@@ -1007,7 +1087,8 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<ApplyResult
         await snapshotLedger(store, ['storylines.json'])
         await store.saveStorylines(lines)
       }
-      return { applied, message: `大纲同步 ${applied}/${updates.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}` }
+      const total = applied + eventApplied
+      return { applied: total, message: `大纲同步 ${total}/${updates.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}` }
     }
     case 'draft': {
       // 与 Rust 对齐：采纳 = 先快照，再把草稿写入该章正文
@@ -1185,7 +1266,7 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<ApplyResult
       return { applied: 1, message: `第${chapter}章档案卡入库（同章覆盖；原档案/别名表已备份）` }
     }
     case 'clueFixes': {
-      const fixes: any[] = Array.isArray(payload.fixes) ? payload.fixes : []
+      const fixes: any[] = payloadArray(payload as Record<string, unknown>, ['fixes', 'clueFixes'])
       if (fixes.length === 0) return { applied: 0, message: '没有修复动作' }
       const written = await store.writtenChapters()
       const latest = Math.max(written.length ? written[written.length - 1] : 1, 1)
@@ -1193,12 +1274,14 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<ApplyResult
       let applied = 0
       const skipped: string[] = []
       for (const fx of fixes) {
-        const cid = String(fx.clueID ?? ''), k = String(fx.kind ?? ''), detail = String(fx.detail ?? '')
+        const cid = String(fx.clueID ?? '')
+        const k = String(fx.kind ?? '')
+        const detail = String(fx.detail ?? fx.action ?? fx.evidence ?? '')
         const c = clues.find((x: any) => x.id === cid) as any
         if (!c) { skipped.push(`${cid} 不在台账`); continue }
         // 补埋/改期必须真正改埋设章：显式字段优先，其次从 detail 的「第N章」取
         // 最后一个（「由第3章改到第9章」→ 9，不能取首个数写成 3）。
-        const explicit = firstPositiveNumber(fx.plantedChapter, fx.chapter, fx.toChapter)
+        const explicit = firstPositiveNumber(fx.plantedChapter, fx.newTargetChapter, fx.chapter, fx.toChapter)
         const targetChapter =
           explicit ?? ((k === '补埋' || k === '改期') ? chapterFromDetail(detail) : null)
         if ((k === '补埋' || k === '改期') && targetChapter === null) {
