@@ -634,6 +634,13 @@ impl CanvasPanel {
         out
     }
 
+    /// 外部跳转：直接切到预言维并选中某条世界线（预言书「在画布查看」）。
+    pub fn show_line(&mut self, id: String) {
+        self.dim = Dim::Oracle;
+        self.oracle_line = Some(id);
+        self.refresh();
+    }
+
     /// 切换画布维度：先存当前维位置再重建（pos 键按维隔离；view 是全局视图，跨维保留——
     /// 旧实现在这里重置 view 后立刻被 refresh 从 canvas.json 覆盖，重置是死代码）。
     fn set_dim(&mut self, d: Dim, cx: &mut Context<Self>) {
@@ -1162,6 +1169,8 @@ pub enum OracleEvent {
     Forecast,
     /// 晋升成功：宿主刷新收件箱/轨迹
     Promoted { worldline: String, proposal_id: String },
+    /// 在画布上查看该世界线（切到预言维）
+    ViewOnCanvas { worldline: String },
 }
 
 pub struct OraclePanel {
@@ -1380,12 +1389,32 @@ impl Render for OraclePanel {
         let mut right: Vec<AnyElement> = Vec::new();
         if let Some(w) = &sel_line {
             let wid = s(w, "name");
+            let wid_btn = s(w, "id");
+            let wide = wid_btn.clone();
             right.push(
                 div()
-                    .text_size(theme::FONT_META)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::TEXT())
-                    .child(SharedString::from(format!("「{wid}」影响清单 —— 晋升后才是提案，采纳后才改正典")))
+                    .flex()
+                    .items_center()
+                    .gap(theme::GAP_MD)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(theme::FONT_META)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::TEXT())
+                            .child(SharedString::from(format!(
+                                "「{wid}」影响清单 —— 晋升后才是提案，采纳后才改正典"
+                            ))),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("see-{wide}")))
+                            .xsmall()
+                            .label("在画布查看")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(OracleEvent::ViewOnCanvas { worldline: wide.clone() });
+                            })),
+                    )
                     .into_any_element(),
             );
             let diffs = w.get("diffs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
@@ -1528,12 +1557,30 @@ impl Render for OraclePanel {
                                                 .overflow_hidden()
                                                 .whitespace_nowrap()
                                                 .text_size(theme::FONT_TAG)
-                                                .text_color(theme::DIM())
-                                                .child(SharedString::from(format!(
-                                                    "{} → {}",
-                                                    before.chars().take(18).collect::<String>(),
-                                                    after.chars().take(28).collect::<String>()
-                                                ))),
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .gap(px(4.))
+                                                        .child(
+                                                            div()
+                                                                .text_color(theme::RED())
+                                                                .child(SharedString::from(
+                                                                    before.chars().take(18).collect::<String>(),
+                                                                )),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_color(theme::FAINT())
+                                                                .child("→"),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_color(theme::GREEN())
+                                                                .child(SharedString::from(
+                                                                    after.chars().take(28).collect::<String>(),
+                                                                )),
+                                                        ),
+                                                ),
                                         )
                                         .when(promoted, |x| {
                                             x.child(

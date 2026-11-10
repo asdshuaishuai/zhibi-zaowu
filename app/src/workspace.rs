@@ -573,6 +573,11 @@ impl Workspace {
                 OracleEvent::Forecast => {
                     this.on_send(prompts::forecast_task(), cx);
                 }
+                OracleEvent::ViewOnCanvas { worldline } => {
+                    let wl = worldline.clone();
+                    this.canvas_view.update(cx, |panel, _cx| panel.show_line(wl));
+                    this.switch_center(Mode::Canvas, _window, cx);
+                }
                 OracleEvent::Promoted { worldline, proposal_id } => {
                     this.inbox.update(cx, |panel, cx| panel.refresh(cx));
                     let (wl, pid) = (worldline.clone(), proposal_id.clone());
