@@ -46,6 +46,8 @@ struct DCard {
     chapter: u32,
     /// 暗线事件（未揭示）：卡上加锁标
     hidden: bool,
+    /// 计划事件（happened=false，预测排期晋升后的待写成）：虚线卡 + 计划标
+    planned: bool,
 }
 
 #[derive(Clone)]
@@ -110,6 +112,7 @@ impl DirectorPanel {
                 label: s(&e, "objectiveFact").chars().take(18).collect(),
                 chapter: ch,
                 hidden: !e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true),
+                planned: !e.get("happened").and_then(|v| v.as_bool()).unwrap_or(true),
             };
             if ch >= self.current && ch < end {
                 cards.push(card);
@@ -129,6 +132,7 @@ impl DirectorPanel {
                 label: format!("埋·{}", s(&c, "title").chars().take(14).collect::<String>()),
                 chapter: ch,
                 hidden: false,
+                planned: false,
             };
             if ch >= self.current && ch < end {
                 cards.push(card);
@@ -289,7 +293,14 @@ fn card_view(card: &DCard, dragging: bool, cx: &gpui_kit::Context<DirectorPanel>
         .p(theme::PAD_SM)
         .rounded(theme::RADIUS_PANEL)
         .border_1()
-        .border_color(if dragging { theme::ACCENT_BORDER() } else { theme::LINE() })
+        .border_color(if dragging {
+            theme::ACCENT_BORDER()
+        } else if card.planned {
+            theme::GREEN_BORDER()
+        } else {
+            theme::LINE()
+        })
+        .when(card.planned, |d| d.border_dashed())
         .bg(theme::PANEL2())
         .cursor_grab()
         .on_mouse_down(
@@ -319,10 +330,24 @@ fn card_view(card: &DCard, dragging: bool, cx: &gpui_kit::Context<DirectorPanel>
         )
         .child(
             div()
-                .font_family(theme::FAMILY_MONO)
-                .text_size(theme::FONT_MICRO)
-                .text_color(theme::FAINT())
-                .child(SharedString::from(card.id.clone())),
+                .flex()
+                .items_center()
+                .gap(theme::GAP_SM)
+                .child(
+                    div()
+                        .font_family(theme::FAMILY_MONO)
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::FAINT())
+                        .child(SharedString::from(card.id.clone())),
+                )
+                .when(card.planned, |d| {
+                    d.child(
+                        div()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::GREEN())
+                            .child("计划·待写成"),
+                    )
+                }),
         )
         .into_any_element()
 }

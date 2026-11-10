@@ -1271,6 +1271,11 @@ impl Render for OraclePanel {
             let premise = s(w, "premise");
             let status = s(w, "status");
             let n_diffs = w.get("diffs").and_then(|d| d.as_array()).map(|a| a.len()).unwrap_or(0);
+            let n_promoted = w
+                .get("diffs")
+                .and_then(|d| d.as_array())
+                .map(|a| a.iter().filter(|x| x.get("promoted").and_then(|p| p.as_bool()).unwrap_or(false)).count())
+                .unwrap_or(0);
             let n_nodes = w.get("nodes").and_then(|d| d.as_array()).map(|a| a.len()).unwrap_or(0);
             let on = !is_alpha && self.selected.as_deref() == Some(id.as_str());
             let click_id = id.clone();
@@ -1346,7 +1351,7 @@ impl Render for OraclePanel {
                                         .font_family(theme::FAMILY_MONO)
                                         .text_color(theme::FAINT())
                                         .child(SharedString::from(format!(
-                                            "fork 第{fork_ch}章 · 节点 {n_nodes} · 影响 {n_diffs}"
+                                            "fork 第{fork_ch}章 · 节点 {n_nodes} · 影响 {n_diffs} · 已晋升 {n_promoted}/{n_diffs}"
                                         ))),
                                 )
                             })
