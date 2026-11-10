@@ -256,5 +256,5 @@ worldlines.json: [{
 - **重要修复（M7-3 期间发现的双端错文件 bug）**：真实磁盘账本是 `storylines.json`/`events.json`/`stages.json` 三文件分储，旧 TS `outline()` 读 `outline.json`、`outlineUpdates` 落库也写 `outline.json`——对真实项目全是空读/错写。现 TS `outline()` 三文件合并读（outline.json 仅作兼容兜底），双端 `outlineUpdates` 落库统一改写 `storylines.json`；`memory.json` 人物键统一为 `aliases[].canonicalName`（TS world_state、Rust 画板人物节点同修）。
 - **M7-4 ✅（画板增强收口）**：读者视角/暗线虚线/影响半径随 M7-1 落地；画板新增 `involve` 绿边（memory.facts subject×fromChapter 确定映射）；**Shift 点选成组**（多选集 + 组拖，非 Shift 单选；「清空选择」按钮；侧板显「已选 N 个节点」）。
 - **M7-4 导演台幕带 ✅**：列间按 `stages.json` 的 `chapterStart/chapterEnd` 标注卷名（衬线 PURPLE）+ theme 副题，无阶段归属显「—」。
-- **框选成组的取舍**：gpui-pre 的 `MouseDownEvent`/`MouseMoveEvent` 的 `position` 为窗口坐标而非面板内坐标，橡皮筋命中会偏移；故 M7-4 用 Shift 点选成组（无坐标歧义），真·框选留待接入 div 布局原点（`window.origin_of_id`）后实现。
+- **框选成组的取舍**：gpui-pre 的 `MouseDownEvent`/`MouseMoveEvent` 的 `position` 为窗口坐标而非面板内坐标，橡皮筋命中会偏移；故 M7-4 先用 Shift 点选成组（无坐标歧义）；**M7-4b 已落地真·橡皮筋**：`canvas()` 的 prepaint 回调每帧把 stage 窗口原点写回 `Rc<RefCell<Option<..>>>`，鼠标事件坐标据此换算面板内坐标做命中测试（空白 Shift 拖拽出框，抬起即成组）。
 - 交互原型：`design/canvas.html`（三视图可点可拖，已从首页卡片接入）；测试 `worldline_promote_chain` 通过（沙盒→晋升→采纳→备份→幂等→视图态往返全链）。

@@ -8,6 +8,7 @@
 //! 预言书：worldlines.json 沙盒浏览器 + 「开线推演」发射 oracle_task 到 DSH；
 //! diffs 逐条晋升（store.promote_diff，幂等）→ 收件箱 → 采纳才改正典。
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -54,6 +55,7 @@ pub struct CEdge {
 enum Drag {
     Node(Vec<usize>, Point<Pixels>),
     Pan(Point<Pixels>),
+    Marquee(Point<Pixels>),
 }
 
 const NODE_W: f32 = 150.;
@@ -67,6 +69,10 @@ pub struct CanvasPanel {
     view: (f32, f32, f32), // x, y, k
     sel: Vec<usize>,
     drag: Option<Drag>,
+    /// 橡皮筋（stage 局部坐标）
+    marquee: Option<((f32, f32), (f32, f32))>,
+    /// canvas prepaint 每帧写回的 stage 窗口原点 → 事件坐标可换算
+    stage_origin: Rc<RefCell<Option<(f32, f32)>>>,
     reader: bool,
 }
 
@@ -84,6 +90,8 @@ impl CanvasPanel {
             view: (0., 0., 1.),
             sel: Vec::new(),
             drag: None,
+            marquee: None,
+            stage_origin: Rc::new(RefCell::new(None)),
             reader: false,
         };
         this.refresh();
@@ -254,6 +262,7 @@ impl CanvasPanel {
         self.nodes = nodes;
         self.edges = edges;
         self.sel.clear();
+        self.marquee = None;
     }
 
     fn save_state(&self) {
@@ -329,6 +338,8 @@ impl Render for CanvasPanel {
             segs.push((self.sx(a), self.sy(a), self.sx(b), self.sy(b), e.kind, e.hidden));
         }
 
+        let marquee_now = self.marquee;
+        let origin_cell = self.stage_origin.clone();
         let mut stage = div()
             .id("canvas-stage")
             .size_full()
@@ -337,8 +348,22 @@ impl Render for CanvasPanel {
             .bg(theme::BG())
             .child(
                 canvas(
-                    |_, _, _| {},
+                    move |bounds, _, _| {
+                        *origin_cell.borrow_mut() = Some((bounds.origin.x.as_f32(), bounds.origin.y.as_f32()));
+                    },
                     move |bounds, _, window, _| {
+                        if let Some(((ax, ay), (bx, by))) = marquee_now {
+                            let mut r = PathBuilder::stroke(px(1.2));
+                            let o = bounds.origin;
+                            r.move_to(point(o.x + px(ax), o.y + px(ay)));
+                            r.line_to(point(o.x + px(bx), o.y + px(ay)));
+                            r.line_to(point(o.x + px(bx), o.y + px(by)));
+                            r.line_to(point(o.x + px(ax), o.y + px(by)));
+                            r.line_to(point(o.x + px(ax), o.y + px(ay)));
+                            if let Ok(path) = r.build() {
+                                window.paint_path(path, hsla(theme::ACCENT()));
+                            }
+                        }
                         for (x1, y1, x2, y2, kind, hidden) in &segs {
                             let color = if *hidden {
                                 theme::PURPLE()
@@ -459,9 +484,19 @@ impl Render for CanvasPanel {
         // 舞台级手势：空白按下=平移开始；移动=拖拽；抬起=落盘
         stage = stage
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                // 节点按下处理器先执行（bubble）：已设 Node 就不进 Pan
+                // 节点按下处理器先执行（bubble）：已设 Node 就不进空白手势
                 if this.drag.is_none() {
-                    this.drag = Some(Drag::Pan(ev.position));
+                    if ev.modifiers.shift {
+                        // 空白 Shift 按下：橡皮筋框选
+                        let o = this.stage_origin.borrow();
+                        if let Some((ox, oy)) = *o {
+                            let (x, y) = (ev.position.x.as_f32() - ox, ev.position.y.as_f32() - oy);
+                            this.marquee = Some(((x, y), (x, y)));
+                            this.drag = Some(Drag::Marquee(ev.position));
+                        }
+                    } else {
+                        this.drag = Some(Drag::Pan(ev.position));
+                    }
                 }
             }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
@@ -476,6 +511,16 @@ impl Render for CanvasPanel {
                         *last = ev.position;
                         cx.notify();
                     }
+                    Some(Drag::Marquee(start)) => {
+                        let o = this.stage_origin.borrow();
+                        if let Some((ox, oy)) = *o {
+                            let end = (ev.position.x.as_f32() - ox, ev.position.y.as_f32() - oy);
+                            let start_local = (*start).x.as_f32() - ox;
+                            let start_local_y = (*start).y.as_f32() - oy;
+                            this.marquee = Some(((start_local, start_local_y), end));
+                            cx.notify();
+                        }
+                    }
                     Some(Drag::Pan(last)) => {
                         this.view.0 += (ev.position.x - last.x).as_f32();
                         this.view.1 += (ev.position.y - last.y).as_f32();
@@ -486,13 +531,43 @@ impl Render for CanvasPanel {
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                let was_marquee = matches!(this.drag, Some(Drag::Marquee(_)));
+                if was_marquee {
+                    if let Some(((ax, ay), (bx, by))) = this.marquee.take() {
+                        let (x0, x1) = (ax.min(bx), ax.max(bx));
+                        let (y0, y1) = (ay.min(by), ay.max(by));
+                        let hit: Vec<usize> = this
+                            .nodes
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, n)| {
+                                if this.reader && n.hidden {
+                                    return false;
+                                }
+                                let nx = this.sx(n);
+                                let ny = this.sy(n);
+                                nx > x0 && nx < x1 && ny > y0 && ny < y1
+                            })
+                            .map(|(i, _)| i)
+                            .collect();
+                        if !hit.is_empty() {
+                            this.sel = hit;
+                        }
+                    }
+                    this.drag = None;
+                    cx.notify();
+                    return;
+                }
                 if this.drag.is_some() {
                     this.drag = None;
                     this.save_state();
                     cx.notify();
                 }
             }))
-            .on_mouse_down_out(cx.listener(|this, _, _, _| this.drag = None));
+            .on_mouse_down_out(cx.listener(|this, _, _, _| {
+                this.drag = None;
+                this.marquee = None;
+            }));
 
         // 侧板：一阶影响半径
         let sel_title: Option<String> = match self.sel.len() {
