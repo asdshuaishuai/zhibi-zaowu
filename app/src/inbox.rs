@@ -18,7 +18,9 @@
 use std::rc::Rc;
 
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
+use gpui_kit::component::empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::tag::Tag;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Render, Rgba,
@@ -174,41 +176,15 @@ fn action_button(
         .child(label)
 }
 
-/// 计数 chip：标签 + 数值（数值转 `TEXT()`/半粗，规则 8 先分级再上色）。
+/// 计数 chip = kit Tag（primary=朱砂可行动，secondary=中性计数）。
 fn stat_chip(label: &'static str, value: usize, tone: ChipTone) -> impl IntoElement {
-    let (bg, border, fg): (Hsla, Hsla, Hsla) = match tone {
-        ChipTone::Action => (
-            theme::ACCENT_SOFT().into(),
-            theme::ACCENT_BORDER().into(),
-            theme::ACCENT().into(),
-        ),
-        ChipTone::Neutral => (
-            theme::CHIP_NEUTRAL().into(),
-            theme::LINE().into(),
-            theme::DIM().into(),
-        ),
+    let t = match tone {
+        ChipTone::Action => Tag::primary(),
+        ChipTone::Neutral => Tag::secondary(),
     };
-
-    div()
-        .flex()
-        .items_center()
-        .gap(theme::GAP_SM)
-        .flex_shrink_0()
-        .px(theme::PAD_SM)
-        .py(theme::PAD_XS)
-        .rounded(theme::RADIUS_CHIP)
-        .bg(bg)
-        .border_1()
-        .border_color(border)
-        .font_family(theme::FAMILY_UI)
-        .text_size(theme::FONT_TAG)
-        .child(div().text_color(fg).child(label))
-        .child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::TEXT())
-                .child(value.to_string()),
-        )
+    t.outline()
+        .child(SharedString::from(label.to_string()))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(value.to_string()))
 }
 
 impl Render for InboxPanel {
@@ -401,55 +377,21 @@ impl Render for InboxPanel {
                     .children(cards)
                     // —— 空态：必须有引导语并指向动作（规则 15）
                     .children(if pending.is_empty() {
-                        vec![div()
+                        vec![Empty::new()
                             .w_full()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .justify_center()
-                            .gap(theme::GAP_MD)
-                            .p(theme::PAD_2XL)
-                            .rounded(theme::RADIUS_CARD)
-                            .bg(theme::PANEL())
-                            .border_1()
-                            .border_color(theme::LINE())
-                            .font_family(theme::FAMILY_UI)
-                            .text_center()
                             .child(
-                                div()
-                                    .text_size(theme::FONT_BODY)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme::TEXT())
-                                    .child("没有待裁决提案"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme::FONT_META)
-                                    .text_color(theme::DIM())
-                                    .child(
+                                EmptyHeader::new()
+                                    .title(EmptyTitle::new().child("没有待裁决提案"))
+                                    .description(EmptyDescription::new().child(
                                         "AI 每完成一轮设定、骨架、草稿或验证报告，成果都会登记到这里，等你采纳或拒收。",
-                                    ),
+                                    )),
                             )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(theme::GAP_SM)
-                                    .px(theme::PAD_SM)
-                                    .py(theme::PAD_XS)
-                                    .rounded(theme::RADIUS_CHIP)
-                                    .bg(theme::CHIP_NEUTRAL())
-                                    .border_1()
-                                    .border_color(theme::LINE())
-                                    .font_family(theme::FAMILY_UI)
-                                    .text_size(theme::FONT_TAG)
-                                    .text_color(theme::DIM())
-                                    .child("没出现？点上方「刷新」重新拉取登记"),
-                            )
-                            .into_any_element()]
-                    } else {
-                        Vec::new()
-                    }),
+                            .child(EmptyContent::new().child(
+                                Tag::secondary().outline().child("没出现？点上方「刷新」重新拉取登记"),
+                            ))]
+            } else {
+                Vec::new()
+            })
             )
     }
 }

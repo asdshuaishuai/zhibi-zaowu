@@ -23,6 +23,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::dock::BasePanel;
 use gpui_kit::component::dock::Panel as ComponentPanel;
 use gpui_kit::component::dock::PanelEvent;
@@ -457,27 +458,31 @@ fn entry_block(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::A
     bubble(e, adopt)
 }
 
-/// 语义气泡：背景/描边/文字按状态语言四色取 token（规则 6），正文 `FONT_META`（规则 9），
-/// 参数摘要降一档 `DIM`（规则 8），时间戳等宽右对齐（规则 10）。
+/// 语义气泡 = kit Bubble（variant 承载语义面），底色/描边按原型四色语言覆写（规则 6）。
 fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
-    let (bg, border, fg): (Rgba, Rgba, Rgba) = if e.kind.is_error() {
-        (theme::RED_SOFT(), theme::LINE(), theme::RED())
+    let (variant, bg, border, fg): (BubbleVariant, Rgba, Rgba, Rgba) = if e.kind.is_error() {
+        (BubbleVariant::Destructive, theme::RED_SOFT(), theme::LINE(), theme::RED())
     } else if e.kind.is_done() || matches!(e.kind, TrajKind::ToolOk(_)) {
-        (theme::GREEN_SOFT(), theme::GREEN_BORDER(), theme::GREEN())
+        (
+            BubbleVariant::Secondary,
+            theme::GREEN_SOFT(),
+            theme::GREEN_BORDER(),
+            theme::GREEN(),
+        )
     } else if e.kind.is_tool() || e.kind.is_user() {
-        (theme::ACCENT_SOFT(), theme::ACCENT_BORDER(), theme::TEXT())
+        (
+            BubbleVariant::Tinted,
+            theme::ACCENT_SOFT(),
+            theme::ACCENT_BORDER(),
+            theme::TEXT(),
+        )
     } else {
-        (theme::PANEL(), theme::LINE(), theme::TEXT())
+        (BubbleVariant::Muted, theme::PANEL(), theme::LINE(), theme::TEXT())
     };
 
-    let mut row = div()
-        .flex()
-        .flex_col()
-        .gap(theme::GAP_XS)
+    let mut b = Bubble::new()
+        .with_variant(variant)
         .w_full()
-        .rounded(theme::RADIUS_CHIP)
-        .px(theme::GAP_LG)
-        .py(theme::PAD_SM)
         .bg(bg)
         .border_1()
         .border_color(border)
@@ -492,7 +497,7 @@ fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyEle
         );
 
     if let Some(detail) = e.kind.detail() {
-        row = row.child(
+        b = b.child(
             div()
                 .w_full()
                 .font_family(theme::FAMILY_UI)
@@ -503,7 +508,7 @@ fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyEle
         );
     }
 
-    // 页脚：动作钮靠右，时间戳收进等宽右列（规则 10）。
+    // 页脚：动作钮靠右，时间戳等宽右列（规则 10）。
     let mut footer = div()
         .flex()
         .w_full()
@@ -520,11 +525,10 @@ fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyEle
             .text_color(theme::FAINT())
             .child(SharedString::from(e.time)),
     );
-    row = row.child(footer);
+    b = b.child(footer);
 
-    row.into_any_element()
+    b.into_any_element()
 }
-
 // —— Dock 面板契约 ——
 
 impl BasePanel for TrajectoryPanel {

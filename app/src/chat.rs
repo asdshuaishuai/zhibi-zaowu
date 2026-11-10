@@ -1,7 +1,9 @@
 //! 对话页签（右侧 Dock 第三页）：自由问答，可读全书、仍只产提案。
 //! 消息流与轨迹窗共享同一条 session——这里呈现的是 user/assistant 文本对。
 
+use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::message::MessageAlignment;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::Sizable;
@@ -71,33 +73,37 @@ impl Render for ChatPanel {
         let mut rows = Vec::new();
         for m in self.log.iter() {
             let user = m.role == "user";
-            let mut row = div().flex().w_full();
-            row = if user { row.justify_end() } else { row };
-            rows.push(
-                row
-                    .child(
-                        div()
-                            .max_w(px(260.))
-                            .px(theme::PAD_MD)
-                            .py(theme::PAD_SM)
-                            .rounded(theme::RADIUS_PANEL)
-                            .bg(if user {
-                                theme::ACCENT_SOFT()
-                            } else {
-                                theme::PANEL2()
-                            })
-                            .border_1()
-                            .border_color(if user {
-                                theme::ACCENT_BORDER()
-                            } else {
-                                theme::LINE()
-                            })
-                            .text_size(theme::FONT_SMALL)
-                            .line_height(relative(theme::LINE_HEIGHT_BODY))
-                            .text_color(theme::TEXT())
-                            .child(SharedString::from(m.text.clone())),
-                    ),
-            );
+            let b = Bubble::new()
+                .with_variant(if user {
+                    BubbleVariant::Tinted
+                } else {
+                    BubbleVariant::Secondary
+                })
+                .alignment(if user {
+                    MessageAlignment::End
+                } else {
+                    MessageAlignment::Start
+                })
+                .bg(if user {
+                    theme::ACCENT_SOFT()
+                } else {
+                    theme::PANEL2()
+                })
+                .border_1()
+                .border_color(if user {
+                    theme::ACCENT_BORDER()
+                } else {
+                    theme::LINE()
+                })
+                .max_w(px(260.))
+                .child(
+                    div()
+                        .text_size(theme::FONT_SMALL)
+                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                        .text_color(theme::TEXT())
+                        .child(SharedString::from(m.text.clone())),
+                );
+            rows.push(b.into_any_element());
         }
         if rows.is_empty() {
             rows.push(
@@ -107,7 +113,8 @@ impl Render for ChatPanel {
                     .text_center()
                     .text_size(theme::FONT_LABEL)
                     .text_color(theme::FAINT())
-                    .child("问 AI 任何关于这本书的问题——它读得到全书，回答之外不改任何东西。"),
+                    .child("问 AI 任何关于这本书的问题——它读得到全书，回答之外不改任何东西。")
+                    .into_any_element(),
             );
         }
 

@@ -260,6 +260,8 @@ pub const FAMILY_MONO: &str = "Menlo";
 // ---------------------------------------------------------------------------
 
 /// 进度条轨道高 8px（原型 .za-bar，填充同高同圆角 RADIUS_TAG）。
+/// 预留：细进度条档（Progress 组件接管后未用）
+#[allow(dead_code)]
 pub const BAR_H: Pixels = px(8.);
 /// 左栏台账宽 196px（workspace.html:65）。
 pub const SIDEBAR_W: Pixels = px(196.);

@@ -9,6 +9,13 @@
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariants as _};
+use gpui_kit::component::empty::{
+    Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+};
+use gpui_kit::component::table::{
+    Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+};
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::Sizable;
 use gpui_kit::{
@@ -132,23 +139,6 @@ fn chip(text: impl Into<SharedString>, tone: Tone) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-/// pace 节奏 chip（规则 11：RADIUS_TAG 小圆角、soft 底、无描边）。
-fn pace_chip(text: impl Into<SharedString>, tone: Tone) -> gpui_kit::AnyElement {
-    div()
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .px(theme::PAD_SM)
-        .py(theme::PAD_XS)
-        .rounded(theme::RADIUS_TAG)
-        .bg(tone.soft())
-        .line_height(relative(1.5))
-        .text_size(theme::FONT_TAG)
-        .text_color(tone.text())
-        .child(text.into())
-        .into_any_element()
-}
 
 /// 表格单元格语义：正文 / 次级 / 等宽台账码 / 强调等宽 / 强调文本 / 状态 chip / 节奏 chip。
 enum Cell {
@@ -161,76 +151,80 @@ enum Cell {
     Pace(String, Tone),
 }
 
-fn cell_text(t: String, color: gpui_kit::Rgba) -> gpui_kit::Div {
-    div()
-        .flex_1()
-        .min_w_0()
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_size(theme::FONT_SMALL)
-        .line_height(relative(theme::LINE_HEIGHT_BODY))
-        .text_color(color)
-        .child(SharedString::from(t))
-}
 
-fn cell_code(t: String, color: gpui_kit::Rgba) -> gpui_kit::Div {
-    div()
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .font_family(theme::FAMILY_MONO)
-        .text_size(theme::FONT_LABEL)
-        .text_color(color)
-        .child(SharedString::from(t))
-}
 
 /// 数据行：行距 py=GAP_SM、分隔线 LINE_SOFT（outline.html 表行档）。
-fn row(cells: Vec<Cell>) -> gpui_kit::AnyElement {
-    let mut d = div()
-        .flex()
-        .items_center()
-        .gap(theme::GAP_MD)
-        .w_full()
-        .py(theme::GAP_SM)
-        .border_b_1()
-        .border_color(theme::LINE_SOFT());
-    for c in cells {
-        d = match c {
-            Cell::Text(t) => d.child(cell_text(t, theme::TEXT())),
-            Cell::Dim(t) => d.child(cell_text(t, theme::DIM())),
-            Cell::Code(t) => d.child(cell_code(t, theme::FAINT())),
-            Cell::CodeAccent(t) => d.child(cell_code(t, theme::ACCENT())),
-            Cell::Hi(t) => d.child(cell_text(t, theme::ACCENT())),
-            Cell::Chip(t, tone) => d.child(chip(t, tone)),
-            Cell::Pace(t, tone) => d.child(pace_chip(t, tone)),
-        };
+/// kit Table：表头 + 数据行（替代手搓 div 行）。
+fn kit_table(headers: &[&str], rows: Vec<TableRow>) -> gpui_kit::AnyElement {
+    let mut body = TableBody::new();
+    for r in rows {
+        body = body.child(r);
     }
-    d.into_any_element()
+    let head = TableHeader::new().child(
+        TableRow::new().children(
+            headers
+                .iter()
+                .map(|h| TableHead::new().child(SharedString::from(h.to_string()))),
+        ),
+    );
+    Table::new().w_full().child(head).child(body).into_any_element()
 }
 
-/// 表头行：FONT_LABEL + FAINT + MEDIUM，底线转 LINE（比数据行重一档）。
-fn head_row(labels: &[&'static str]) -> gpui_kit::AnyElement {
-    let mut d = div()
-        .flex()
-        .items_center()
-        .gap(theme::GAP_MD)
-        .w_full()
-        .py(theme::GAP_SM)
-        .border_b_1()
-        .border_color(theme::LINE());
-    for l in labels {
-        d = d.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .whitespace_nowrap()
-                .text_size(theme::FONT_LABEL)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme::FAINT())
-                .child(*l),
-        );
-    }
-    d.into_any_element()
+/// Tone → kit Tag（语义色徽标，规则 6/10）。
+fn tag_for(text: &str, tone: &Tone) -> Tag {
+    let t = match tone {
+        Tone::Green => Tag::success(),
+        Tone::Blue => Tag::info(),
+        Tone::Red => Tag::danger(),
+        Tone::Amber => Tag::warning(),
+        Tone::Accent => Tag::primary(),
+        _ => Tag::secondary(),
+    };
+    t.outline().child(SharedString::from(text.to_string()))
 }
+
+/// 数据行 = kit TableRow；单元格按 Cell 语义映射（chip/pace → Tag，码 → 等宽文本）。
+fn row(cells: Vec<Cell>) -> TableRow {
+    let mut tr = TableRow::new();
+    for c in cells {
+        let cell = match c {
+            Cell::Text(t) => TableCell::new().child(SharedString::from(t)),
+            Cell::Dim(t) => TableCell::new()
+                .text_color(theme::FAINT())
+                .child(SharedString::from(t)),
+            Cell::Code(t) => TableCell::new()
+                .font_family(theme::FAMILY_MONO)
+                .text_color(theme::FAINT())
+                .child(SharedString::from(t)),
+            Cell::CodeAccent(t) => TableCell::new()
+                .font_family(theme::FAMILY_MONO)
+                .text_color(theme::ACCENT())
+                .child(SharedString::from(t)),
+            Cell::Hi(t) => TableCell::new()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(SharedString::from(t)),
+            Cell::Chip(t, tone) | Cell::Pace(t, tone) => {
+                TableCell::new().child(tag_for(&t, &tone))
+            }
+        };
+        tr = tr.child(cell);
+    }
+    tr
+}
+
+/// kit Empty：统一空态（图标 + 标题 + 说明）。
+fn kit_empty(title: &str, desc: &str) -> gpui_kit::AnyElement {
+    Empty::new()
+        .header(
+            EmptyHeader::new()
+                .media(EmptyMedia::new().with_variant(EmptyMediaVariant::Icon))
+                .title(EmptyTitle::new().child(SharedString::from(title.to_string())))
+                .description(EmptyDescription::new().child(SharedString::from(desc.to_string()))),
+        )
+        .into_any_element()
+}
+
+
 
 /// 区块标题（面板内 h2 档：15px SEMIBOLD 正文色）。
 fn sec_title(text: impl Into<SharedString>) -> gpui_kit::Div {
@@ -242,32 +236,8 @@ fn sec_title(text: impl Into<SharedString>) -> gpui_kit::Div {
 }
 
 /// 空态引导（规则 15）：PANEL 卡 + 引导语指向动作，禁止静默空白。
-fn empty_hint(title: &'static str, guide: &'static str) -> gpui_kit::AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(theme::GAP_SM)
-        .w_full()
-        .p(theme::PAD_LG)
-        .bg(theme::PANEL())
-        .border_1()
-        .border_color(theme::LINE())
-        .rounded(theme::RADIUS_CARD)
-        .child(
-            div()
-                .text_size(theme::FONT_BODY)
-                .line_height(relative(theme::LINE_HEIGHT_BODY))
-                .text_color(theme::TEXT())
-                .child(title),
-        )
-        .child(
-            div()
-                .text_size(theme::FONT_META)
-                .line_height(relative(theme::LINE_HEIGHT_BODY))
-                .text_color(theme::DIM())
-                .child(guide),
-        )
-        .into_any_element()
+fn empty_hint(title: &str, desc: &str) -> gpui_kit::AnyElement {
+    kit_empty(title, desc)
 }
 
 /// 面板内容列容器：页面底 BG + 统一栏边距（规则 4/12）。
@@ -600,7 +570,7 @@ impl Render for OutlinePanel {
                                 )),
                         ),
                 )
-                .child(div().flex().flex_col().children(line_rows))
+                .child(kit_table(&["线", "名称", "状态"], line_rows))
                 .when_true(lines.is_empty(), |d| {
                     d.child(empty_hint("还没有故事线", "新书建框架提案采纳后，这里出现线号 · 名称 · 状态。"))
                 })
@@ -613,7 +583,7 @@ impl Render for OutlinePanel {
                         .border_color(theme::LINE())
                         .pt(theme::GAP_GROUP)
                         .child(sec_title("事件时间线（作者真相｜读者已知）"))
-                        .child(div().flex().flex_col().children(event_rows))
+                        .child(kit_table(&["事件", "章", "作者真相", "读者已知"], event_rows))
                         .when_true(events.is_empty(), |d| {
                             d.child(empty_hint("还没有事件", "用「AI 建时间线」提案，从正文抽取作者真相事件。"))
                         }),
@@ -702,8 +672,7 @@ impl Render for MemoryPanel {
                             }),
                         )),
                 )
-                .child(head_row(&["主语", "谓语", "宾语", "生效", "读者"]))
-                .child(div().flex().flex_col().children(rows))
+                .child(kit_table(&["主语", "谓语", "宾语", "生效", "读者"], rows))
                 .when_true(facts.is_empty(), |d| {
                     d.child(empty_hint("还没有事实", "写完一章点「让AI记一笔」，谓宾结构与生效章节会收进这本账。"))
                 }),
@@ -906,7 +875,7 @@ impl Render for CluesPanel {
                             }),
                         )),
                 )
-                .child(div().flex().flex_col().children(rows))
+                .child(kit_table(&["编号", "标题 / 详情", "节奏", "埋于", "最近动作", "状态"], rows))
                 .when_true(clues.is_empty(), |d| {
                     d.child(empty_hint("台账为空", "「AI 盘点伏笔」提案可从正文重建埋点、推进与节奏。"))
                 }),
@@ -973,7 +942,7 @@ impl Render for CharactersPanel {
         panel_root("characters-scroll").child(
             panel_col()
                 .child(sec_title("人物卡（别名归一）"))
-                .child(div().flex().flex_col().children(rows))
+                .child(kit_table(&["人物", "别名", "关联"], rows))
                 .when_true(aliases.is_empty(), |d| {
                     d.child(empty_hint("还没有别名档案", "记忆提取 / 人物归一提案采纳后，本名与别名会在这里归一。"))
                 }),
@@ -1209,42 +1178,25 @@ impl Focusable for SnapshotsPanel {
 
 impl Render for SnapshotsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
+        let mut snap_rows: Vec<TableRow> = Vec::new();
         for name in self.names.iter().take(40) {
             let n = name.clone();
-            // 快照文件名 = 台账码：等宽 FAINT（规则 10）；行 hover 提亮（规则 7）；恢复 = 破坏性红（规则 6）。
-            rows.push(
-                div()
-                    .id(format!("snap-row-{n}"))
-                    .flex()
-                    .items_center()
-                    .gap(theme::GAP_MD)
-                    .w_full()
-                    .px(theme::PAD_XS)
-                    .py(theme::GAP_SM)
-                    .rounded(theme::RADIUS_BTN_SM)
-                    .border_b_1()
-                    .border_color(theme::LINE_SOFT())
-                    .hover(|s| s.bg(theme::PANEL2()))
+            // 快照文件名 = 台账码（等宽）；恢复 = 破坏性红（规则 6/10）。
+            snap_rows.push(
+                TableRow::new()
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
+                        TableCell::new()
                             .font_family(theme::FAMILY_MONO)
-                            .text_size(theme::FONT_LABEL)
                             .text_color(theme::FAINT())
                             .child(SharedString::from(n.clone())),
                     )
-                    .child(
+                    .child(TableCell::new().child(
                         danger_btn(format!("restore-{n}"), "恢复", cx).on_click(
                             cx.listener(move |_this, _, _, cx| {
                                 cx.emit(SnapEvent::Restore(n.clone()));
                             }),
                         ),
-                    )
-                    .into_any_element(),
+                    )),
             );
         }
         panel_root("snap-scroll").child(
@@ -1262,7 +1214,7 @@ impl Render for SnapshotsPanel {
                                 .child(SharedString::from(format!("{} 份", self.names.len()))),
                         ),
                 )
-                .child(div().flex().flex_col().children(rows))
+                .child(kit_table(&["快照", "操作"], snap_rows))
                 .when_true(self.names.is_empty(), |d| {
                     d.child(empty_hint("还没有快照", "采纳草稿 / 去AI味 / 恢复选区时会自动创建章节快照。"))
                 }),

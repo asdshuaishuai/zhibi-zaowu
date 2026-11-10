@@ -284,32 +284,19 @@ impl Render for ShelfView {
             .child(new_button);
 
         // 空态必须有引导语（规则 15）：指向「＋ 新建作品」动作。
-        let empty_hint = div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(theme::GAP_MD)
+        use gpui_kit::component::empty::{
+            Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+        };
+        let empty_hint = Empty::new()
             .w_full()
-            .p(theme::PAD_XL)
             .mb(theme::GAP_GROUP)
-            .bg(theme::PANEL())
-            .border_1()
-            .border_color(theme::LINE())
-            .rounded(theme::RADIUS_PANEL)
             .child(
-                div()
-                    .text_size(theme::FONT_TITLE_SM)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::TEXT())
-                    .child("书架还是空的"),
-            )
-            .child(
-                div()
-                    .text_size(theme::FONT_BODY)
-                    .line_height(relative(theme::LINE_HEIGHT_BODY))
-                    .text_color(theme::DIM())
-                    .child("点下方「＋ 新建作品」开一本新书——执笔会建好书名目录与稿纸，第一次打开就能落笔。"),
+                EmptyHeader::new()
+                    .media(EmptyMedia::new().with_variant(EmptyMediaVariant::Icon))
+                    .title(EmptyTitle::new().child("书架还是空的"))
+                    .description(EmptyDescription::new().child(
+                        "点下方「＋ 新建作品」开一本新书——执笔会建好书名目录与稿纸，第一次打开就能落笔。",
+                    )),
             );
 
         div()
@@ -376,23 +363,14 @@ impl Render for ShelfView {
     }
 }
 
-/// 状态 chip（规则 6/10）：写作中=绿、规划中=蓝、新建=中性。
+/// 状态 chip = kit Tag（规则 6/10）：写作中=success、规划中=info、新建=secondary。
 fn status_chip(status: &'static str) -> impl IntoElement {
-    let (fg, soft, border) = match status {
-        "写作中" => (theme::GREEN(), theme::GREEN_SOFT(), theme::GREEN_BORDER()),
-        "规划中" => (theme::BLUE(), theme::BLUE_SOFT(), theme::BLUE_BORDER()),
-        _ => (theme::DIM(), theme::PANEL2(), theme::LINE()),
-    };
-    div()
-        .flex()
-        .items_center()
-        .px(theme::PAD_XS)
-        .py(px(1.))
-        .rounded(px(9.))
-        .border_1()
-        .border_color(border)
-        .bg(soft)
-        .text_size(theme::FONT_TAG)
-        .text_color(fg)
-        .child(status)
+    use gpui_kit::component::tag::Tag;
+    match status {
+        "写作中" => Tag::success(),
+        "规划中" => Tag::info(),
+        _ => Tag::secondary(),
+    }
+    .outline()
+    .child(status)
 }

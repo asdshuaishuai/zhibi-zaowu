@@ -255,7 +255,6 @@ impl Render for EditorPanel {
             .child(saved_chip);
 
         // ── 统计行：主数字 DIM / 目标与单位 FAINT，进度用 BAR token + 语义 chip
-        let bar_fill = if on_target { theme::GREEN() } else { theme::ACCENT() };
         let stats = div()
             .flex()
             .items_center()
@@ -275,20 +274,18 @@ impl Render for EditorPanel {
                     .child(SharedString::from(format!(" / {} 字", count_text(target)))),
             )
             .child(
-                div()
-                    .w(px(120.))
-                    .h(theme::BAR_H)
-                    .rounded(theme::RADIUS_TAG)
-                    .overflow_hidden()
-                    // 轨道＝白 6% 半透明（原型 .za-bar），不是 PANEL2 实心
-                    .bg(theme::BAR_TRACK())
-                    .child(
-                        div()
-                            .w(px(120. * pct as f32 / 100.))
-                            .h(theme::BAR_H)
-                            .rounded(theme::RADIUS_TAG)
-                            .bg(bar_fill),
-                    ),
+                // kit Progress：线性进度条（规则 6：达标绿 / 进行中朱砂）
+                gpui_kit::component::progress::Progress::new("word-progress")
+                    .value(pct as f32 / 100.)
+                    .color({
+                        let c: gpui_kit::Hsla = if on_target {
+                            theme::GREEN().into()
+                        } else {
+                            theme::ACCENT().into()
+                        };
+                        c
+                    })
+                    .w(px(120.)),
             )
             .child(chip(
                 SharedString::from(format!("{pct}%")),
@@ -639,21 +636,18 @@ fn neutral_button(
 
 /// 语义徽标（原型 .za-chip：10.5px / 9px 圆角 / 1px 语义描边 / 17px 行高）。
 /// 状态一律用 chip 表达，不用灰字裸文本。
-fn chip(label: SharedString, fg: Rgba, border: Rgba, bg: Rgba) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .h(px(18.))
-        .px(theme::PAD_SM)
-        .whitespace_nowrap()
-        .rounded(theme::RADIUS_CHIP)
-        .border_1()
-        .border_color(border)
-        .bg(bg)
-        .text_size(theme::FONT_TAG)
-        .text_color(fg)
-        .child(label)
+fn chip(
+    text: impl Into<SharedString>,
+    fg: gpui_kit::Rgba,
+    border: gpui_kit::Rgba,
+    bg: gpui_kit::Rgba,
+) -> gpui_kit::AnyElement {
+    // kit Tag::custom：语义三色（规则 6/10）
+    let t: SharedString = text.into();
+    gpui_kit::component::tag::Tag::custom(bg.into(), fg.into(), border.into())
+        .outline()
+        .child(t)
+        .into_any_element()
 }
 
 /// 千分位计数（原型统计写作 3,214 字）。

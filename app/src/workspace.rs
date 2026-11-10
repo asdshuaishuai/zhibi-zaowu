@@ -10,11 +10,11 @@ use gpui_kit::component::input::TextareaState;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{Icon, Sizable, TitleBar};
+use gpui_kit::component::{Icon, Sizable, TitleBar, WindowExt as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px, relative,
+    StatefulInteractiveElement, Styled, Window, div, relative,
 };
 use serde_json::Value;
 use std::rc::Rc;
@@ -133,6 +133,12 @@ fn prominent_btn(cx: &App) -> ButtonCustomVariant {
 
 /// 语义 chip（规则 6：FONT_TAG + RADIUS_CHIP + 1px 语义描边，不用裸灰字表达状态）。
 fn chip(text: &str, fg: gpui_kit::Rgba, bg: gpui_kit::Rgba, border: gpui_kit::Rgba) -> AnyElement {
+    // kit Tag::custom：语义三色由 token 传入（规则 6/10）
+    return gpui_kit::component::tag::Tag::custom(bg.into(), fg.into(), border.into())
+        .outline()
+        .child(SharedString::from(text.to_string()))
+        .into_any_element();
+    #[allow(unreachable_code)]
     let text: SharedString = text.into();
     div()
         .flex()
@@ -154,26 +160,25 @@ fn chip(text: &str, fg: gpui_kit::Rgba, bg: gpui_kit::Rgba, border: gpui_kit::Rg
 /// 运行中 chip（规则 6/15：BLUE 系 + spinner，不能靠静默表达进行中）。
 fn live_chip(text: &str) -> AnyElement {
     let text: SharedString = text.into();
-    div()
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .gap(theme::GAP_XS)
-        .px(theme::PAD_SM)
-        .rounded(theme::RADIUS_CHIP)
-        .border_1()
-        .border_color(theme::BLUE_BORDER())
-        .bg(theme::BLUE_SOFT())
-        .text_size(theme::FONT_TAG)
-        .line_height(relative(1.7))
-        .text_color(theme::BLUE())
-        .child(
-            Spinner::new()
-                .with_size(theme::FONT_TAG)
-                .color(hsla(theme::BLUE())),
-        )
-        .child(text)
-        .into_any_element()
+    gpui_kit::component::tag::Tag::custom(
+        theme::BLUE_SOFT().into(),
+        theme::BLUE().into(),
+        theme::BLUE_BORDER().into(),
+    )
+    .outline()
+    .child(
+        div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_XS)
+            .child(
+                Spinner::new()
+                    .with_size(theme::FONT_TAG)
+                    .color(hsla(theme::BLUE())),
+            )
+            .child(text),
+    )
+    .into_any_element()
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -1236,6 +1241,11 @@ impl Render for Workspace {
             self.dock_hidden = false;
         }
 
+        // kit 通知：手搓 overlay 退役，反馈统一走 push_notification
+        if let Some(t) = self.toast.take() {
+            window.push_notification(t, cx);
+        }
+
         div()
             .id("zhibi-workspace-root")
             .key_context("zhibi-workspace")
@@ -1366,32 +1376,9 @@ impl Render for Workspace {
                             .child(dock),
                     ),
             )
-            .child({
-                let toast = self.toast.clone();
-                match toast {
-                    Some(t) => div()
-                        .absolute()
-                        .bottom(theme::PAD_XL)
-                        .left_0()
-                        .right_0()
-                        .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .px(theme::PAD_LG)
-                                .py(theme::PAD_SM)
-                                .rounded(px(9.))
-                                .bg(theme::PANEL2())
-                                .border_1()
-                                .border_color(theme::LINE())
-                                .shadow_md()
-                                .text_size(theme::FONT_SMALL)
-                                .text_color(theme::TEXT())
-                                .child(t),
-                        ),
-                    None => div().hidden(),
-                }
-            })
+            .child(
+                gpui_kit::div().hidden(),
+            )
             .child(
                 StatusBar::new()
                     .bg(theme::PANEL())
