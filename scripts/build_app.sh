@@ -27,6 +27,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleVersion</key><string>3.0.0-dev</string>
   <key>CFBundleShortVersionString</key><string>3.0.0-dev</string>
   <key>CFBundleExecutable</key><string>执笔</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -34,10 +35,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# 图标：沿用旧版母版（若存在）
-ICON=../zhibi/ZhiBi/Sources/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png
-if [ -f "$ICON" ]; then
-  sips -s format icns "$ICON" --out "$APP/Contents/Resources/AppIcon.icns" >/dev/null 2>&1 || true
+# 图标：优先用本仓 app/assets/AppIcon.icns（3.0 墨底断刀印），回退旧版母版
+if [ -f app/assets/AppIcon.icns ]; then
+  cp app/assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+elif [ -f ../zhibi/ZhiBi/Sources/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png ]; then
+  sips -s format icns ../zhibi/ZhiBi/Sources/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png     --out "$APP/Contents/Resources/AppIcon.icns" >/dev/null 2>&1 || true
 fi
 
 echo "==> ad-hoc 签名"

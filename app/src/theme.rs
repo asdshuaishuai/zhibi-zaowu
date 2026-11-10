@@ -156,7 +156,8 @@ pub fn BAR_TRACK() -> Rgba {
 pub fn CHIP_NEUTRAL() -> Rgba {
     rgba(0xFFFFFF12)
 }
-/// 封面题字宣纸色 #e8ddca（shelf.rs:106 现值，收编为 token）。
+/// 封面题字宣纸色 #e8ddca（M8 封面改按 Swift 五式重绘后暂未使用，留作备用）。
+#[allow(dead_code)]
 pub fn COVER_TEXT() -> Rgba {
     rgb(0xE8DDCA)
 }

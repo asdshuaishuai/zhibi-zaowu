@@ -5,9 +5,9 @@
 use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
-    Window, div, px, relative,
+    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement,
+    IntoElement, ParentElement, PathBuilder, Pixels, Render, SharedString, StatefulInteractiveElement,
+    Styled, Window, canvas, div, linear_color_stop, linear_gradient, point, px, relative, white,
 };
 
 use crate::store::{self, ProjectRef};
@@ -85,20 +85,331 @@ const BOOK_CARD_W: Pixels = px(210.);
 /// 封面宽高比 3:4 —— 原型 design/shelf.html:20 `aspect-ratio: 3/4`。
 const COVER_ASPECT: f32 = 0.75;
 
-/// 封面底色：按标题散列在四个语义色相间轮换，深浅一律由 token 派生——
-/// 墨底 `BG()` 混入 16% 语义色，得到与原型封面渐变同气质的暗色底
-/// （design/shelf.html:21-23 的紫青/蓝/褐金/绿四档对应朱砂/蓝/琥珀/绿）。
-fn cover_tint(title: &str) -> gpui_kit::Rgba {
+/// Swift 版 BookCoverTile.palette 的五组书封配色（朱砂/靛青/竹青/紫檀/赭金），
+/// 风格与配色同源于标题哈希——同一本书换风格不换色系。
+fn cover_palette(title: &str) -> (Hsla, Hsla) {
+    const P: [(u32, u32); 5] = [
+        (0xC75238, 0x732A1E), // 0 朱砂
+        (0x336B85, 0x1A384D), // 1 靛青
+        (0x5C8047, 0x2E471F), // 2 竹青
+        (0x7A619E, 0x3D2E5C), // 3 紫檀
+        (0xB88038, 0x612F1A), // 4 赭金
+    ];
     let h = title
-        .bytes()
-        .fold(7u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-    let hue = match h % 4 {
-        0 => theme::ACCENT(),
-        1 => theme::BLUE(),
-        2 => theme::AMBER(),
-        _ => theme::GREEN(),
-    };
-    theme::BG().blend(hue.alpha(0.16))
+        .chars()
+        .fold(0u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
+    let (a, b) = P[(h % 5) as usize];
+    (gpui_kit::rgb(a).into(), gpui_kit::rgb(b).into())
+}
+
+/// 优先取作者在 project.json 里存的 coverStyle（Swift 版同字段），否则按书名哈希。
+fn cover_style_of(b: &ProjectRef) -> u8 {
+    b.cover_style.unwrap_or_else(|| cover_style(&b.title))
+}
+
+/// 书名哈希 → 默认风格（0 竖脊 / 1 横排 / 2 朱砂印 / 3 水墨远山 / 4 竹纹），
+/// 与 Swift CoverStyle.defaultIndex 同式：unicodeScalars 折叠哈希 % 5。
+fn cover_style(title: &str) -> u8 {
+    let h = title
+        .chars()
+        .fold(0u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
+    (h % 5) as u8
+}
+
+/// 封面渲染（照 Swift BookCover 五式重绘；宽 210 的 3:4 竖版）。
+fn book_cover(title: &str, style: u8) -> gpui_kit::AnyElement {
+    let (c0, c1) = cover_palette(title);
+    let glyph: String = title.chars().next().map(|c| c.to_string()).unwrap_or_default();
+    let card = div().relative().size_full().overflow_hidden();
+
+    match style {
+        // ── 1 横排大字（书衣双框 + 朱砂点线）
+        1 => card
+            .bg(linear_gradient(180., linear_color_stop(c0, 0.), linear_color_stop(c1, 1.)))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(10.))
+            .px(px(18.))
+            .child(
+                div()
+                    .text_size(px(26.))
+                    .line_height(relative(1.3))
+                    .font_family(theme::FAMILY_SERIF)
+                    .font_weight(FontWeight::BOLD)
+                    .text_center()
+                    .text_color(white().opacity(0.96))
+                    .child(SharedString::from(title.chars().take(8).collect::<String>())),
+            )
+            .child(ornament_line())
+            .child(
+                // 内框（书衣双框）
+                div()
+                    .absolute()
+                    .left(px(8.))
+                    .top(px(8.))
+                    .right(px(8.))
+                    .bottom(px(8.))
+                    .rounded(px(2.))
+                    .border_1()
+                    .border_color(white().opacity(0.32)),
+            )
+            .into_any_element(),
+
+        // ── 2 朱砂印（米白纸面 + 大印）
+        2 => card
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(Hsla::from(gpui_kit::rgb(0xF2E9D6)), 0.),
+                linear_color_stop(Hsla::from(gpui_kit::rgb(0xDED4BE)), 1.),
+            ))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(14.))
+            .child(
+                div()
+                    .w(px(84.))
+                    .h(px(84.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(18.))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(Hsla::from(gpui_kit::rgb(0xBB3B2D)), 0.),
+                        linear_color_stop(Hsla::from(gpui_kit::rgb(0x8E2418)), 1.),
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(56.))
+                            .font_family(theme::FAMILY_SERIF)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(white().opacity(0.95))
+                            .child(SharedString::from(glyph)),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .line_height(relative(1.35))
+                    .font_family(theme::FAMILY_SERIF)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_center()
+                    .text_color(gpui_kit::rgb(0x3A3026))
+                    .child(SharedString::from(title.chars().take(8).collect::<String>())),
+            )
+            .into_any_element(),
+
+        // ── 3 水墨远山（暗底 + 山影 + 白色题签）
+        3 => card
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(Hsla::from(gpui_kit::rgb(0x2A2E38)), 0.),
+                linear_color_stop(Hsla::from(gpui_kit::rgb(0x111318)), 1.),
+            ))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    |bounds, _, window, _| {
+                        let w = bounds.size.width.as_f32();
+                        let h = bounds.size.height.as_f32();
+                        let ox = bounds.origin.x;
+                        let oy = bounds.origin.y;
+                        for (frac, seed, alpha) in [(0.38f32, 2.0f32, 0.30f32), (0.22, 5.0, 0.46)] {
+                            let mut b = PathBuilder::fill();
+                            b.move_to(point(ox, oy + px(h)));
+                            let steps = 28;
+                            for i in 0..=steps {
+                                let t = i as f32 / steps as f32;
+                                let x = w * t;
+                                let y = h * 0.78
+                                    - h * frac * (0.6 + 0.4 * (t * 5.2 + seed).sin())
+                                    - h * frac * 0.2 * (t * 11.0 + seed * 3.0).sin();
+                                b.line_to(point(ox + px(x), oy + px(y)));
+                            }
+                            b.line_to(point(ox + px(w), oy + px(h)));
+                            b.close();
+                            if let Ok(path) = b.build() {
+                                window.paint_path(path, white().opacity(alpha * 0.35));
+                            }
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(14.))
+                    .right(px(14.))
+                    .bottom(px(16.))
+                    .px(px(10.))
+                    .py(px(7.))
+                    .rounded(px(3.))
+                    .bg(white().opacity(0.92))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .line_height(relative(1.3))
+                            .font_family(theme::FAMILY_SERIF)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_center()
+                            .text_color(gpui_kit::rgb(0x1C1A17))
+                            .child(SharedString::from(title.chars().take(8).collect::<String>())),
+                    ),
+            )
+            .into_any_element(),
+
+        // ── 4 竹纹竖条
+        4 => card
+            .bg(linear_gradient(180., linear_color_stop(c1, 0.), linear_color_stop(c0, 1.)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                // 竖条：10 道，隔道明暗
+                div()
+                    .absolute()
+                    .size_full()
+                    .flex()
+                    .children((0..10).map(|i| {
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .bg(white().opacity(if i % 2 == 0 { 0.045 } else { 0.015 }))
+                    })),
+            )
+            .child(
+                div()
+                    .px(px(16.))
+                    .text_size(px(24.))
+                    .line_height(relative(1.32))
+                    .font_family(theme::FAMILY_SERIF)
+                    .font_weight(FontWeight::BOLD)
+                    .text_center()
+                    .text_color(white().opacity(0.96))
+                    .child(SharedString::from(title.chars().take(7).collect::<String>())),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(40.))
+                    .right(px(40.))
+                    .bottom(px(22.))
+                    .child(ornament_line()),
+            )
+            .into_any_element(),
+
+        // ── 0（默认）竖脊：竖排书名 + 竹席横纹 + 右下印
+        _ => card
+            .bg(linear_gradient(135., linear_color_stop(c0, 0.), linear_color_stop(c1, 1.)))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(3.))
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .py(px(18.))
+                    .children((0..9).map(|_| {
+                        div().w_full().h(px(1.)).bg(white().opacity(0.05))
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(2.))
+                    .children(
+                        title
+                            .chars()
+                            .filter(|c| !matches!(c, '，' | ',' | '。' | '·' | ' ' | '：' | ':'))
+                            .take(5)
+                            .map(|c| {
+                                div()
+                                    .text_size(px(26.))
+                                    .line_height(relative(1.25))
+                                    .font_family(theme::FAMILY_SERIF)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(white().opacity(0.96))
+                                    .child(SharedString::from(c.to_string()))
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+            )
+            .child(corner_seal())
+            .into_any_element(),
+    }
+}
+
+/// 书脊高光（左缘 12% 宽的白色渐隐）——挂到封面上做叠层。
+fn spine_glint() -> gpui_kit::AnyElement {
+    div()
+        .absolute()
+        .left(px(0.))
+        .top(px(0.))
+        .bottom(px(0.))
+        .w(px(16.))
+        .bg(linear_gradient(
+            90.,
+            linear_color_stop(white().opacity(0.14), 0.),
+            linear_color_stop(white().opacity(0.0), 1.),
+        ))
+        .into_any_element()
+}
+
+/// 朱砂点线装饰（横排与竹纹款共用）。
+fn ornament_line() -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .child(div().w(px(34.)).h(px(1.)).bg(white().opacity(0.4)))
+        .child(
+            div()
+                .w(px(5.))
+                .h(px(5.))
+                .rounded(px(3.))
+                .bg(gpui_kit::rgb(0xC75238).alpha(0.9)),
+        )
+        .child(div().w(px(34.)).h(px(1.)).bg(white().opacity(0.4)))
+        .into_any_element()
+}
+
+/// 右下角「执」字朱砂小印。
+fn corner_seal() -> gpui_kit::AnyElement {
+    div()
+        .absolute()
+        .right(px(10.))
+        .bottom(px(10.))
+        .w(px(26.))
+        .h(px(26.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.))
+        .bg(gpui_kit::rgb(0xBB3B2D).alpha(0.92))
+        .child(
+            div()
+                .text_size(px(14.))
+                .font_family(theme::FAMILY_SERIF)
+                .font_weight(FontWeight::BOLD)
+                .text_color(white().opacity(0.92))
+                .child("执"),
+        )
+        .into_any_element()
 }
 
 impl Render for ShelfView {
@@ -127,55 +438,14 @@ impl Render for ShelfView {
                         cx.emit(ShelfEvent::Open(dir.clone()));
                     }))
                     .child(
-                        // 封面：3:4 暗底 + 居中衬线大字题签 + 朱砂短线 + 右下品牌印。
+                        // 封面：照 Swift BookCover 五式（竖脊/横排/朱砂印/水墨远山/竹纹），
+                        // 书名哈希定风格与配色；体裁写在卡脚，不压封面。
                         div()
                             .relative()
                             .aspect_ratio(COVER_ASPECT)
-                            .bg(cover_tint(&b.title))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .justify_center()
-                            .gap(theme::GAP_MD)
-                            .child(
-                                div()
-                                    .text_size(px(30.))
-                                    .line_height(relative(1.25))
-                                    .font_family(theme::FAMILY_SERIF)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme::COVER_TEXT())
-                                    .child(SharedString::from(
-                                        b.title.chars().take(4).collect::<String>(),
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .w(px(28.))
-                                    .h(px(2.))
-                                    .rounded(px(1.))
-                                    .bg(theme::ACCENT().alpha(0.72)),
-                            )
-                            .child(
-                                // 右下「执」字朱砂印——app icon 的隐喻落到书卡上。
-                                div()
-                                    .absolute()
-                                    .bottom(theme::PAD_MD)
-                                    .right(theme::PAD_MD)
-                                    .w(px(22.))
-                                    .h(px(22.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(4.))
-                                    .bg(theme::ACCENT().alpha(0.82))
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .font_family(theme::FAMILY_SERIF)
-                                            .text_color(theme::ON_ACCENT())
-                                            .child("执"),
-                                    ),
-                            ),
+                            .w_full()
+                            .child(book_cover(&b.title, cover_style_of(b)))
+                            .child(spine_glint()),
                     )
                     .child(
                         // 卡脚：标题（正文档）+ 元信息行（标签档，三元素 gap 8）。

@@ -103,6 +103,8 @@ pub struct ProjectRef {
     pub dir: PathBuf,
     pub title: String,
     pub genre: String,
+    /// 封皮构图（project.json 的 coverStyle；缺省按书名哈希，与 Swift 版一致）
+    pub cover_style: Option<u8>,
     pub chapters: usize,
     pub words: usize,
     /// 今日净增字数（dailyWords 里今天那条）
@@ -186,6 +188,11 @@ pub fn list_projects() -> Vec<ProjectRef> {
             .map(|p| p.title.clone())
             .unwrap_or_else(|| d.file_stem().unwrap_or_default().to_string_lossy().to_string());
         let genre = project.as_ref().map(|p| p.genre.clone()).unwrap_or_default();
+        let cover_style = std::fs::read_to_string(d.join("project.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v.get("coverStyle")?.as_u64())
+            .map(|n| (n % 5) as u8);
         let (chapters, words) = count_chapters(&d);
         let today = today_key();
         let today_words = std::fs::read_to_string(d.join("project.json"))
@@ -196,7 +203,7 @@ pub fn list_projects() -> Vec<ProjectRef> {
             })
             .unwrap_or(0);
         let updated = d.metadata().and_then(|m| m.modified()).ok();
-        out.push(ProjectRef { dir: d, title, genre, chapters, words, today_words, updated });
+        out.push(ProjectRef { dir: d, title, genre, cover_style, chapters, words, today_words, updated });
     }
     out
 }
