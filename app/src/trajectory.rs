@@ -372,7 +372,7 @@ impl Render for TrajectoryPanel {
             .size_full();
 
         if self.entries.is_empty() {
-            // —— 空态：主句 TEXT + 引导 DIM + 指向动作 FAINT（规则 15），不许静默吞掉
+            // —— 空态：图标 + 主句 + 引导 + 指向动作（规则 15），不许静默吞掉
             list = list.child(
                 div()
                     .w_full()
@@ -380,13 +380,26 @@ impl Render for TrajectoryPanel {
                     .flex_col()
                     .items_center()
                     .gap(theme::GAP_MD)
-                    .p(theme::PAD_2XL)
-                    .rounded(theme::RADIUS_CARD)
-                    .bg(theme::PANEL())
-                    .border_1()
-                    .border_color(theme::LINE())
+                    .pt(px(48.))
+                    .pb(theme::PAD_2XL)
+                    .px(theme::PAD_LG)
                     .font_family(theme::FAMILY_UI)
                     .text_center()
+                    .child(
+                        div()
+                            .w(px(44.))
+                            .h(px(44.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(theme::RADIUS_CHIP)
+                            .bg(theme::BLUE_SOFT())
+                            .border_1()
+                            .border_color(theme::BLUE_BORDER())
+                            .text_size(theme::FONT_TITLE_SM)
+                            .text_color(theme::BLUE())
+                            .child("迹"),
+                    )
                     .child(
                         div()
                             .text_size(theme::FONT_BODY)
@@ -396,6 +409,7 @@ impl Render for TrajectoryPanel {
                     )
                     .child(
                         div()
+                            .max_w(px(280.))
                             .text_size(theme::FONT_META)
                             .line_height(relative(theme::LINE_HEIGHT_BODY))
                             .text_color(theme::DIM())
@@ -535,6 +549,7 @@ fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyEle
     let mut b = Bubble::new()
         .with_variant(variant)
         .w_full()
+        .rounded(theme::RADIUS_CARD)
         .bg(bg)
         .border_1()
         .border_color(border)

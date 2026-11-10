@@ -1262,6 +1262,8 @@ fn pending_card(
         .bg(theme::PANEL())
         .border_1()
         .border_color(theme::LINE())
+        .shadow_sm()
+        .hover(|d| d.border_color(theme::ACCENT_BORDER()))
         .font_family(theme::FAMILY_UI)
         .text_size(theme::FONT_BODY)
         .line_height(relative(theme::LINE_HEIGHT_BODY))

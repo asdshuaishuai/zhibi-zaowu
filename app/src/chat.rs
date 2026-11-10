@@ -6,10 +6,11 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::message::MessageAlignment;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::component::Sizable;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
@@ -32,6 +33,7 @@ pub struct ChatPanel {
     log: Vec<ChatMsg>,
     input: Entity<InputState>,
     busy: bool,
+    scroll: ScrollHandle,
 }
 
 impl ChatPanel {
@@ -39,7 +41,7 @@ impl ChatPanel {
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("问点什么（可读全书，产出仍只提案）…")
         });
-        Self { focus_handle: cx.focus_handle(), log: Vec::new(), input, busy: false }
+        Self { focus_handle: cx.focus_handle(), log: Vec::new(), input, busy: false, scroll: ScrollHandle::new() }
     }
 
     pub fn push(&mut self, msg: ChatMsg, cx: &mut Context<Self>) {
@@ -47,6 +49,7 @@ impl ChatPanel {
         if self.log.len() > 120 {
             self.log.drain(..self.log.len() - 120);
         }
+        self.scroll.scroll_to_bottom();
         cx.notify();
     }
 
@@ -70,52 +73,106 @@ impl Render for ChatPanel {
         let input = self.input.clone();
         let busy = self.busy;
 
-        let mut rows = Vec::new();
-        for m in self.log.iter() {
-            let user = m.role == "user";
-            let b = Bubble::new()
-                .with_variant(if user {
-                    BubbleVariant::Tinted
-                } else {
-                    BubbleVariant::Secondary
-                })
-                .alignment(if user {
-                    MessageAlignment::End
-                } else {
-                    MessageAlignment::Start
-                })
-                .bg(if user {
-                    theme::ACCENT_SOFT()
-                } else {
-                    theme::PANEL2()
-                })
-                .border_1()
-                .border_color(if user {
-                    theme::ACCENT_BORDER()
-                } else {
-                    theme::LINE()
-                })
-                .max_w(px(260.))
-                .child(
-                    div()
-                        .text_size(theme::FONT_SMALL)
-                        .line_height(relative(theme::LINE_HEIGHT_BODY))
-                        .text_color(theme::TEXT())
-                        .child(SharedString::from(m.text.clone())),
-                );
-            rows.push(b.into_any_element());
-        }
-        if rows.is_empty() {
+        let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
+        if self.log.is_empty() {
             rows.push(
                 div()
                     .w_full()
-                    .pt(theme::PAD_XL)
-                    .text_center()
-                    .text_size(theme::FONT_LABEL)
-                    .text_color(theme::FAINT())
-                    .child("问 AI 任何关于这本书的问题——它读得到全书，回答之外不改任何东西。")
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(theme::GAP_MD)
+                    .pt(px(56.))
+                    .px(theme::PAD_LG)
+                    .child(
+                        div()
+                            .w(px(44.))
+                            .h(px(44.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(theme::RADIUS_CHIP)
+                            .bg(theme::ACCENT_SOFT())
+                            .border_1()
+                            .border_color(theme::ACCENT_BORDER())
+                            .text_size(theme::FONT_TITLE_SM)
+                            .text_color(theme::ACCENT())
+                            .child("问"),
+                    )
+                    .child(
+                        div()
+                            .text_size(theme::FONT_BODY)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::TEXT())
+                            .child("和 AI 聊这本书"),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(280.))
+                            .text_center()
+                            .text_size(theme::FONT_LABEL)
+                            .line_height(relative(theme::LINE_HEIGHT_BODY))
+                            .text_color(theme::DIM())
+                            .child("它读得到全书设定/大纲/伏笔与成稿；问答之外不改任何东西——要改，它只会提提案。"),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme::FAMILY_MONO)
+                            .text_size(theme::FONT_TAG)
+                            .text_color(theme::FAINT())
+                            .child("例：老周的动机目前立得住吗？"),
+                    )
                     .into_any_element(),
             );
+        } else {
+            for m in self.log.iter() {
+                let user = m.role == "user";
+                rows.push(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(3.))
+                        .when(user, |d| d.items_end())
+                        .child(
+                            div()
+                                .px(px(2.))
+                                .text_size(theme::FONT_MICRO)
+                                .font_family(theme::FAMILY_MONO)
+                                .text_color(if user { theme::ACCENT() } else { theme::FAINT() })
+                                .child(if user { "你" } else { "AI · 只提案" }),
+                        )
+                        .child(
+                            Bubble::new()
+                                .with_variant(if user {
+                                    BubbleVariant::Tinted
+                                } else {
+                                    BubbleVariant::Secondary
+                                })
+                                .alignment(if user {
+                                    MessageAlignment::End
+                                } else {
+                                    MessageAlignment::Start
+                                })
+                                .bg(if user { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                                .border_1()
+                                .border_color(if user { theme::ACCENT_BORDER() } else { theme::LINE() })
+                                .rounded(theme::RADIUS_CARD)
+                                .max_w(px(280.))
+                                .child(
+                                    div()
+                                        .px(px(2.))
+                                        .py(px(2.))
+                                        .text_size(theme::FONT_SMALL)
+                                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                                        .text_color(theme::TEXT())
+                                        .child(SharedString::from(m.text.clone())),
+                                ),
+                        )
+                        .into_any_element(),
+                );
+            }
         }
 
         let send = Button::new("chat-send")
@@ -131,25 +188,40 @@ impl Render for ChatPanel {
             }));
 
         div()
-            .id("chat-scroll")
             .size_full()
-            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .bg(theme::BG())
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(theme::GAP_MD)
-                    .p(theme::PAD_MD)
-                    .children(rows)
+                    .id("chat-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .child(
                         div()
                             .flex()
-                            .items_center()
-                            .gap(theme::GAP_SM)
-                            .pt(theme::PAD_SM)
-                            .child(div().flex_1().min_w_0().child(Input::new(&input)))
-                            .child(send),
+                            .flex_col()
+                            .gap(theme::GAP_LG)
+                            .p(theme::PAD_MD)
+                            .children(rows),
                     ),
+            )
+            // —— 底部固定输入条（与滚动区分离）
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(theme::GAP_SM)
+                    .px(theme::PAD_MD)
+                    .py(theme::GAP_SM)
+                    .border_t_1()
+                    .border_color(theme::LINE())
+                    .bg(theme::PANEL())
+                    .child(div().flex_1().min_w_0().child(Input::new(&input)))
+                    .child(send),
             )
     }
 }
