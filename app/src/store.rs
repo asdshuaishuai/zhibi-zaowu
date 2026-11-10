@@ -180,6 +180,14 @@ pub fn create_project(title: &str) -> Result<PathBuf, String> {
     };
     let json = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("project.json"), json).map_err(|e| e.to_string())?;
+    // M7 预言书/画板底座：α=正典基准只读行；画板视图态初始空对象
+    std::fs::write(
+        dir.join("worldlines.json"),
+        serde_json::to_string_pretty(&serde_json::json!([
+            { "id": "α", "name": "正典", "premise": "当前事实基准", "forkedChapter": 0, "status": "基准", "nodes": [], "edges": [], "diffs": [], "derived": { "characters": [], "canon": [], "clues": [] } }
+        ])).unwrap(),
+    ).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("canvas.json"), "{}").map_err(|e| e.to_string())?;
     Ok(dir)
 }
 
@@ -212,7 +220,24 @@ impl ProjectHandle {
             .map(|p| p.title)
             .or_else(|| dir.file_stem().map(|s| s.to_string_lossy().to_string()))
             .unwrap_or_else(|| "未命名作品".into());
-        Some(Self { root: dir.to_path_buf(), title })
+        let handle = Self { root: dir.to_path_buf(), title };
+        // 老项目补 M7 底座（幂等：已存在不动）
+        handle.ensure_m7_files();
+        Some(handle)
+    }
+
+    fn ensure_m7_files(&self) {
+        let wl = self.root.join("worldlines.json");
+        if !wl.exists() {
+            let seed = serde_json::json!([
+                { "id": "α", "name": "正典", "premise": "当前事实基准", "forkedChapter": 0, "status": "基准", "nodes": [], "edges": [], "diffs": [], "derived": { "characters": [], "canon": [], "clues": [] } }
+            ]);
+            let _ = std::fs::write(&wl, serde_json::to_string_pretty(&seed).unwrap());
+        }
+        let cv = self.root.join("canvas.json");
+        if !cv.exists() {
+            let _ = std::fs::write(&cv, "{}");
+        }
     }
 
     /// 章节列表（有 prose.md 才算，含标题与字数），按章号升序。
@@ -348,6 +373,48 @@ mod tests {
         assert!(list.iter().any(|p| p.title == "测试书" && p.words > 0));
         let _ = std::fs::remove_dir_all(&home);
     }
+
+    #[test]
+    fn worldline_promote_chain() {
+        let home = temp_home("m7");
+        unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("世界线测试").unwrap();
+        assert!(dir.join("worldlines.json").exists(), "新建即有 α 沙盒");
+        assert!(dir.join("canvas.json").exists());
+
+        let handle = ProjectHandle::open(&dir).unwrap();
+        // 正典设定《灯约》先入库
+        handle.apply_payload(&serde_json::json!({
+            "kind": "canon",
+            "docs": [{ "title": "灯约", "content": "灯灭即恩断" }]
+        })).unwrap();
+
+        // β 线带一条“设定修订”影响
+        let mut lines = handle.worldlines();
+        lines.push(serde_json::json!({
+            "id": "β", "name": "灯约新解", "premise": "如果灯灭不是绝而是换", "forkedChapter": 12,
+            "status": "已推演", "nodes": [], "edges": [],
+            "diffs": [{ "target": "设定", "targetRef": "灯约", "kind": "change", "after": "灯灭=换灯人", "reason": "归来语义", "promoted": false }],
+            "derived": { "characters": [], "canon": [], "clues": [] }
+        }));
+        handle.save_worldlines(&lines).unwrap();
+
+        let pid = handle.promote_diff("β", 0).unwrap();
+        assert_eq!(handle.proposals().iter().filter(|p| p.id == pid).count(), 1);
+        let (applied, _) = handle.accept_proposal(&pid).unwrap();
+        assert_eq!(applied, 1);
+        assert_eq!(handle.canon_docs().iter().find(|(t, _, _)| t == "灯约").map(|(_, _, b)| b.as_str()), Some("灯灭=换灯人"));
+        let backups = std::fs::read_dir(dir.join("canon").join("backups")).unwrap().count();
+        assert_eq!(backups, 1, "修订前自动备份");
+        // 幂等：重复晋升被拒
+        assert!(handle.promote_diff("β", 0).is_err());
+        // 画板状态往返
+        let st = serde_json::json!({ "view": { "x": 12, "y": -8, "k": 1.4 } });
+        handle.save_canvas_state(&st).unwrap();
+        assert_eq!(handle.canvas_state()["view"]["k"].as_f64(), Some(1.4));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }
 
 // ───────────────────────── 提案（proposals/inbox.json）─────────────────────────
@@ -474,6 +541,59 @@ impl ProjectHandle {
                 }
                 self.save_clues(&clues)?;
             }
+            "canonRevise" => {
+                // 预言书晋升：修订既有设定——采纳前自动备份到 canon/backups/
+                let items = payload.get("items").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+                for it in items {
+                    let title = it.get("title").and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+                    if title.is_empty() { continue; }
+                    let file = self.canon_path(&title);
+                    if !file.exists() {
+                        skipped.push(format!("设定「{title}」未找到（同题校验）"));
+                        continue;
+                    }
+                    let doc = std::fs::read_to_string(&file).unwrap_or_default();
+                    let stamp: String = iso_now().chars().map(|c| if c == ':' || c == '.' { '-' } else { c }).collect::<String>()
+                        .chars().take(19).collect();
+                    let backups = self.root.join("canon").join("backups");
+                    std::fs::create_dir_all(&backups).map_err(|e| e.to_string())?;
+                    let backup = backups.join(format!("{}.{stamp}.md", safe_file_name(&title)));
+                    std::fs::write(&backup, doc).map_err(|e| e.to_string())?;
+                    let body = it.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                    std::fs::write(&file, body).map_err(|e| e.to_string())?;
+                    applied += 1;
+                }
+            }
+            "outlineUpdates" => {
+                let updates = payload.get("updates").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+                let path = self.root.join("outline.json");
+                let mut o: serde_json::Value = std::fs::read_to_string(&path).ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let lines = o.get("storylines").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+                let mut new_lines = lines;
+                for u in updates {
+                    let sid = u.get("storylineID").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                    if let Some(pos) = new_lines.iter().position(|l| l.get("id").and_then(|i| i.as_str()) == Some(sid.as_str())) {
+                        let upd = u.clone();
+                        let l = &mut new_lines[pos];
+                        if let (Some(obj), Some(l_obj)) = (upd.as_object(), l.as_object_mut()) {
+                            if let Some(st) = obj.get("status") { l_obj.insert("status".into(), st.clone()); }
+                            l_obj.insert("syncNote".into(), obj.get("note").cloned().unwrap_or(serde_json::json!("")));
+                            l_obj.insert("syncAt".into(), serde_json::json!(iso_now()));
+                        }
+                        applied += 1;
+                    } else {
+                        skipped.push(format!("[{sid}] 未找到"));
+                    }
+                }
+                if let Some(obj) = o.as_object_mut() {
+                    obj.insert("storylines".into(), serde_json::json!(new_lines));
+                    let tmp = path.with_extension("json.tmp");
+                    std::fs::write(&tmp, serde_json::to_string_pretty(&o).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+                }
+            }
             "canonClassify" => {
                 let items = payload.get("items").and_then(|c| c.as_array()).cloned().unwrap_or_default();
                 for it in items {
@@ -511,7 +631,7 @@ impl ProjectHandle {
                 self.save_prose(chapter, text)?;
                 applied += 1;
             }
-            "memo" | "report" | "deslop" | "skeleton" | "memoryPack" | "dossier" | "outlineUpdates" | "clueFixes" | "storylines" | "outlineEvents" => {
+            "memo" | "report" | "deslop" | "skeleton" | "memoryPack" | "dossier" | "clueFixes" | "storylines" | "outlineEvents" => {
                 // M3 后续：这些 payload 的确定性落库逐个补齐；先如实报告未支持
                 return Err(format!("「{kind}」落库尚未实现（M3 后续）——提案保持待审"));
             }
@@ -839,6 +959,106 @@ impl ProjectHandle {
             }
         }
         Ok((drafts, canons))
+    }
+
+    // ───────────────── M7 画板视图态 / 预言书世界线沙盒 ─────────────────
+
+    /// 世界线列表（含 α 基准行）。
+    pub fn worldlines(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.root.join("worldlines.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_worldlines(&self, lines: &[serde_json::Value]) -> Result<(), String> {
+        let path = self.root.join("worldlines.json");
+        let tmp = path.with_extension("json.tmp");
+        let json = serde_json::to_string_pretty(lines).map_err(|e| e.to_string())?;
+        std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    /// canvas.json：{view:{x,y,k}, pos:{id:[x,y]}, reader:bool}，画板唯一持久化出口。
+    pub fn canvas_state(&self) -> serde_json::Value {
+        std::fs::read_to_string(self.root.join("canvas.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    }
+
+    pub fn save_canvas_state(&self, v: &serde_json::Value) -> Result<(), String> {
+        let path = self.root.join("canvas.json");
+        std::fs::write(&path, serde_json::to_string_pretty(v).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// 宿主侧晋升一条世界线影响 → 提案进收件箱（与 novel-pack promote_diff 同映射同幂等）。
+    /// 返回提案 id。
+    pub fn promote_diff(&self, worldline_id: &str, diff_index: usize) -> Result<String, String> {
+        let mut lines = self.worldlines();
+        let w = lines
+            .iter_mut()
+            .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(worldline_id))
+            .ok_or_else(|| format!("世界线不存在：{worldline_id}"))?;
+        let forked = w.get("forkedChapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+        let wname = w.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+        let diffs = w
+            .get("diffs")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut d = diffs
+            .into_iter()
+            .nth(diff_index)
+            .ok_or("该影响不存在")?;
+        if d.get("promoted").and_then(|p| p.as_bool()).unwrap_or(false) {
+            return Err("该影响已晋升，拒绝重复".into());
+        }
+        let target = d.get("target").and_then(|t| t.as_str()).unwrap_or("").to_string();
+        let target_ref = d.get("targetRef").and_then(|t| t.as_str()).unwrap_or("未命名").to_string();
+        let kind = d.get("kind").and_then(|k| k.as_str()).unwrap_or("change").to_string();
+        let after = d.get("after").and_then(|a| a.as_str()).unwrap_or("").to_string();
+        let reason = d.get("reason").and_then(|r| r.as_str()).unwrap_or("").to_string();
+        let payload = match (target.as_str(), kind.as_str()) {
+            ("设定", "add") => serde_json::json!({ "kind": "canon", "docs": [{ "title": target_ref, "content": after }] }),
+            ("设定", _) => serde_json::json!({ "kind": "canonRevise", "items": [{ "title": target_ref, "content": after }] }),
+            ("伏笔", _) => serde_json::json!({ "kind": "clues", "clues": [{ "title": target_ref, "detail": after, "plantedChapter": forked }] }),
+            _ => serde_json::json!({ "kind": "outlineUpdates", "updates": [{ "storylineID": target_ref, "note": after }] }),
+        };
+        let id = uuid_like();
+        let mut list = self.proposals();
+        list.insert(0, Proposal {
+            id: id.clone(),
+            capability: "预言书·晋升".into(),
+            title: format!("{target}·{target_ref}（线{worldline_id}）"),
+            note: format!("世界线 {worldline_id}「{wname}」晋升：{reason}"),
+            payload,
+            status: "待确认".into(),
+            created_at: iso_now(),
+            decided_at: None,
+            reject_reason: None,
+        });
+        self.save_proposals(&list)?;
+        if let Some(obj) = d.as_object_mut() {
+            obj.insert("promoted".into(), serde_json::json!(true));
+            obj.insert("promotedProposalId".into(), serde_json::json!(id));
+        }
+        // 写回该线 diffs
+        for line in lines.iter_mut() {
+            if line.get("id").and_then(|i| i.as_str()) == Some(worldline_id) {
+                if let Some(obj) = line.as_object_mut() {
+                    let cur = obj.get("diffs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                    let mut new_diffs = cur;
+                    if diff_index < new_diffs.len() {
+                        new_diffs[diff_index] = d.clone();
+                    }
+                    obj.insert("diffs".into(), serde_json::json!(new_diffs));
+                }
+            }
+        }
+        self.save_worldlines(&lines)?;
+        Ok(id)
     }
 
     fn add_proposal_local(

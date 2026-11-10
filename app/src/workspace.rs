@@ -20,6 +20,7 @@ use serde_json::Value;
 use std::rc::Rc;
 
 use crate::chat::{ChatEvent, ChatMsg, ChatPanel};
+use crate::canvas::{CanvasPanel, OracleEvent, OraclePanel};
 use crate::dsh::{DshClient, DshEvent, model_route};
 use crate::editor::{EditorEvent, EditorPanel};
 use crate::inbox::{InboxEvent, InboxPanel};
@@ -55,6 +56,8 @@ pub enum Mode {
     Snapshots,
     Import,
     Graph,
+    Canvas,
+    Oracle,
 }
 
 impl Mode {
@@ -71,6 +74,8 @@ impl Mode {
             Mode::Snapshots => "快照",
             Mode::Import => "导入旧稿",
             Mode::Graph => "记忆图谱",
+            Mode::Canvas => "剧情画板",
+            Mode::Oracle => "预言书",
         }
     }
 
@@ -88,12 +93,14 @@ impl Mode {
             Mode::Snapshots => IconName::Camera,
             Mode::Import => IconName::FolderInput,
             Mode::Graph => IconName::Network,
+            Mode::Canvas => IconName::Waypoints,
+            Mode::Oracle => IconName::Sparkle,
         }
     }
 }
 
 /// 侧栏导航顺序（与原实现一致，只是改为数据表以便统一出行）。
-const NAV: [Mode; 11] = [
+const NAV: [Mode; 13] = [
     Mode::Editor,
     Mode::Outline,
     Mode::Canon,
@@ -101,6 +108,8 @@ const NAV: [Mode; 11] = [
     Mode::Stats,
     Mode::Clues,
     Mode::Characters,
+    Mode::Canvas,
+    Mode::Oracle,
     Mode::Graph,
     Mode::Snapshots,
     Mode::Import,
@@ -200,6 +209,8 @@ pub struct Workspace {
     snapshots_view: Entity<SnapshotsPanel>,
     import_view: Entity<ImportPanel>,
     graph_view: Entity<GraphPanel>,
+    canvas_view: Entity<CanvasPanel>,
+    oracle_view: Entity<OraclePanel>,
     chat: Entity<ChatPanel>,
     /// 分支卡数据（与 EditorPanel 同步；采纳读这里）
     branches: Vec<String>,
@@ -293,6 +304,8 @@ impl Workspace {
         let snapshots_view = cx.new(|cx| SnapshotsPanel::new(cx, handle.clone(), chapter));
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
         let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
+        let canvas_view = cx.new(|cx| CanvasPanel::new(cx, handle.clone()));
+        let oracle_view = cx.new(|cx| OraclePanel::new(window, cx, handle.clone()));
         let chat = cx.new(|cx| ChatPanel::new(window, cx));
 
         cx.subscribe_in(
@@ -498,6 +511,29 @@ impl Workspace {
         })
         .detach();
 
+        // 预言书：开线推演 → 走同一条 DSH 会话（轨迹窗全程可见）；晋升 → 刷新收件箱
+        cx.subscribe_in(
+            &oracle_view,
+            window,
+            |this, _, ev: &OracleEvent, _window, cx| match ev {
+                OracleEvent::Simulate { premise, fork } => {
+                    let fork = if *fork == 0 { this.chapter } else { *fork };
+                    this.on_send(prompts::oracle_task(premise, fork), cx);
+                }
+                OracleEvent::Promoted { worldline, proposal_id } => {
+                    this.inbox.update(cx, |panel, cx| panel.refresh(cx));
+                    let (wl, pid) = (worldline.clone(), proposal_id.clone());
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(
+                            TrajKind::Info(format!("线{wl} 影响晋升 → 提案 {pid} 进收件箱（正典未动）")),
+                            cx,
+                        );
+                    });
+                }
+            },
+        )
+        .detach();
+
         cx.subscribe(
             &prose,
             |this, _, ev: &gpui_kit::component::input::InputEvent, cx| {
@@ -631,6 +667,8 @@ impl Workspace {
             snapshots_view,
             import_view,
             graph_view,
+            canvas_view,
+            oracle_view,
             chat,
             branches: Vec::new(),
             toast: None,
@@ -757,6 +795,11 @@ impl Workspace {
             }
             Mode::Import => panel_handle(self.import_view.clone()),
             Mode::Graph => panel_handle(self.graph_view.clone()),
+            Mode::Canvas => {
+                self.canvas_view.update(cx, |panel, _cx| panel.refresh());
+                panel_handle(self.canvas_view.clone())
+            }
+            Mode::Oracle => panel_handle(self.oracle_view.clone()),
         };
         let center = DockLayout::tabs().panel_view(view, cx);
         self.dock_area.update(cx, |area, cx| {

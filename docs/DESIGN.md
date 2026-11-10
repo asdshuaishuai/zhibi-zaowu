@@ -195,3 +195,63 @@ zhibi-next/
 1. 1. DSH 接入形态：**sdk 子进程**（推荐，协议现成）vs ACP（更标准但为自动化设计）vs 进程内 Node 嵌入（最重）。我按 sdk 设计。
 3. novel-pack 随应用分发（内置插件，首次启动注册到 profile）vs 独立 npm 包（`dsh plugin add`）。倾向内置分发、保留独立安装能力。
 3. GPUI Kit 版本钉 0.9.0（gpui-pre 快照）——Rust 工具链需与该快照匹配，实施时先跑通 story gallery 再动工。
+
+## 10. 无限画板 · 导演台 · 预言书（世界线推演）
+
+对标 AI 短剧工具的「无限画板 + 导演台」，但执笔的对象不是分镜，而是**叙事结构本身**：
+剧情线路、人物关系、暗线发展、因果影响与延伸——再加上一个别家没有的东西：
+**预言书**——多重世界线的假设推演，以及每条世界线对原始设定的影响清单。
+
+### 10.1 三视图（同一份数据，三种镜头）
+
+| 视图 | 是什么 | 核心动作 |
+|---|---|---|
+| **画板 Canvas** | 无限缩放的叙事关系图：节点=故事线/事件/人物/伏笔/设定；边=埋设→兑现、参与、冲突、影响、暗线 | 框选、连线、拖节点改挂线；双击节点开「影响半径」 |
+| **导演台 Director** | 章 × 幕的排期板：把事件卡/伏笔卡排进未来章节，看覆盖度与节奏（断线预警、钩子同型预警、对白占比带） | 拖卡入章 → 触发骨架合同核对；闸门分实时显示 |
+| **预言书 Oracle** | 世界线沙盒：从当前章 fork 一条假设线（「如果师兄第15章没死」），AI 推演连锁影响，产出**对原始设定的影响清单**与人物/设定衍生 | 提假设 → 推演 → 看 diff → 把某条衍生「晋升」为正式提案 |
+
+### 10.2 数据模型（新增 worldlines.json，沙盒与正典物理隔离）
+
+```
+worldlines.json: [{
+  id, name, premise(假设一句话), forkedAtChapter, status: 推演中|已定稿|已归档,
+  nodes: [{id, kind: storyline|event|character|clue|canon, ref(正典id或"new"), label, x, y}],
+  edges: [{from, to, kind: plant|payoff|involve|conflict|influence|hiddenline}],
+  diffs: [{target, targetRef, kind: add|change|remove, before, after, reason, severity}],
+  derived: {characters: [...], canon: [...], clues: [...]}   // 本线专属衍生，不碰正典
+}]
+画板坐标/连线布局存 canvas.json（viewState：缩放、平移、节点位置、分组折叠）。
+正典数据（storylines/events/clues/canon/memory）仍是唯一事实源；世界线只引用 ref 或标 new。
+```
+
+### 10.3 铁律映射（一条都不能松）
+
+- 推演 = 提案：预言书的推演结果只写 worldlines.json（沙盒），**永不直接改正典**；
+- 影响清单每条 diff 有「晋升」按钮 → 生成对应 propose_* 提案（canon/clues/outlineUpdates）→ 进收件箱 → 作者采纳才落正典；
+- 衍生人物/设定默认 `line:<worldline-id>` 归属标记，切线可见、跨线不可见；晋升后转正式；
+- 暗线（hiddenline 边）在画板默认虚线+低透明，「读者视角」模式一键隐藏——信息差可视化。
+
+### 10.4 novel-pack 工具面（M7）
+
+| 工具 | 语义 |
+|---|---|
+| `get_world_state` | 读正典图数据（线/事件/人物/伏笔/设定 + 关系边）供画板与推演 |
+| `propose_worldline` | 建世界线（假设 + fork 章），登记进 worldlines.json |
+| `simulate_worldline` | 沿假设推演：输出 nodes/edges/diffs/derived（只写沙盒），diff 必须逐条给 reason 与影响章号 |
+| `promote_diff` | 把某条 diff 晋升为正式 propose_* 提案（宿主执行，幂等：同 target+kind 不重复登记） |
+| `archive_worldline` | 归档一条线（保留可查） |
+
+### 10.5 实施切片
+
+1. **M7-1 画板骨架**：GPUI 无限画布（pan/zoom + 节点卡 + SVG 边），读正典渲染当前书的关系图；
+2. **M7-2 预言书**：worldlines.json + 上面五个工具 + 预言书面板（假设输入 → 推演流进轨迹窗 → diff 列表 → 晋升）；
+3. **M7-3 导演台**：章×幕排期板 + 拖卡触发骨架合同核对；
+4. **M7-4 画板增强**：影响半径高亮、读者视角、框选成组、暗线虚线。
+
+### 10.6 落地状态（2026-11-10）
+
+- **M7-1 ✅**：`app/src/canvas.rs::CanvasPanel` — 节点卡（故事线/事件/人物/伏笔/设定）+ `canvas()` 三次贝塞尔边（influence/plant/payoff，暗线虚线 PURPLE）+ 拖节点/空白平移/±缩放/⊡复位 + 点选一阶影响半径侧板 + 读者视角（隐未揭示事件与暗线）；视图态持久化 `canvas.json`（view/pos/reader），不碰正典。侧栏 Mode::Canvas（Waypoints 图标）。
+- **M7-2 ✅**：数据底座 `worldlines.json`（α 基准行，Rust `ensure_m7_files` + novel-pack `ensureDirs`/自愈三处同语义）；novel-pack 五工具 `get_world_state/propose_worldline/simulate_worldline/promote_diff/archive_worldline`（共 22 工具注册通过）；`OraclePanel`（Mode::Oracle，Sparkle 图标）：世界线列表 + 影响清单逐条「晋升为提案」（走 `store.promote_diff`，幂等）+ 衍生 line 归属标 + 底部假设 composer（发射 `oracle_task` 进同一条 DSH 会话，轨迹窗全程可见）；`canonRevise`（采纳前自动备份到 `canon/backups/`）/`outlineUpdates` 确定性落库双端（TS+Rust）实现。
+- **M7-3 ⏳**：导演台面板待接（`prompts::director_task` 已就位）。
+- **M7-4 部分 ✅**：读者视角/暗线虚线/影响半径随 M7-1 落地；框选成组未做。
+- 交互原型：`design/canvas.html`（三视图可点可拖，已从首页卡片接入）；测试 `worldline_promote_chain` 通过（沙盒→晋升→采纳→备份→幂等→视图态往返全链）。

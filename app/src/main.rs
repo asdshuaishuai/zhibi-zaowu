@@ -2,6 +2,7 @@
 //! 两层结构：书架首页（与内容严格分层，参考旧版执笔）→ 打开作品进三栏工作区。
 
 mod app_root;
+mod canvas;
 mod chat;
 mod dsh;
 mod editor;

@@ -5,6 +5,8 @@
 //   ├── outline.json          # { storylines, events, stages }
 //   ├── clues.json            # 伏笔台账数组
 //   ├── memory.json           # { facts, characterAliases }
+//   ├── worldlines.json       # 预言书沙盒（M7）：推演只写这里，晋升才进提案
+//   ├── canvas.json           # 画板视图态（节点位置/平移缩放/读者视角）
 //   ├── proposals/inbox.json  # AI 提案流水（前端/AI 双端共用，铁律落点）
 //   └── chapters/ch-NNN/{meta.json, prose.md}
 //
@@ -50,6 +52,21 @@ export class NovelStore {
   async ensureDirs(): Promise<void> {
     for (const d of ['canon', 'proposals', 'chapters']) {
       await mkdir(this.path(d), { recursive: true })
+    }
+    // 预言书沙盒：α 正典基准行（与执笔 app 端 create/open 同语义，幂等）
+    const wl = this.path('worldlines.json')
+    if (!existsSync(wl)) {
+      await writeFile(
+        wl,
+        JSON.stringify(
+          [
+            { id: 'α', name: '正典', premise: '当前事实基准', forkedChapter: 0, status: '基准', nodes: [], edges: [], diffs: [], derived: { characters: [], canon: [], clues: [] } },
+          ],
+          null,
+          2,
+        ),
+        'utf8',
+      )
     }
   }
 
@@ -135,6 +152,16 @@ export class NovelStore {
 
   async outline(): Promise<Record<string, unknown>> {
     return this.readJSON<Record<string, unknown>>('outline.json', {})
+  }
+
+  // —— 预言书沙盒（M7）——
+
+  async worldlines(): Promise<any[]> {
+    return this.readJSON<any[]>('worldlines.json', [])
+  }
+
+  async saveWorldlines(lines: any[]): Promise<void> {
+    await this.writeJSON('worldlines.json', lines)
   }
 
   // —— 提案流水 ——

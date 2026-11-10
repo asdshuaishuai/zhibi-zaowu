@@ -438,6 +438,161 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
         }),
     ),
 
+    // —— M7 预言书：世界线沙盒（铁律延伸：推演只写沙盒，晋升才进提案箱） ——
+
+    textTool(
+      'get_world_state',
+      '读取正典世界的紧凑图状态（故事线/事件/伏笔/设定/人物别名 + 现有世界线摘要）。画板节点与预言书推演都以此为唯一事实源；推演前先调它。',
+      {},
+      () =>
+        guard(async () => {
+          const o = await store.outline()
+          const lines = Array.isArray(o['storylines']) ? (o['storylines'] as any[]) : []
+          const events = Array.isArray(o['events']) ? (o['events'] as any[]) : []
+          const clues = await store.clues()
+          const titles = await store.canonTitles()
+          const mem = await store.readJSON<Record<string, unknown>>('memory.json', {})
+          const aliases = Array.isArray(mem['characterAliases']) ? (mem['characterAliases'] as any[]) : []
+          const wls = await store.worldlines()
+          return JSON.stringify(
+            {
+              storylines: lines.map((l) => ({ id: l.id, name: l.name, status: l.status ?? '', kind: l.kind ?? '', isThroughLine: !!l.isThroughLine })),
+              events: events.map((e) => ({
+                id: e.id,
+                chapter: e.chapter,
+                fact: String(e.objectiveFact ?? '').slice(0, 80),
+                revealed: !!e.revealed,
+                storylineIDs: e.storylineIDs ?? [],
+              })),
+              clues: clues.map((c: any) => ({ id: c.id, title: c.title, status: c.status, plantedChapter: c.plantedChapter, lastActionChapter: c.lastActionChapter })),
+              canon: titles.map((t) => ({ title: t })),
+              characters: aliases.map((a: any) => ({ name: a.alias ?? a.name ?? '?', canonical: a.canonical ?? '' })),
+              worldlines: wls.map((w) => ({ id: w.id, name: w.name, premise: w.premise, forkedChapter: w.forkedChapter, status: w.status, nodes: (w.nodes ?? []).length, diffs: (w.diffs ?? []).length, promoted: (w.diffs ?? []).filter((d: any) => d.promoted).length })),
+            },
+            null,
+            1,
+          )
+        }),
+    ),
+
+    textTool(
+      'propose_worldline',
+      '开一条世界线（预言书沙盒）：记名称/假设/分歧章。只写 worldlines.json 沙盒，绝不触碰正典。id 自动取希腊字母序（α 为正典基准，不可创建）。',
+      { name: str('世界线名，如「师兄未死」'), premise: str('一句假设（如果…）'), forkedChapter: num('分歧章号') },
+      (args) =>
+        guard(async () => {
+          const wls = await store.worldlines()
+          // 自愈：确保 α 基准行在（裸工具/未走 ensureDirs 时也不缺基准）
+          if (!wls.some((w) => w.id === 'α')) {
+            wls.unshift({ id: 'α', name: '正典', premise: '当前事实基准', forkedChapter: 0, status: '基准', nodes: [], edges: [], diffs: [], derived: { characters: [], canon: [], clues: [] } })
+          }
+          const greek = ['β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π']
+          let id = ''
+          for (const g of greek) {
+            if (!wls.some((w) => w.id === g)) { id = g; break }
+          }
+          if (!id) return '世界线沙盒已满（15 条），先归档旧的。'
+          const w = {
+            id,
+            name: String(args.name ?? '').trim() || '未命名',
+            premise: String(args.premise ?? '').trim(),
+            forkedChapter: Number(args.forkedChapter) || 0,
+            status: '推演中',
+            createdAt: new Date().toISOString(),
+            nodes: [],
+            edges: [],
+            diffs: [],
+            derived: { characters: [], canon: [], clues: [] },
+          }
+          wls.push(w)
+          await store.saveWorldlines(wls)
+          return `已开世界线 ${id}「${w.name}」（fork 第${w.forkedChapter}章）——沙盒已建，接下来用 simulate_worldline 写入推演结果。`
+        }),
+    ),
+
+    textTool(
+      'simulate_worldline',
+      '把推演结果写入世界线沙盒（覆盖式）：节点/边/影响清单 diffs/衍生实体。铁律：diff 只描述「对正典的影响」，本身不改正典；晋升用 promote_diff。',
+      {
+        worldlineId: str('世界线 id，如 β'),
+        nodes: { type: 'array', required: false, description: '推演节点', items: { type: 'object', properties: { id: str('节点id'), kind: str('storyline|event|character|clue|canon'), label: str('标题'), ref: str('指向正典对象id（可空）', false), x: num('画板横坐标', false), y: num('画板纵坐标', false) }, required: ['id', 'kind', 'label'] } },
+        edges: { type: 'array', required: false, description: '推演边', items: { type: 'object', properties: { from: str('源节点id'), to: str('目标节点id'), kind: str('influence|plant|payoff|involve|conflict|hiddenline'), hidden: { type: 'boolean', description: '暗线（读者视角隐藏）', required: false } }, required: ['from', 'to', 'kind'] } },
+        diffs: { type: 'array', required: true, description: '对正典的影响清单', items: { type: 'object', properties: { target: str('设定|伏笔|事件|故事线|人物'), targetRef: str('正典对象标识（标题/编号）'), kind: str('add|change'), before: str('原状（add 填「—」）'), after: str('推演后的新状态'), reason: str('为何连锁至此'), severity: str('high|medium|low', false) }, required: ['target', 'targetRef', 'kind', 'after'] } },
+        derived: { type: 'object', required: false, description: '本线衍生（自动标 line 归属）', properties: { characters: { type: 'array', items: { type: 'string' }, required: false }, canon: { type: 'array', items: { type: 'string' }, required: false }, clues: { type: 'array', items: { type: 'string' }, required: false } } },
+      },
+      (args) =>
+        guard(async () => {
+          const wls = await store.worldlines()
+          const w = wls.find((x) => x.id === String(args.worldlineId))
+          if (!w) return `世界线不存在：${args.worldlineId}（先 propose_worldline）`
+          w.nodes = Array.isArray(args.nodes) ? args.nodes : []
+          w.edges = Array.isArray(args.edges) ? args.edges : []
+          w.diffs = (Array.isArray(args.diffs) ? args.diffs : []).map((d: any) => ({ ...d, promoted: false, severity: d.severity ?? 'medium' }))
+          const dv = args.derived ?? {}
+          w.derived = {
+            characters: (Array.isArray(dv.characters) ? dv.characters : []).map((s: string) => `${s}（line:${w.id}）`),
+            canon: (Array.isArray(dv.canon) ? dv.canon : []).map((s: string) => `${s}（line:${w.id}）`),
+            clues: (Array.isArray(dv.clues) ? dv.clues : []).map((s: string) => `${s}（line:${w.id}）`),
+          }
+          w.status = '已推演'
+          w.updatedAt = new Date().toISOString()
+          await store.saveWorldlines(wls)
+          return `世界线 ${w.id} 推演入档：节点 ${w.nodes.length} · 边 ${w.edges.length} · 影响 ${w.diffs.length} · 衍生已标 line:${w.id}。正典未动；等作者逐条晋升。`
+        }),
+    ),
+
+    textTool(
+      'promote_diff',
+      '晋升一条世界线影响为正式提案（进收件箱，作者裁决后才改正典）。映射：设定add→canon 提案；设定change→canonRevise 提案（采纳时自动备份原文）；伏笔→clues 提案；事件/故事线→outlineUpdates 提案。同一条只能晋升一次。',
+      { worldlineId: str('世界线 id'), diffIndex: num('diffs 数组下标（从 0 起）') },
+      (args) =>
+        guard(async () => {
+          const wls = await store.worldlines()
+          const w = wls.find((x) => x.id === String(args.worldlineId))
+          if (!w) return `世界线不存在：${args.worldlineId}`
+          const idx = Number(args.diffIndex)
+          const d = (w.diffs ?? [])[idx]
+          if (!d) return `世界线 ${w.id} 第 ${idx} 条影响不存在`
+          if (d.promoted) return `该影响已晋升（提案 ${d.promotedProposalId ?? ''}），拒绝重复。`
+          const after = String(d.after ?? '')
+          const reason = String(d.reason ?? '')
+          let p
+          switch (String(d.target)) {
+            case '设定':
+              if (d.kind === 'add') {
+                p = await store.addProposal({ capability: '预言书·晋升', title: `新设定《${d.targetRef}》（线${w.id}）`, note: `世界线 ${w.id}「${w.name}」推演晋升：${reason}`, payload: { kind: 'canon', docs: [{ title: String(d.targetRef), content: after }] } })
+              } else {
+                p = await store.addProposal({ capability: '预言书·晋升', title: `修订设定《${d.targetRef}》（线${w.id}）`, note: `世界线 ${w.id} 晋升修订；采纳前自动备份原文。理由：${reason}`, payload: { kind: 'canonRevise', items: [{ title: String(d.targetRef), content: after }] } })
+              }
+              break
+            case '伏笔':
+              p = await store.addProposal({ capability: '预言书·晋升', title: `伏笔入账（线${w.id}）`, note: `晋升自世界线推演：${reason}`, payload: { kind: 'clues', clues: [{ title: String(d.targetRef), detail: after, plantedChapter: w.forkedChapter }] } })
+              break
+            default:
+              p = await store.addProposal({ capability: '预言书·晋升', title: `大纲更新（线${w.id}）`, note: `晋升自世界线推演 ${d.target}·${d.targetRef}：${reason}`, payload: { kind: 'outlineUpdates', updates: [{ storylineID: String(d.targetRef), note: after }] } })
+          }
+          d.promoted = true
+          d.promotedProposalId = p.id
+          await store.saveWorldlines(wls)
+          return `影响已晋升为提案 ${p.id}（收件箱待裁决）。正典仍未动。`
+        }),
+    ),
+
+    textTool(
+      'archive_worldline',
+      '归档世界线（沙盒只读封存，可随时解档继续推演）。',
+      { worldlineId: str('世界线 id') },
+      (args) =>
+        guard(async () => {
+          const wls = await store.worldlines()
+          const w = wls.find((x) => x.id === String(args.worldlineId))
+          if (!w) return `世界线不存在：${args.worldlineId}`
+          w.status = w.status === '已归档' ? '已推演' : '已归档'
+          await store.saveWorldlines(wls)
+          return `世界线 ${w.id} 现为「${w.status}」。`
+        }),
+    ),
+
     // —— 确定性采纳（作者点“采纳”后由宿主调用；幂等保护） ——
 
     textTool(
@@ -531,6 +686,46 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<string> {
         applied += 1
       }
       return `归类写回 ${applied}/${items.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}`
+    }
+    case 'canonRevise': {
+      // 预言书晋升：修订既有设定——采纳前先把原文备份到 canon/backups/
+      const items: any[] = Array.isArray(payload.items) ? payload.items : []
+      let applied = 0
+      const skipped: string[] = []
+      for (const d of items) {
+        const title = safeFileName(String(d.title ?? '').trim())
+        if (!title) continue
+        const doc = await store.canonDoc(title)
+        if (doc === null) {
+          skipped.push(`「${d.title}」未找到（同题校验）`)
+          continue
+        }
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        await store.writeText(`canon/backups/${title}.${stamp}.md`, doc)
+        await store.writeText(joinCanon(title), String(d.content ?? ''))
+        applied += 1
+      }
+      return `设定修订 ${applied}/${items.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}（已自动备份）`
+    }
+    case 'outlineUpdates': {
+      const updates: any[] = Array.isArray(payload.updates) ? payload.updates : []
+      const o = await store.outline()
+      const lines = Array.isArray(o['storylines']) ? (o['storylines'] as any[]) : []
+      let applied = 0
+      const skipped: string[] = []
+      for (const u of updates) {
+        const l = lines.find((x) => x.id === String(u.storylineID))
+        if (!l) {
+          skipped.push(`[${u.storylineID}] 未找到`)
+          continue
+        }
+        if (u.status) l.status = String(u.status)
+        l.syncNote = String(u.note ?? '')
+        l.syncAt = new Date().toISOString()
+        applied += 1
+      }
+      await store.writeJSON('outline.json', { ...o, storylines: lines })
+      return `大纲同步 ${applied}/${updates.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}`
     }
     default:
       return `未知提案类型：${payload.kind ?? '（空）'}`

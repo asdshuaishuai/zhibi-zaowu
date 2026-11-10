@@ -37,8 +37,7 @@ pub const EDITOR_AI_BUTTONS: &[AiButton] = &[
     AiButton { label: "✦ 给我几个走向", capability: "branches" },
     AiButton { label: "搭骨架", capability: "skeleton" },
     AiButton { label: "一键验证", capability: "validate" },
-    AiButton { label: "去AI味", capability: "deslop" },
-    AiButton { label: "让AI记一笔", capability: "memory" },
+    AiButton { label: "去AI味", capability: "deslop" },    AiButton { label: "让AI记一笔", capability: "memory" },
     AiButton { label: "AI 盘点伏笔", capability: "inventory" },
     AiButton { label: "AI 归类设定", capability: "classify" },
 ];
@@ -64,3 +63,24 @@ pub const SELECTION_BUTTONS: &[(&str, &str)] = &[
     ("改写", "rewrite"),
     ("去AI味", "deslop"),
 ];
+
+/// 预言书推演任务书（M7）：全程走 novel-pack 的世界线沙盒工具链，绝不碰正典。
+pub fn oracle_task(premise: &str, fork: u32) -> String {
+    format!(
+        "预言书推演：假设「{premise}」（fork 自第{fork}章）。\
+流程：1) get_world_state 读正典图；2) propose_worldline 开一条新线（自动取 β/γ/…）；\
+3) simulate_worldline 写入推演节点/边/影响清单——沿因果链至少走 3 跳，每条 diff 必须有 \
+before/after/reason，衍生实体自动标 line。\
+铁律：推演只写 worldlines.json 沙盒，绝不改正典；正典变更只能以 diffs 形态呈现，\
+由作者逐条晋升为提案。最后用一段话总结影响面（波及几条线、几个设定、最大风险）。"
+    )
+}
+
+/// 导演台排期核对任务书（M7-3）：章×幕排期板触发骨架合同核对。
+#[allow(dead_code)] // M7-3 接线导演台面板前保留
+pub fn director_task(chapter: u32) -> String {
+    format!(
+        "导演台核对第{chapter}章排期：对照骨架合同（到期伏笔应收/种/兑）与故事线健康度，\
+给出本章的事件/伏笔挂接建议与冲突预警；需要落账的部分用 propose_clues / propose_outline_updates 提案，只报告不代改。"
+    )
+}
