@@ -20,6 +20,11 @@
 //!   按钮间 `GAP_MD`；废除 `p_2`(8px 贴边) / `rounded_md` / `text_xs` 混档。
 //! - 空态（规则 15）：TEXT 主句 + DIM 引导句 + FAINT 指向动作的提示句；
 //!   时间显示改本地时钟（`localtime_r`，修复旧 `utc_hhmmss` 的 UTC 缺陷）。
+//!
+//! 工具调用行是审计单元（2026-11-10）：固定三要素——**调了什么**（工具名）、
+//! **参数要点**（工具参数，空参数显式写「无」）、**产出条数**（结果回填；抽不出条数就写
+//! 「条数未标注」，不猜）。结果事件带 `callId` 时按 id 回填对应调用行；缺 id 才按
+//! 「先调用先回填」兜底，并行/乱序结果不会错配。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,7 +35,7 @@ use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::{
     App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, Rgba, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, relative,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
 use crate::theme;
@@ -50,12 +55,12 @@ pub enum TrajKind {
     Turn(u64),
     /// 普通信息
     Info(String),
-    /// 工具调用（名称 + 参数摘要）
-    Tool { name: String, args: String },
-    /// 工具成功
-    ToolOk(String),
-    /// 工具失败
-    ToolErr(String),
+    /// 工具调用（名称 + 参数摘要 + 事件 callId）。
+    Tool { name: String, args: String, call_id: Option<String> },
+    /// 工具成功（结果文本 + 事件 callId）
+    ToolOk { text: String, call_id: Option<String> },
+    /// 工具失败（结果文本 + 事件 callId）
+    ToolErr { text: String, call_id: Option<String> },
     /// 模型文本产出
     Text(String),
     /// 选区创作产出：可替换选区或追加
@@ -70,6 +75,29 @@ pub enum TrajKind {
     Conn(String),
 }
 
+/// 工具调用的结果回填：成功/失败、从结果文案抽出的产出条数、结果摘要。
+#[derive(Debug, Clone)]
+pub struct ToolOutcome {
+    pub ok: bool,
+    /// `None` = 结果文案里没有可识别的条数（界面显式写「条数未标注」，不猜）。
+    pub count: Option<usize>,
+    pub summary: String,
+}
+
+/// 结果应回填到哪一条工具调用：有 callId 只认同 id 的未回填调用（未命中就放弃，
+/// 不能让未返回的旧调用吸走后续结果）；无 callId 才退化为最早未回填调用。
+fn outcome_target(entries: &[TrajEntry], call_id: Option<&str>) -> Option<usize> {
+    match call_id {
+        Some(id) => entries.iter().position(|e| {
+            e.outcome.is_none()
+                && matches!(&e.kind, TrajKind::Tool { call_id: Some(cid), .. } if cid == id)
+        }),
+        None => entries
+            .iter()
+            .position(|e| matches!(e.kind, TrajKind::Tool { .. }) && e.outcome.is_none()),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TrajEntry {
     #[allow(dead_code)]
@@ -77,6 +105,8 @@ pub struct TrajEntry {
     pub kind: TrajKind,
     /// 本地时钟 HH:MM:SS（`localtime_r`，规则 15）
     pub time: String,
+    /// 仅工具调用行使用：结果事件到达后回填，让「调了什么 → 产出什么」留在同一行。
+    pub outcome: Option<ToolOutcome>,
 }
 
 impl TrajKind {
@@ -85,8 +115,8 @@ impl TrajKind {
             TrajKind::Turn(n) => format!("▶ 第 {n} 轮"),
             TrajKind::Info(t) => t.clone(),
             TrajKind::Tool { name, .. } => format!("🛠 调用 {name}"),
-            TrajKind::ToolOk(t) => format!("↳ {t}"),
-            TrajKind::ToolErr(t) => format!("✕ 工具报错：{t}"),
+            TrajKind::ToolOk { text, .. } => format!("↳ {text}"),
+            TrajKind::ToolErr { text, .. } => format!("✕ 工具报错：{text}"),
             TrajKind::Text(t) => t.clone(),
             TrajKind::SelectionDraft { text, original } => {
                 format!("选区创作（原文 {} 字）→ {text}", original.chars().count())
@@ -98,15 +128,11 @@ impl TrajKind {
         }
     }
 
-    fn detail(&self) -> Option<String> {
-        match self {
-            TrajKind::Tool { args, .. } if !args.is_empty() => Some(args.clone()),
-            _ => None,
-        }
-    }
-
     fn is_error(&self) -> bool {
-        matches!(self, TrajKind::ToolErr(_) | TrajKind::Fail(_) | TrajKind::Conn(_))
+        matches!(
+            self,
+            TrajKind::ToolErr { .. } | TrajKind::Fail(_) | TrajKind::Conn(_)
+        )
     }
 
     fn is_done(&self) -> bool {
@@ -145,11 +171,22 @@ impl TrajectoryPanel {
 
     /// 追加一条轨迹并滚到底部。
     pub fn push(&mut self, kind: TrajKind, cx: &mut Context<Self>) {
+        // 结果先回填到调用行，再追加结果气泡：调用行本身就能回答「产出多少」。
+        match &kind {
+            TrajKind::ToolOk { text, call_id } => {
+                self.attach_outcome(true, text, call_id.as_deref())
+            }
+            TrajKind::ToolErr { text, call_id } => {
+                self.attach_outcome(false, text, call_id.as_deref())
+            }
+            _ => {}
+        }
         let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
         self.entries.push(TrajEntry {
             seq,
             kind,
             time: local_hhmmss(),
+            outcome: None,
         });
         if self.entries.len() > 400 {
             self.entries.drain(..self.entries.len() - 400);
@@ -162,6 +199,21 @@ impl TrajectoryPanel {
             anyhow::Ok(())
         })
         .detach();
+    }
+
+    /// 把结果回填到对应的工具调用行。
+    ///
+    /// 优先按事件 `callId` 精确配对（并行/乱序结果不会错配，旧调用也不会吸走
+    /// 后续所有结果）；只有事件缺 callId 时才退化为「最早一个未回填的调用」。
+    fn attach_outcome(&mut self, ok: bool, text: &str, call_id: Option<&str>) {
+        let Some(idx) = outcome_target(&self.entries, call_id) else {
+            return;
+        };
+        self.entries[idx].outcome = Some(ToolOutcome {
+            ok,
+            count: if ok { extract_count(text) } else { None },
+            summary: text.to_string(),
+        });
     }
 
     #[allow(dead_code)]
@@ -462,7 +514,7 @@ fn entry_block(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::A
 fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
     let (variant, bg, border, fg): (BubbleVariant, Rgba, Rgba, Rgba) = if e.kind.is_error() {
         (BubbleVariant::Destructive, theme::RED_SOFT(), theme::LINE(), theme::RED())
-    } else if e.kind.is_done() || matches!(e.kind, TrajKind::ToolOk(_)) {
+    } else if e.kind.is_done() || matches!(e.kind, TrajKind::ToolOk { .. }) {
         (
             BubbleVariant::Secondary,
             theme::GREEN_SOFT(),
@@ -496,16 +548,34 @@ fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyEle
                 .child(SharedString::from(e.kind.label())),
         );
 
-    if let Some(detail) = e.kind.detail() {
-        b = b.child(
-            div()
-                .w_full()
-                .font_family(theme::FAMILY_UI)
-                .text_size(theme::FONT_TAG)
-                .line_height(relative(theme::LINE_HEIGHT_BODY))
-                .text_color(theme::DIM())
-                .child(SharedString::from(detail)),
-        );
+    if let TrajKind::Tool { args, .. } = &e.kind {
+        // 三要素之二：参数要点（空参数显式写「无」，不留空白让人猜）。
+        let params = if args.trim().is_empty() {
+            "（无参数）".to_string()
+        } else {
+            args.clone()
+        };
+        b = b.child(tool_field("参数", params, theme::TEXT()));
+
+        // 三要素之三：产出条数。抽不出条数就写「条数未标注」，不猜。
+        let (outcome_text, outcome_color) = match &e.outcome {
+            None => ("等待结果…".to_string(), theme::FAINT()),
+            Some(o) if !o.ok => (
+                format!("失败 · {}", clip_chars(&oneline(&o.summary), 48)),
+                theme::RED(),
+            ),
+            Some(o) => match o.count {
+                Some(n) => (
+                    format!("{n} 条 · {}", clip_chars(&oneline(&o.summary), 48)),
+                    theme::TEXT(),
+                ),
+                None => (
+                    format!("条数未标注 · {}", clip_chars(&oneline(&o.summary), 48)),
+                    theme::DIM(),
+                ),
+            },
+        };
+        b = b.child(tool_field("产出", outcome_text, outcome_color));
     }
 
     // 页脚：动作钮靠右，时间戳等宽右列（规则 10）。
@@ -529,6 +599,110 @@ fn bubble(e: TrajEntry, adopt: Option<gpui_kit::AnyElement>) -> gpui_kit::AnyEle
 
     b.into_any_element()
 }
+
+/// 工具调用行的「字段」：等宽标签 + 可换行内容（参数/产出共用同一条基线）。
+fn tool_field(label: &'static str, value: String, color: Rgba) -> impl IntoElement {
+    div()
+        .w_full()
+        .flex()
+        .items_start()
+        .gap(theme::GAP_SM)
+        .child(
+            div()
+                .w(px(30.))
+                .flex_shrink_0()
+                .font_family(theme::FAMILY_MONO)
+                .text_size(theme::FONT_TAG)
+                .text_color(theme::FAINT())
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(theme::FONT_TAG)
+                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                .text_color(color)
+                .child(SharedString::from(value)),
+        )
+}
+
+/// 多行/连续空白压成一行（结果摘要只占一行，避免把轨迹撑散）。
+fn oneline(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 按字符截断（中文按字，不按字节）。
+fn clip_chars(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i >= max {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// 从工具结果文案里抽「产出条数」。
+///
+/// novel-pack 的结果文案有两类：`N/M`（实际处理数/总数）与「已登记… N 条/篇/拍/处」。
+/// 规则：先取 `N/M` 的 N（本次实际入库/处理数，分母只是总数，不能当产出高报），
+/// 再取首个「数字 + 量词」；都抽不出就返回 None —— 界面显式写「条数未标注」，不猜。
+fn extract_count(s: &str) -> Option<usize> {
+    let chars: Vec<char> = s.chars().collect();
+
+    // 1) N/M → 取 N（分子 = 实际处理数）
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '/' {
+            let mut start = i;
+            while start > 0 && chars[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            let mut end = i + 1;
+            while end < chars.len() && chars[end].is_ascii_digit() {
+                end += 1;
+            }
+            if start < i && end > i + 1 {
+                let numer: String = chars[start..i].iter().collect();
+                if let Ok(n) = numer.parse::<usize>() {
+                    return Some(n);
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // 2) 数字 + 量词
+    const UNITS: [char; 9] = ['条', '篇', '拍', '处', '项', '个', '份', '句', '行'];
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let mut end = i;
+            while end < chars.len() && chars[end].is_ascii_digit() {
+                end += 1;
+            }
+            let mut unit = end;
+            while unit < chars.len() && chars[unit].is_whitespace() {
+                unit += 1;
+            }
+            if unit < chars.len() && UNITS.contains(&chars[unit]) {
+                let num: String = chars[i..end].iter().collect();
+                if let Ok(n) = num.parse::<usize>() {
+                    return Some(n);
+                }
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+
+    None
+}
+
 // —— Dock 面板契约 ——
 
 impl BasePanel for TrajectoryPanel {
@@ -560,5 +734,56 @@ impl ComponentPanel for TrajectoryPanel {
                     .text_color(theme::TEXT())
                     .child("Agent 轨迹"),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_count, outcome_target, TrajEntry, TrajKind, ToolOutcome};
+
+    fn tool(call_id: &str) -> TrajEntry {
+        TrajEntry {
+            seq: 0,
+            kind: TrajKind::Tool {
+                name: "t".into(),
+                args: String::new(),
+                call_id: Some(call_id.into()),
+            },
+            time: String::new(),
+            outcome: None,
+        }
+    }
+
+    /// 结果按 callId 配对：乱序/并行不错配，未返回的旧调用不吸走后续结果。
+    #[test]
+    fn tool_outcomes_pair_by_call_id() {
+        let mut entries = vec![tool("a"), tool("b")];
+        assert_eq!(outcome_target(&entries, Some("b")), Some(1));
+        entries[1].outcome = Some(ToolOutcome {
+            ok: true,
+            count: Some(1),
+            summary: String::new(),
+        });
+        assert_eq!(outcome_target(&entries, Some("b")), None, "已回填不重复");
+        assert_eq!(outcome_target(&entries, Some("a")), Some(0), "乱序结果仍配对原调用");
+        assert_eq!(
+            outcome_target(&entries, Some("old")),
+            None,
+            "未命中 callId 不得落到别的调用"
+        );
+        // 事件缺 callId 时才按最早未回填兜底
+        assert_eq!(outcome_target(&entries, None), Some(0));
+    }
+
+    /// 结果文案 → 产出条数：只认约定形态，抽不出就是 None（界面写「条数未标注」）。
+    #[test]
+    fn tool_result_counts() {
+        assert_eq!(extract_count("已登记设定提案 12 篇（f3a1），等待作者审阅。"), Some(12));
+        assert_eq!(extract_count("伏笔入账 12/12"), Some(12));
+        assert_eq!(extract_count("归类写回 2/3；跳过：「X」未找到"), Some(2));
+        assert_eq!(extract_count("计划事件 E01「雨夜」→ 第13章 入账"), None);
+        assert_eq!(extract_count("已登记骨架提案（id），等待作者批准。"), None);
+        assert_eq!(extract_count("第3章全文 3500 字"), None);
+        assert_eq!(extract_count(""), None);
     }
 }

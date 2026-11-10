@@ -93,10 +93,12 @@ pub struct CanvasPanel {
     view: (f32, f32, f32), // x, y, k
     sel: Vec<usize>,
     drag: Option<Drag>,
-    /// 橡皮筋（stage 局部坐标）
+    /// 橡皮筋（窗口坐标；paint 时直接画，窗口首帧未写回 stage 原点也不影响）
     marquee: Option<((f32, f32), (f32, f32))>,
     /// canvas prepaint 每帧写回的 stage 窗口原点 → 事件坐标可换算
     stage_origin: Rc<RefCell<Option<(f32, f32)>>>,
+    /// 节点按下已消费本次点击：Shift 取消选中时 drag=None，不能让事件继续冒泡去开框选
+    absorb_click: bool,
     reader: bool,
 }
 
@@ -117,6 +119,7 @@ impl CanvasPanel {
             drag: None,
             marquee: None,
             stage_origin: Rc::new(RefCell::new(None)),
+            absorb_click: false,
             reader: false,
         };
         this.refresh();
@@ -236,7 +239,7 @@ impl CanvasPanel {
             }
         }
         if want_canon {
-            for (title, category, _) in self.handle.canon_docs().into_iter().take(10) {
+            for (title, category, _) in self.handle.canon_docs() {
                 push_col(&mut nodes, &mut counts, "canon", format!("W:{title}"), title, category, false);
             }
         }
@@ -359,8 +362,9 @@ impl CanvasPanel {
                         edges.push(CEdge { from: fi, to: ti, kind: "influence", hidden: false, label: pred });
                     }
                 }
-                // 中心辐射：出度最大者居中，其余圆周
-                let n_count = nodes.len().max(1);
+                // 中心辐射：出度最大者居中，其余圆周。
+                // 节点为空时 n_count=0，下面的循环一次都不跑（旧实现 max(1) 会索引 nodes[0] panic）。
+                let n_count = nodes.len();
                 let mut best = 0usize;
                 let mut best_deg = -1isize;
                 for i in 0..n_count {
@@ -467,10 +471,16 @@ impl CanvasPanel {
             Dim::Turns => "tr",
         };
         let mut pos = serde_json::Map::new();
-        // 合并旧值：只覆盖本维键，别的维位置保留
+        // 合并旧值：只保留「其他维度」的 dim:id 键。旧版本留下的裸 id 键、已删除节点的
+        // 本维键都在这里清掉，否则 canvas.json 会随改名/删节点无限膨胀。
+        let known_dims = ["ov", "ca", "ch", "rl", "tl", "ev", "tr"];
         if let Some(old) = self.handle.canvas_state().get("pos").and_then(|p| p.as_object()) {
             for (k, v) in old {
-                pos.insert(k.clone(), v.clone());
+                if let Some((prefix, _)) = k.split_once(':') {
+                    if prefix != dimkey && known_dims.contains(&prefix) {
+                        pos.insert(k.clone(), v.clone());
+                    }
+                }
             }
         }
         for n in &self.nodes {
@@ -520,16 +530,15 @@ impl CanvasPanel {
         out
     }
 
-    /// 切换画布维度：先存当前维视图态再重建（pos 键按维隔离）
+    /// 切换画布维度：先存当前维位置再重建（pos 键按维隔离；view 是全局视图，跨维保留——
+    /// 旧实现在这里重置 view 后立刻被 refresh 从 canvas.json 覆盖，重置是死代码）。
     fn set_dim(&mut self, d: Dim, cx: &mut Context<Self>) {
         if d == self.dim {
             return;
         }
         self.save_state();
         self.dim = d;
-        self.view = (0., 0., 1.);
         self.refresh();
-        self.save_state();
         cx.notify();
     }
 
@@ -577,13 +586,13 @@ impl Render for CanvasPanel {
                     },
                     move |bounds, _, window, _| {
                         if let Some(((ax, ay), (bx, by))) = marquee_now {
+                            // marquee 存窗口坐标，直接画（不依赖 stage 原点是否已写回）
                             let mut r = PathBuilder::stroke(px(1.2));
-                            let o = bounds.origin;
-                            r.move_to(point(o.x + px(ax), o.y + px(ay)));
-                            r.line_to(point(o.x + px(bx), o.y + px(ay)));
-                            r.line_to(point(o.x + px(bx), o.y + px(by)));
-                            r.line_to(point(o.x + px(ax), o.y + px(by)));
-                            r.line_to(point(o.x + px(ax), o.y + px(ay)));
+                            r.move_to(point(px(ax), px(ay)));
+                            r.line_to(point(px(bx), px(ay)));
+                            r.line_to(point(px(bx), px(by)));
+                            r.line_to(point(px(ax), px(by)));
+                            r.line_to(point(px(ax), px(ay)));
                             if let Ok(path) = r.build() {
                                 window.paint_path(path, hsla(theme::ACCENT()));
                             }
@@ -650,6 +659,9 @@ impl Render for CanvasPanel {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                        // 节点消费本次按下：即使下面把 drag 置 None（Shift 取消选中），
+                        // 事件冒泡到舞台时也不能再开橡皮筋。
+                        this.absorb_click = true;
                         if ev.modifiers.shift {
                             // Shift 点选：加/去多选集
                             match this.sel.iter().position(|x| *x == i) {
@@ -709,16 +721,18 @@ impl Render for CanvasPanel {
         // 舞台级手势：空白按下=平移开始；移动=拖拽；抬起=落盘
         stage = stage
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                // 节点按下处理器先执行（bubble）：已设 Node 就不进空白手势
+                // 节点按下处理器先执行（bubble）：已消费的点击不再进入舞台手势
+                if this.absorb_click {
+                    this.absorb_click = false;
+                    return;
+                }
                 if this.drag.is_none() {
                     if ev.modifiers.shift {
-                        // 空白 Shift 按下：橡皮筋框选
-                        let o = this.stage_origin.borrow();
-                        if let Some((ox, oy)) = *o {
-                            let (x, y) = (ev.position.x.as_f32() - ox, ev.position.y.as_f32() - oy);
-                            this.marquee = Some(((x, y), (x, y)));
-                            this.drag = Some(Drag::Marquee(ev.position));
-                        }
+                        // 空白 Shift 按下：橡皮筋框选（窗口坐标，首帧不依赖 stage_origin）
+                        let x = ev.position.x.as_f32();
+                        let y = ev.position.y.as_f32();
+                        this.marquee = Some(((x, y), (x, y)));
+                        this.drag = Some(Drag::Marquee(ev.position));
                     } else {
                         this.drag = Some(Drag::Pan(ev.position));
                     }
@@ -730,21 +744,19 @@ impl Render for CanvasPanel {
                         let dx = (ev.position.x - last.x).as_f32() / this.view.2;
                         let dy = (ev.position.y - last.y).as_f32() / this.view.2;
                         for &i in ids.iter() {
-                            this.nodes[i].x += dx;
-                            this.nodes[i].y += dy;
+                            if let Some(n) = this.nodes.get_mut(i) {
+                                n.x += dx;
+                                n.y += dy;
+                            }
                         }
                         *last = ev.position;
                         cx.notify();
                     }
                     Some(Drag::Marquee(start)) => {
-                        let o = this.stage_origin.borrow();
-                        if let Some((ox, oy)) = *o {
-                            let end = (ev.position.x.as_f32() - ox, ev.position.y.as_f32() - oy);
-                            let start_local = (*start).x.as_f32() - ox;
-                            let start_local_y = (*start).y.as_f32() - oy;
-                            this.marquee = Some(((start_local, start_local_y), end));
-                            cx.notify();
-                        }
+                        let end = (ev.position.x.as_f32(), ev.position.y.as_f32());
+                        let start = (start.x.as_f32(), start.y.as_f32());
+                        this.marquee = Some((start, end));
+                        cx.notify();
                     }
                     Some(Drag::Pan(last)) => {
                         this.view.0 += (ev.position.x - last.x).as_f32();
@@ -759,9 +771,11 @@ impl Render for CanvasPanel {
                 let was_marquee = matches!(this.drag, Some(Drag::Marquee(_)));
                 if was_marquee {
                     if let Some(((ax, ay), (bx, by))) = this.marquee.take() {
+                        // marquee 是窗口坐标；节点中心是 stage 局部坐标，比较前补上 stage 原点
+                        let (ox, oy) = (*this.stage_origin.borrow()).unwrap_or((0., 0.));
                         let (x0, x1) = (ax.min(bx), ax.max(bx));
                         let (y0, y1) = (ay.min(by), ay.max(by));
-                        let hit: Vec<usize> = this
+                        this.sel = this
                             .nodes
                             .iter()
                             .enumerate()
@@ -769,20 +783,18 @@ impl Render for CanvasPanel {
                                 if this.reader && n.hidden {
                                     return false;
                                 }
-                                let nx = this.sx(n);
-                                let ny = this.sy(n);
+                                let nx = this.sx(n) + ox;
+                                let ny = this.sy(n) + oy;
                                 nx > x0 && nx < x1 && ny > y0 && ny < y1
                             })
                             .map(|(i, _)| i)
                             .collect();
-                        if !hit.is_empty() {
-                            this.sel = hit;
-                        }
                     }
                     this.drag = None;
                     cx.notify();
                     return;
                 }
+                this.absorb_click = false;
                 if this.drag.is_some() {
                     this.drag = None;
                     this.save_state();
@@ -790,8 +802,24 @@ impl Render for CanvasPanel {
                 }
             }))
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
+                // 指针拖出窗口：清干净拖拽态；平移/缩放已经改过 view，必须落盘
+                let had_gesture = this.drag.is_some();
                 this.drag = None;
+                this.absorb_click = false;
                 this.marquee = None;
+                if had_gesture {
+                    this.save_state();
+                }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                // 在舞台外松手（拖出窗口/侧板）：同样要结束手势并落盘
+                if this.drag.is_some() || this.marquee.is_some() {
+                    this.drag = None;
+                    this.marquee = None;
+                    this.absorb_click = false;
+                    this.save_state();
+                    cx.notify();
+                }
             }));
 
         // 侧板：一阶影响半径

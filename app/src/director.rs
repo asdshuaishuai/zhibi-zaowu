@@ -53,7 +53,6 @@ struct PredCard {
     line: String,
     idx: usize,
     label: String,
-    tref: String,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +94,11 @@ impl DirectorPanel {
 
     /// 从台账重建排期卡；窗口 [current, current+COLS)。
     pub fn refresh(&mut self) {
+        // 右界=下一待写章：章节被删/书变短时把窗口拉回，避免只剩空列
+        let max = self.handle.next_chapter_number().max(1);
+        if self.current > max {
+            self.current = max;
+        }
         let end = self.current + COLS as u32;
         let mut cards = Vec::new();
         let mut pool = Vec::new();
@@ -151,7 +155,6 @@ impl DirectorPanel {
                         line: line.clone(),
                         idx,
                         label: s(&d, "after").chars().take(18).collect(),
-                        tref: s(&d, "targetRef"),
                     });
                 }
             }
@@ -201,8 +204,13 @@ impl DirectorPanel {
     /// 确定性预警（只读规则，无 AI）。
     fn warnings(&self) -> Vec<AnyElement> {
         let mut out: Vec<AnyElement> = Vec::new();
+        // 未写到的未来章没有事件是常态，不再刷「无事件覆盖」噪音；只提示已有章节
+        let last_existing = self.handle.next_chapter_number().saturating_sub(1).max(1);
         for (i, _) in (0..COLS).enumerate() {
             let chap = self.current + i as u32;
+            if chap > last_existing {
+                continue;
+            }
             let n = self.cards.iter().filter(|c| c.chapter == chap).count();
             if n == 0 {
                 out.push(
@@ -288,6 +296,7 @@ fn card_view(card: &DCard, dragging: bool, cx: &gpui_kit::Context<DirectorPanel>
             MouseButton::Left,
             cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                 this.drag = Some(c.clone());
+                this.pred_drag = None;
                 cx.notify();
             }),
         )
@@ -322,7 +331,7 @@ impl Render for DirectorPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let warnings = self.warnings();
         let msg = self.message.clone();
-        let drag_active = self.drag.is_some();
+        let drag_active = self.drag.is_some() || self.pred_drag.is_some();
         let stages = self.handle.stages();
         let stage_of = |chap: u32| -> Option<(String, String)> {
             for st in &stages {
@@ -421,7 +430,7 @@ impl Render for DirectorPanel {
                         .min_h(px(120.))
                         .children(col_cards.iter().map(|c| card_view(c, drag_active && self.drag.as_ref().map(|d| d.id.clone()) == Some(c.id.clone()), cx)))
                         .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                            if this.drag.is_some() && this.hover != Some(i) {
+                            if (this.drag.is_some() || this.pred_drag.is_some()) && this.hover != Some(i) {
                                 this.hover = Some(i);
                                 cx.notify();
                             }
@@ -453,6 +462,7 @@ impl Render for DirectorPanel {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             this.pred_drag = Some(pi);
+                            this.drag = None;
                             cx.notify();
                         }),
                     )
@@ -555,10 +565,39 @@ impl Render for DirectorPanel {
         );
 
         div()
+            .id("director-root")
             .size_full()
             .flex()
             .flex_col()
             .bg(theme::BG())
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                // 在板外按下：清掉残留拖拽态（防止下一次点击章列误晋升旧卡）
+                if this.drag.is_some() || this.pred_drag.is_some() || this.hover.is_some() {
+                    this.drag = None;
+                    this.pred_drag = None;
+                    this.hover = None;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                // 在板外松手：丢弃本次拖拽，不能留下 pred_drag/drag
+                if this.drag.is_some() || this.pred_drag.is_some() {
+                    this.drag = None;
+                    this.pred_drag = None;
+                    this.hover = None;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                // 章列 body 的 on_mouse_up 先冒泡执行 drop_to；走到这里仍非空说明
+                // 松手位置不在任何章列（表头/空白/预测候选列），直接丢弃。
+                if this.drag.is_some() || this.pred_drag.is_some() {
+                    this.drag = None;
+                    this.pred_drag = None;
+                    this.hover = None;
+                    cx.notify();
+                }
+            }))
             .child(
                 div()
                     .flex()
@@ -607,9 +646,13 @@ impl Render for DirectorPanel {
                             .xsmall()
                             .label("→")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.current += 1;
-                                this.refresh();
-                                cx.notify();
+                                // 右界 = 下一待写章：再往后只有空列与「无事件覆盖」噪音
+                                let max = this.handle.next_chapter_number();
+                                if this.current < max {
+                                    this.current += 1;
+                                    this.refresh();
+                                    cx.notify();
+                                }
                             })),
                     ),
             )

@@ -295,3 +295,51 @@ worldlines.json: [{
 1. **M8-1 ✅ 画布维度化**：`Dim` 枚举 + 七维映射 + dim-keyed 持久化 + 顶栏页签。
 2. **M8-2 ✅ 双态**：`propose_worldline` 增 kind 参数（what-if 默认/forecast 预测：fork=下一章、diffs 全为 add 计划）；`prompts::forecast_task`（读大纲→无则读成稿→预测三走向×节拍级节点）；OraclePanel 按 kind 分组（固化=自动只读卡；预测线/假设线分列）；「预测续写」composer 双模式按钮。
 3. **M8-3 ✅ 预测线→导演台联动**：导演台新增「预测候选」虚线列（扫描 forecast 线 add 型事件/故事线 diff，排除已晋升）；拖入章列 = `promote_diff_chapter`（带章号晋升→**plannedEvent 提案**，非直写台账——与实卡改期语义区分）；新提案 kind `plannedEvent` 双端确定性落库（events.json 追加 `E{seq}` happened=false revealed=false + plannedFrom 溯源）；实链验证：预测→排期→采纳=E01@13章入账且标记"待写成"，二次排期晋升被拒。
+
+## 12. 作者主权设计原则（2026-11-10）
+
+> **哲学是底座，不是文案。** 本节只记录能落到结构件、工程约束或界面证据上的原则；
+> 落不到结构的，明确标「未落」或「只属于文案」，不写进宣传语。
+
+### 12.1 九条调研原则的逐条裁决
+
+| # | 调研原则 | 裁决 | 结构落点 / 未落原因 |
+|---|---|---|---|
+| 1 | 生成前列出依据清单，每条可点回原文，引不出依据就不生成 | **部分落结构** | 已落：提案卡「依据」区逐行 `引自：来源 编号`，优先读工具侧 `sourceRefs`（条目级字符串数组），无显式条目时从既有字段推导（报告 `location/evidence`、去AI味 `original/reason`、埋点 `clueID`、大纲 `storylineID`、修订设定标题…）；一条可核对条目都没有时显式标「未提供依据」（琥珀警示）。未落：点击跳回原文/台账的高亮导航；「引不出依据就不生成」目前是提示词约束（`app/src/prompts.rs::BASIS_RULE`），不是硬闸门。 |
+| 2 | 生成先进待定区，逐条采纳，采纳/否决计数留痕 | **部分落结构** | 已落：`propose_*` 只写 `proposals/inbox.json`；`apply_payload` 只在作者点击「采纳」后执行；底部「决策账本」常驻「等作者拍板 N 项 / 已决 M 项 / 采纳率」；已决历史保留状态、时间、拒收理由。未落：**条目级**采纳——`apply_payload` 以提案为单位，多条目提案一次采纳全部；界面摘要用条目预览 + 「一次采纳全部命中项」如实描述，卡片「粒度」行写明「整单处理 N 条」；模型自述里的「逐条采纳」原样留在依据区，与实际粒度并置可见。 |
+| 3 | 生成前枚举需作者拍板的决定点（写谁、发生什么、是否回收伏笔） | **未落结构（只到文案层）** | 当前可见的是生成后的条目清单与待拍板计数；「生成前先让作者逐条裁定决定点」的界面尚未实现。 |
+| 4 | 保存完整输入快照（前文版本、引用条目版本、参数、模型），历史为决策树，可回放/分叉 | **部分落结构** | 已落：正文快照（`chapters/ch-NNN/snapshots/`，快照页可恢复）、提案 payload 全量留在 `inbox.json`、`createdAt/decidedAt` 可见、已决历史可展开回看同一份 payload。未落：引用条目版本/参数/模型未写入快照；决策树与分叉对比未实现。 |
+| 5 | 撤销粒度与 AI 动作一一对应，每步改了什么、能退回哪里界面可见 | **部分落结构** | 已落：draft 采纳前自动快照、deslop 首次替换前快照、canonRevise 原文备份到 `canon/backups/`；clues/canonClassify/skeleton/report/memoryPack/dossier/outlineUpdates/clueFixes/plannedEvent 采纳前把将被覆盖的原文件备份到 `snapshots/ledger/`，卡片「落点 · 回滚」按 kind 写明落点与备份去向。未落：非正文台账快照没有正文快照页那样的恢复入口（见 12.4）。 |
+| 6 | 不设自动执行通道（无批量续写、自动整章、自动补字数、后台跑下一步） | **已落结构（工程约束）** | 工具面只有 `propose_*`；`apply_proposal` 注册为宿主专用，未开 `hostApply`/令牌时 AI 调用一律拒绝（`novel-pack/src/index.ts` 的 hostApply 闸门）；前端没有批量续写、自动整章、自动补字数的入口。 |
+| 7 | 与已定事实/伏笔冲突不静默、标出冲突位置与两种处理后果，停下等裁定 | **部分落结构** | 已落：`report` 只报告不代改，卡片列出 `location/evidence/suggestion`，冲突位置进入依据区。未落：「两种处理后果并排 + 停下等裁定」的交互。 |
+| 8 | 伏笔作为可清点对象入账，AI 触碰时显示动用了哪条，未回收随时可查 | **已落结构** | `clues.json` + `actionLog` 台账；`clueFixes` 提案依据区逐条列出「伏笔 Fxx」；未回收状态在伏笔台账可查。 |
+| 9 | 正文区分作者手写与 AI 草稿、支持逐段 diff，不提供抹除来源的后处理 | **部分落结构** | 已落：AI 文本只能以提案存在；deslop 以 `original → replacement` 逐处预览；无「降 AIGC 痕迹」类后处理。未落：正文内逐段来源标记与逐段 diff（§4.1 的墨点仍在规划）。 |
+
+### 12.2 本轮落地的结构件
+
+| 结构件 | 位置 | 它保证了什么 |
+|---|---|---|
+| 依据区 | `app/src/inbox.rs::payload_basis` / `basis_block` | 每条提案先回答「凭什么」：`sourceRefs` 显式引用优先，其次从既有字段推导；自述（`note`）单列，不算依据；无依据显式警示。 |
+| 内容预览 | `payload_preview` / `preview_block` | 把 payload 里真正会写入的东西逐条列出（beats/findings/original→replacement/草稿正文/报告证据…），默认折叠、可展开；不再只给数量。 |
+| 落点 · 回滚 | `payload_effect` / `effect_block` | 每张卡写明采纳会改哪里、原文件备份到哪（正文快照 / `canon/backups/` / `snapshots/ledger/`）；多条目提案额外写「粒度：整单处理 N 条」，撤销粒度与动作一一对应。 |
+| 决策账本 | `ledger_footer` | 待拍板/已决/采纳率常驻面板底部，不随滚动跑掉。 |
+| 已决历史 | `history_row` | 已处理提案保留状态、时间、拒收理由、payload 预览与持久化的 `applyResult`（实际入库/跳过条数）；默认最近 12 条，可「显示全部」回看，不再只剩一个计数。 |
+| 工具调用审计行 | `app/src/trajectory.rs` 的 `Tool` 分支 + `extract_count` | 固定三要素：调了什么（工具名）、参数要点（无参数显式写「无」）、产出条数（结果回填；抽不出就写「条数未标注」，不猜）。 |
+| 依据生产端 | `app/src/prompts.rs::BASIS_RULE`、novel-pack `propose_canon`/`propose_clues` 与 `promote_diff` 的 `sourceRefs` | 让模型在产出提案时就地带引用编号，预言书晋升也带线 id/对象编号，而不是事后补。 |
+
+### 12.3 与竞品的结构差异
+
+同样是「AI 辅助写作」，差别不在文风，而在**决定发生在哪一步、决定留下了什么**：Sudowrite 把设定静默拼进提示词、300 词续写直接落进正文，作者只剩「插入/忽略」——我们把引用条目摆进依据区、正文写入必须点击采纳且卡片先写落点与回滚；NovelAI 一口气往下流、分支历史藏在文件里、导出即抹平——我们的提案落盘、已决历史与正文快照都在界面里可回看；彩云小梦让作者在模型写好的三条里挑一条、决定空间由模型划定——我们的决定对象是提案条目（条目级采纳仍是缺口，见 12.4），且提案永不直接进正文；笔灵用模板关键词一键成文再「降 AIGC 痕迹」——我们不做抹除来源的后处理；MidReal 一次点击生成一本书、harnessNovel 自动补字数跑完整条流水线——我们一次点击只处理一条提案，没有自动执行通道。
+
+### 12.4 已知缺口（诚实清单）
+
+1. **条目级采纳未拆**：`apply_payload` 以提案为单位；`app/src/workspace.rs` 的导入提示、novel-pack `propose_deslop` 描述与 §4.3 旧文「批量操作保留」仍与实现不符（导入提示与 §4.3 未动）。
+2. **依据不可点回**：依据区列出编号/标题，但没有跳到设定页、伏笔台账或正文位置的导航。
+3. **生成前决定点枚举未做**：决定点只在生成后以提案条目呈现。
+4. **输入快照不完整**：没有记录引用条目的版本、生成参数与模型；决策树/分叉对比未做。
+5. **正文来源标记未做**：作者手写与 AI 草稿在数据层是分开的（提案 vs 正文），但正文内没有逐段来源标记。
+6. **落库后的只读查看**：`meta.beats` / `meta.report` 采纳后没有独立只读页；已决历史可展开回看 payload 与持久化的 `applyResult`（入库/跳过条数），但看不到落库后文件的当前内容。
+7. **`sourceRefs` 覆盖面有限**：`propose_canon`/`propose_clues` 与预言书晋升（canon/canonRevise/clues/outlineUpdates/plannedEvent）会产出该字段；其余 kind 靠既有字段推导（report/deslop/clueFixes/outlineUpdates/memoryPack/dossier/canon/canonRevise/plannedEvent），推导不出的显式标「未提供依据」。
+8. **引用来源未做成硬闸门**：`app/src/prompts.rs::BASIS_RULE` 只是提示词要求，工具 schema 里的 `sourceRefs` 仍是可选字段；当前靠界面把「未提供依据」显性化，生成端不拦截。
+9. **非正文台账快照无恢复入口**：`snapshots/ledger/` 保留了会被覆盖的 meta/dossiers/memory/storylines/clues/events/canon 原文件，但界面只有正文「快照」页，台账快照需手动从磁盘恢复。
+10. **部分成功仍显示「已采纳」**：多条目提案部分跳过时状态仍为「已采纳」，已决历史用 `applyResult` 显示实际入库/跳过条数，但没有独立的「部分采纳」状态。

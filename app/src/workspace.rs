@@ -6,15 +6,16 @@ use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as
 use gpui_kit::component::dock::{
     DockArea, DockEvent, DockLayout, DockPlacement, DockSkin, panel_handle,
 };
-use gpui_kit::component::input::TextareaState;
+use gpui_kit::component::input::{Input, InputState, TextareaState};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, Sizable, TitleBar, WindowExt as _};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, relative,
+    StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 use serde_json::Value;
 use std::rc::Rc;
@@ -195,6 +196,35 @@ fn live_chip(text: &str) -> AnyElement {
     .into_any_element()
 }
 
+/// 侧栏「作品信息」的紧凑字段行（题材/故事核/目标章数/单章字数）。
+fn meta_field(label: &'static str, state: &Entity<InputState>) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(theme::GAP_SM)
+        .w_full()
+        .child(
+            div()
+                .w(px(56.))
+                .flex_shrink_0()
+                .text_size(theme::FONT_TAG)
+                .text_color(theme::DIM())
+                .child(label),
+        )
+        .child(
+            div().flex_1().min_w_0().child(
+                Input::new(state)
+                    .bg(theme::PANEL2())
+                    .border_1()
+                    .border_color(theme::LINE())
+                    .rounded(theme::RADIUS_BTN_SM)
+                    .text_size(theme::FONT_SMALL)
+                    .text_color(theme::TEXT()),
+            ),
+        )
+        .into_any_element()
+}
+
 impl EventEmitter<WorkspaceEvent> for Workspace {}
 
 pub struct Workspace {
@@ -240,6 +270,12 @@ pub struct Workspace {
     workspace_focus: gpui_kit::FocusHandle,
     /// 选区创作请求的原文（应答到达时转成 SelectionDraft 气泡）
     pending_sel: Option<String>,
+    /// 作品信息（project.json 的 genre/premise/targetChapters/chapterWordTarget）编辑入口
+    meta_genre: Entity<InputState>,
+    meta_premise: Entity<InputState>,
+    meta_target: Entity<InputState>,
+    meta_word_target: Entity<InputState>,
+    meta_open: bool,
 }
 
 impl Workspace {
@@ -290,8 +326,8 @@ impl Workspace {
         cx.subscribe_in(
             &inbox,
             window,
-            |this, _, ev: &InboxEvent, _window, cx| match ev {
-                InboxEvent::Accept(id) => this.accept_proposal(id, cx),
+            |this, _, ev: &InboxEvent, window, cx| match ev {
+                InboxEvent::Accept(id) => this.accept_proposal(id, window, cx),
                 InboxEvent::Reject(id, reason) => this.reject_proposal(id, &reason, cx),
                 InboxEvent::Refresh => {
                     this.inbox.update(cx, |panel, cx| panel.refresh(cx));
@@ -673,6 +709,28 @@ impl Workspace {
         )
         .detach();
 
+        let meta = handle.project_meta();
+        let meta_genre = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("题材，如 武侠 / 悬疑")
+                .default_value(meta.genre.clone())
+        });
+        let meta_premise = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("一句话故事核（premise）")
+                .default_value(meta.premise.clone())
+        });
+        let meta_target = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("目标章数")
+                .default_value(meta.target_chapters.to_string())
+        });
+        let meta_word_target = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("单章目标字数")
+                .default_value(meta.chapter_word_target.to_string())
+        });
+
         Self {
             root,
             handle,
@@ -704,6 +762,11 @@ impl Workspace {
             client: None,
             initialized: false,
             pending_sel: None,
+            meta_genre,
+            meta_premise,
+            meta_target,
+            meta_word_target,
+            meta_open: false,
             autosave: None,
             last_saved: String::new(),
             dsh_running: false,
@@ -751,7 +814,37 @@ impl Workspace {
         }));
     }
 
-    fn accept_proposal(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn accept_proposal(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // 采纳 draft/deslop 会直接改磁盘正文：成功之后必须把编辑器缓冲区从磁盘重载，
+        // 否则随后任意输入触发的 1.5s 自动保存都会用旧缓冲把刚采纳的正文写回去。
+        let touches_current_prose = self
+            .handle
+            .proposals()
+            .into_iter()
+            .find(|p| p.id == id)
+            .is_some_and(|p| {
+                let kind = p.payload.get("kind").and_then(|k| k.as_str());
+                let chapter = p.payload.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                matches!(kind, Some("draft") | Some("deslop")) && chapter == self.chapter
+            });
+
+        // 采纳 draft/deslop 会先对磁盘正文做快照：1.5s 自动保存窗口内的作者手写
+        // 必须先落盘，否则会被采纳后的磁盘重载覆盖，而且不在快照里。
+        if touches_current_prose {
+            self.save_current(cx);
+            // 落盘失败时不能继续采纳：否则快照与随后的磁盘重载都会吃掉未保存手写。
+            let buffer = self.prose.read(cx).value().to_string();
+            if self.handle.prose(self.chapter) != buffer {
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(
+                        TrajKind::Fail("正文未落盘，采纳已取消（先处理保存失败）".into()),
+                        cx,
+                    );
+                });
+                return;
+            }
+        }
+
         match self.handle.accept_proposal(id) {
             Ok((applied, skipped)) => {
                 let note = if skipped.is_empty() {
@@ -762,6 +855,9 @@ impl Workspace {
                 self.trajectory.update(cx, |panel, cx| {
                     panel.push(TrajKind::Info(note), cx);
                 });
+                if applied > 0 && touches_current_prose {
+                    self.reload_prose_from_disk(window, cx);
+                }
             }
             Err(e) => {
                 self.trajectory.update(cx, |panel, cx| {
@@ -772,6 +868,17 @@ impl Workspace {
         self.inbox.update(cx, |panel, cx| panel.refresh(cx));
         self.chapters = self.handle.chapters();
         cx.notify();
+    }
+
+    /// 用磁盘正文覆盖编辑器缓冲（仅用于磁盘侧刚被确定性采纳改写的章节）。
+    fn reload_prose_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.handle.prose(self.chapter);
+        let dirty = self.prose.read(cx).value().to_string() != text;
+        if dirty {
+            self.prose.update(cx, |state, cx| {
+                state.set_value(text.as_str(), window, cx);
+            });
+        }
     }
 
     fn reject_proposal(&mut self, id: &str, reason: &str, cx: &mut Context<Self>) {
@@ -928,6 +1035,12 @@ impl Workspace {
                     }
                     DshEvent::Error(text) => {
                         let _ = this.update(cx, |ws, cx| {
+                            // 运行时退出：清掉缓存 client 与握手标志，下次发送时重建进程；
+                            // 否则之后所有会话都跳过握手、聊天永远停在「思考中…」。
+                            ws.client = None;
+                            ws.initialized = false;
+                            ws.dsh_running = false;
+                            ws.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
                             ws.trajectory
                                 .update(cx, |panel, cx| panel.push(TrajKind::Conn(text), cx));
                         });
@@ -951,6 +1064,7 @@ impl Workspace {
         let client = match self.ensure_client(cx) {
             Ok(c) => c,
             Err(e) => {
+                self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
                 self.trajectory.update(cx, |panel, cx| {
                     panel.push(TrajKind::Fail(format!("启动 DSH 失败：{e}")), cx);
                 });
@@ -968,31 +1082,39 @@ impl Workspace {
         );
         let query_text = text;
         cx.spawn(async move |_, cx| {
-            let need_init = weak
-                .update(cx, |ws, _| {
-                    let need = !ws.initialized;
-                    if need {
-                        ws.initialized = true;
-                    }
-                    need
-                })
-                .unwrap_or(false);
+            let need_init = weak.update(cx, |ws, _| !ws.initialized).unwrap_or(false);
             if need_init {
                 if let Err(e) = initialize_with(&client, &weak, cx).await {
+                    // 握手失败不能把 initialized 留在 true：本次会话后续每次发送都要能重试
                     let _ = weak.update(cx, |ws, cx| {
+                        ws.initialized = false;
+                        ws.client = None;
+                        ws.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
                         ws.trajectory.update(cx, |panel, cx| {
                             panel.push(TrajKind::Fail(format!("握手失败：{e}")), cx)
                         });
                     });
                     return;
                 }
+                // 只有 initialize 成功才算完成进程级握手
+                let _ = weak.update(cx, |ws, _| ws.initialized = true);
             }
             let r = client.session_query(&session_id, &query_text).await;
             let _ = weak.update(cx, |ws, cx| {
-                ws.trajectory.update(cx, |panel, cx| match r {
-                    Ok(_) => panel.push(TrajKind::Info("已入队，等待 DSH 会话事件…".into()), cx),
-                    Err(e) => panel.push(TrajKind::Fail(format!("发送失败：{e}")), cx),
-                });
+                match r {
+                    Ok(_) => ws.trajectory.update(cx, |panel, cx| {
+                        panel.push(TrajKind::Info("已入队，等待 DSH 会话事件…".into()), cx)
+                    }),
+                    Err(e) => {
+                        // 发送失败：结束「思考中」，并让下次发送重建运行时
+                        ws.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+                        ws.client = None;
+                        ws.initialized = false;
+                        ws.trajectory.update(cx, |panel, cx| {
+                            panel.push(TrajKind::Fail(format!("发送失败：{e}")), cx)
+                        });
+                    }
+                }
                 ws.inbox.update(cx, |panel, cx| panel.refresh(cx));
             });
         })
@@ -1010,6 +1132,10 @@ impl Workspace {
                 let status = params.get("status").and_then(|s| s.as_str()).unwrap_or("?");
                 let running = status == "running";
                 self.dsh_running = running;
+                if !running {
+                    // 兜底：空闲态一定结束「思考中…」（turn/end 可能因协议演进缺失）
+                    self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+                }
                 self.trajectory.update(cx, |panel, cx| {
                     panel.push(
                         if running {
@@ -1029,6 +1155,9 @@ impl Workspace {
                     .trim()
                     .to_string();
                 let head: String = final_response.chars().take(120).collect();
+                self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+                // AI 回合中登记的 propose_* 提案要自动出现在收件箱，不能等作者手动刷新
+                self.inbox.update(cx, |panel, cx| panel.refresh(cx));
                 self.trajectory.update(cx, |panel, cx| {
                     panel.push(
                         if head.is_empty() {
@@ -1074,7 +1203,11 @@ impl Workspace {
                     .unwrap_or("")
                     .to_string();
                 let args: String = raw.chars().take(160).collect();
-                Some(TrajKind::Tool { name, args })
+                let call_id = data
+                    .get("callId")
+                    .and_then(|c| c.as_str())
+                    .map(String::from);
+                Some(TrajKind::Tool { name, args, call_id })
             }
             "tool/result" => {
                 let is_err = data
@@ -1084,10 +1217,22 @@ impl Workspace {
                     .unwrap_or(false)
                     || data.get("error").is_some();
                 let content = summarize_tool_result(&data);
+                // DSH tool/result 的 callId 在 message.source.callId（兼容 toolCallId/callId）：
+                // 带上它，轨迹按 id 回填，乱序/并行结果不会错配。
+                let call_id = data
+                    .get("message")
+                    .and_then(|m| {
+                        m.get("source")
+                            .and_then(|s| s.get("callId"))
+                            .or_else(|| m.get("toolCallId"))
+                    })
+                    .or_else(|| data.get("callId"))
+                    .and_then(|c| c.as_str())
+                    .map(String::from);
                 Some(if is_err {
-                    TrajKind::ToolErr(content)
+                    TrajKind::ToolErr { text: content, call_id }
                 } else {
-                    TrajKind::ToolOk(content)
+                    TrajKind::ToolOk { text: content, call_id }
                 })
             }
             "assistant/message" => {
@@ -1126,6 +1271,10 @@ impl Workspace {
                 }
             }
             "turn/end" => {
+                // 无论完成/中止/失败，本轮都结束了——聊天不能继续停在「思考中…」；
+                // 本轮登记的提案也在这里自动刷新进收件箱。
+                self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+                self.inbox.update(cx, |panel, cx| panel.refresh(cx));
                 let reason = data.get("reason");
                 let kind = reason
                     .and_then(|r| r.get("kind"))
@@ -1774,6 +1923,78 @@ impl Workspace {
                     .py(theme::PAD_MD)
                     .border_t_1()
                     .border_color(theme::LINE())
+                    .flex()
+                    .flex_col()
+                    .gap(theme::GAP_SM)
+                    .child(
+                        Button::new("meta-toggle")
+                            .custom(icon_btn(&*cx))
+                            .outline()
+                            .small()
+                            .rounded(theme::RADIUS_BTN_SM)
+                            .w_full()
+                            .label(if self.meta_open { "收起作品信息" } else { "作品信息" })
+                            .tooltip("编辑题材 / 故事核 / 目标章数 / 单章字数")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.meta_open = !this.meta_open;
+                                cx.notify();
+                            })),
+                    )
+                    .when(self.meta_open, |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(theme::GAP_XS)
+                                .child(meta_field("题材", &self.meta_genre))
+                                .child(meta_field("故事核", &self.meta_premise))
+                                .child(meta_field("目标章数", &self.meta_target))
+                                .child(meta_field("单章字数", &self.meta_word_target))
+                                .child(
+                                    Button::new("meta-save")
+                                        .custom(prominent_btn(&*cx))
+                                        .outline()
+                                        .small()
+                                        .rounded(theme::RADIUS_BTN_SM)
+                                        .w_full()
+                                        .label("保存作品信息")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let genre = this.meta_genre.read(cx).value().trim().to_string();
+                                            let premise = this.meta_premise.read(cx).value().trim().to_string();
+                                            let target = this
+                                                .meta_target
+                                                .read(cx)
+                                                .value()
+                                                .trim()
+                                                .parse::<u32>()
+                                                .unwrap_or(0);
+                                            let word_target = this
+                                                .meta_word_target
+                                                .read(cx)
+                                                .value()
+                                                .trim()
+                                                .parse::<u32>()
+                                                .unwrap_or(0);
+                                            match this.handle.update_project_meta(
+                                                &genre,
+                                                &premise,
+                                                target,
+                                                word_target,
+                                            ) {
+                                                Ok(()) => {
+                                                    this.editor.update(cx, |panel, _| {
+                                                        panel.word_target = word_target;
+                                                    });
+                                                    this.show_toast("作品信息已保存", cx);
+                                                }
+                                                Err(e) => {
+                                                    this.show_toast(&format!("保存失败：{e}"), cx)
+                                                }
+                                            }
+                                        })),
+                                ),
+                        )
+                    })
                     .child(
                         Button::new("new-chapter")
                             .custom(prominent_btn(&*cx))

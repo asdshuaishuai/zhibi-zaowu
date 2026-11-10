@@ -36,15 +36,16 @@ struct Inner {
 }
 
 impl Inner {
-    fn write_line(&self, msg: &Value) {
+    fn write_line(&self, msg: &Value) -> Result<()> {
         let mut line = msg.to_string();
         line.push('\n');
-        if let Ok(mut guard) = self.stdin.lock() {
-            if let Some(stdin) = guard.as_mut() {
-                let _ = stdin.write_all(line.as_bytes());
-                let _ = stdin.flush();
-            }
-        }
+        let mut guard = self.stdin.lock().map_err(|_| anyhow!("stdin 锁不可用"))?;
+        let Some(stdin) = guard.as_mut() else {
+            return Err(anyhow!("DSH 运行时已退出（stdin 已关闭）"));
+        };
+        stdin.write_all(line.as_bytes())?;
+        stdin.flush()?;
+        Ok(())
     }
 }
 
@@ -133,6 +134,11 @@ impl DshClient {
         let _ = inner.ui_tx.send_blocking(DshEvent::Error(
             "DSH 运行时已退出（stdout 关闭）——轨迹历史保留在会话日志里。".into(),
         ));
+        // 清空 pending：所有仍在等待响应的 call() 立刻拿到通道关闭错误，
+        // 而不是永久挂在 rx.recv()（聊天停在「思考中…」）。
+        if let Ok(mut pending) = inner.pending.lock() {
+            pending.clear();
+        }
     }
 
     fn route(inner: &Arc<Inner>, msg: Value) {
@@ -158,7 +164,7 @@ impl DshClient {
                     "id": id,
                     "error": {"code": -32601, "message": format!("执笔 M1 未处理服务端请求：{m}")}
                 });
-                inner.write_line(&response);
+                let _ = inner.write_line(&response);
             }
 
             // 通知：转发给 UI
@@ -174,7 +180,10 @@ impl DshClient {
         }
     }
 
-    /// 发出请求并等待对应响应（同 id 唤醒）。
+    /// 单次 RPC 的最长等待：运行时若卡死/静默退出，调用方必须拿到错误而不是永久挂起。
+    const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// 发出请求并等待对应响应（同 id 唤醒；超时/进程退出都会返回错误）。
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = async_channel::bounded::<Value>(1);
@@ -190,7 +199,33 @@ impl DshClient {
             "method": method,
             "params": params,
         });
-        self.inner.write_line(&request);
+        if let Err(e) = self.inner.write_line(&request) {
+            // 写不出去就不要挂着等一个永远不会来的响应
+            if let Ok(mut pending) = self.inner.pending.lock() {
+                pending.remove(&id);
+            }
+            return Err(anyhow!("{method} 发送失败：{e}"));
+        }
+
+        // 看门狗：超时仍未收到响应 → 从 pending 表移除 sender，recv 立即得 Err。
+        // 每请求一个短生命周期线程，读写端都不依赖额外 async 运行时。
+        let timeout_inner = Arc::clone(&self.inner);
+        let timeout_id = id;
+        let timeout_method = method.to_string();
+        let _ = std::thread::Builder::new()
+            .name("dsh-call-timeout".into())
+            .spawn(move || {
+                std::thread::sleep(Self::CALL_TIMEOUT);
+                if let Ok(mut pending) = timeout_inner.pending.lock() {
+                    if let Some(tx) = pending.remove(&timeout_id) {
+                        let _ = tx.send_blocking(json!({
+                            "jsonrpc": "2.0",
+                            "id": timeout_id,
+                            "error": {"code": -32000, "message": format!("{timeout_method} 超时（120s 无响应）")}
+                        }));
+                    }
+                }
+            });
 
         let response = rx
             .recv()

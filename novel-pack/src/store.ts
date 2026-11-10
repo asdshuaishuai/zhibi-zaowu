@@ -17,7 +17,8 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export function safeFileName(s: string): string {
-  return s.replace(/[/\\:*?"<>|\n\r\t]/g, '_').trim() || '未命名'
+  // 与 Rust safe_file_name 对齐：空/全非法标题统一落到「未命名作品」
+  return s.replace(/[/\\:*?"<>|\n\r\t]/g, '_').trim() || '未命名作品'
 }
 
 export function chapterDirName(n: number): string {
@@ -36,13 +37,31 @@ export interface Proposal {
   createdAt: string
   decidedAt?: string
   rejectReason?: string
+  /** 采纳结果快照：已决历史重启后仍能回放实际入库/跳过情况（Rust/TS 双端字段兼容）。 */
+  applyResult?: {
+    applied: number
+    message?: string
+    skipped?: string[]
+    at?: string
+  }
 }
 
 export class NovelStore {
   readonly root: string
+  /** 提案箱读改写串行化：并发 propose 不能互相覆盖。 */
+  private proposalWriteTail: Promise<void> = Promise.resolve()
 
   constructor(root: string) {
     this.root = root
+  }
+
+  private serializeProposalWrite<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.proposalWriteTail.then(fn)
+    this.proposalWriteTail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
   }
 
   private path(...parts: string[]): string {
@@ -79,6 +98,13 @@ export class NovelStore {
       // 坏 JSON 隔离：用户数据宁可空出来也不要崩
       return fallback
     }
+  }
+
+  /** 写路径严格读：文件不存在返回 undefined；坏 JSON 抛错，避免拿空值覆盖用户台账。 */
+  async readJSONChecked<T>(rel: string): Promise<T | undefined> {
+    const p = this.path(rel)
+    if (!existsSync(p)) return undefined
+    return JSON.parse(await readFile(p, 'utf8')) as T
   }
 
   async writeJSON(rel: string, value: unknown): Promise<void> {
@@ -125,9 +151,10 @@ export class NovelStore {
     const out: number[] = []
     for (const name of await readdir(dir)) {
       const m = /^ch-(\d{3,})$/.exec(name)
-      if (m && existsSync(join(dir, name, 'prose.md'))) {
-        out.push(Number(m[1]))
-      }
+      if (!m) continue
+      // 与 Rust last_written_chapter 同口径：空 prose.md 不算成稿。
+      const prose = await readFile(join(dir, name, 'prose.md'), 'utf8').catch(() => null)
+      if (prose !== null && prose.trim() !== '') out.push(Number(m[1]))
     }
     return out.sort((a, b) => a - b)
   }
@@ -143,7 +170,18 @@ export class NovelStore {
   }
 
   async canonDoc(title: string): Promise<string | null> {
-    return this.readText(join('canon', `${safeFileName(title)}.md`))
+    // 空标题不是合法查询：不能落到「未命名作品.md」上
+    const name = title.trim()
+    if (!name) return null
+    return this.readText(join('canon', `${safeFileName(name)}.md`))
+  }
+
+  /** 同目录改名（设定归类规范化），目标存在与否由调用方先判。 */
+  async moveText(fromRel: string, toRel: string): Promise<void> {
+    const from = this.path(fromRel)
+    const to = this.path(toRel)
+    await mkdir(dirname(to), { recursive: true })
+    await rename(from, to)
   }
 
   // —— 台账 ——
@@ -178,29 +216,42 @@ export class NovelStore {
 
   // —— 提案流水 ——
 
+  /** 只读展示：宽松读取，坏 JSON 当空。写路径一律用 proposalsChecked。 */
   async proposals(): Promise<Proposal[]> {
     return this.readJSON<Proposal[]>(join('proposals', 'inbox.json'), [])
   }
 
+  /** 写路径严格读：坏 JSON / 顶层不是数组直接拒绝，避免把整本提案历史覆盖成空表。 */
+  async proposalsChecked(): Promise<Proposal[]> {
+    const v = await this.readJSONChecked<unknown>(join('proposals', 'inbox.json'))
+    if (v === undefined) return []
+    if (!Array.isArray(v)) throw new Error('proposals/inbox.json 顶层不是数组，已拒绝覆盖')
+    return v as Proposal[]
+  }
+
   async addProposal(p: Omit<Proposal, 'id' | 'status' | 'createdAt'>): Promise<Proposal> {
-    const list = await this.proposals()
-    const full: Proposal = {
-      ...p,
-      id: crypto.randomUUID(),
-      status: '待确认',
-      createdAt: new Date().toISOString(),
-    }
-    list.unshift(full)
-    await this.writeJSON(join('proposals', 'inbox.json'), list)
-    return full
+    return this.serializeProposalWrite(async () => {
+      const list = await this.proposalsChecked()
+      const full: Proposal = {
+        ...p,
+        id: crypto.randomUUID(),
+        status: '待确认',
+        createdAt: new Date().toISOString(),
+      }
+      list.unshift(full)
+      await this.writeJSON(join('proposals', 'inbox.json'), list)
+      return full
+    })
   }
 
   async updateProposal(id: string, patch: Partial<Proposal>): Promise<Proposal | null> {
-    const list = await this.proposals()
-    const idx = list.findIndex((p) => p.id === id)
-    if (idx < 0) return null
-    list[idx] = { ...list[idx], ...patch, decidedAt: new Date().toISOString() }
-    await this.writeJSON(join('proposals', 'inbox.json'), list)
-    return list[idx]
+    return this.serializeProposalWrite(async () => {
+      const list = await this.proposalsChecked()
+      const idx = list.findIndex((p) => p.id === id)
+      if (idx < 0) return null
+      list[idx] = { ...list[idx], ...patch, decidedAt: new Date().toISOString() }
+      await this.writeJSON(join('proposals', 'inbox.json'), list)
+      return list[idx]
+    })
   }
 }
