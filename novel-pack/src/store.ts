@@ -151,7 +151,17 @@ export class NovelStore {
   }
 
   async outline(): Promise<Record<string, unknown>> {
-    return this.readJSON<Record<string, unknown>>('outline.json', {})
+    // 真实磁盘布局：storylines.json / events.json / stages.json 三文件分储
+    //（outline.json 为旧兼容路径，存在则合并兜底）
+    const legacy = await this.readJSON<Record<string, unknown>>('outline.json', {})
+    const storylines = await this.readJSON<unknown[]>('storylines.json', (Array.isArray(legacy['storylines']) ? legacy['storylines'] : []))
+    const events = await this.readJSON<unknown[]>('events.json', (Array.isArray(legacy['events']) ? legacy['events'] : []))
+    const stages = await this.readJSON<unknown[]>('stages.json', (Array.isArray(legacy['stages']) ? legacy['stages'] : []))
+    return { storylines, events, stages }
+  }
+
+  async saveStorylines(lines: unknown[]): Promise<void> {
+    await this.writeJSON('storylines.json', lines)
   }
 
   // —— 预言书沙盒（M7）——

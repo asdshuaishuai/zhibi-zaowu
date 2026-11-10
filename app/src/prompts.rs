@@ -77,7 +77,6 @@ before/after/reason，衍生实体自动标 line。\
 }
 
 /// 导演台排期核对任务书（M7-3）：章×幕排期板触发骨架合同核对。
-#[allow(dead_code)] // M7-3 接线导演台面板前保留
 pub fn director_task(chapter: u32) -> String {
     format!(
         "导演台核对第{chapter}章排期：对照骨架合同（到期伏笔应收/种/兑）与故事线健康度，\

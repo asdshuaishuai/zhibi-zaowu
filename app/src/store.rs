@@ -1,7 +1,8 @@
 //! .zhibi 项目存取（Rust 侧，与执笔 SwiftUI 版磁盘格式双向兼容）。
 //!
-//! 布局：`~/Documents/执笔/<书名>.zhibi/{project.json, canon/, outline.json,
-//! clues.json, memory.json, proposals/inbox.json, chapters/ch-NNN/{meta.json, prose.md}}`
+//! 布局：`~/Documents/执笔/<书名>.zhibi/{project.json, canon/, storylines.json,
+//! events.json, stages.json, clues.json, memory.json, worldlines.json, canvas.json,
+//! proposals/inbox.json, chapters/ch-NNN/{meta.json, prose.md}}`
 //! project.json 字段为 camelCase，createdAt 为 ISO8601（Swift .iso8601 策略可读回）。
 
 use std::path::{Path, PathBuf};
@@ -375,6 +376,44 @@ mod tests {
     }
 
     #[test]
+    fn director_sovereign_edits() {
+        let home = temp_home("director");
+        unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("导演测试").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        std::fs::write(dir.join("events.json"), serde_json::to_string(&serde_json::json!([
+            { "id": "E01", "chapter": 3, "objectiveFact": "灯灭", "revealed": true, "storylineIDs": ["L01"] }
+        ])).unwrap());
+        std::fs::write(dir.join("clues.json"), serde_json::to_string(&serde_json::json!([
+            { "id": "F01", "title": "半块虎符", "status": "埋下", "plantedChapter": 3, "lastActionChapter": 3 }
+        ])).unwrap());
+        std::fs::write(dir.join("storylines.json"), serde_json::to_string(&serde_json::json!([
+            { "id": "L01", "name": "主线", "status": "进行中" }
+        ])).unwrap());
+
+        // 作者拖卡改期：事件与伏笔都落对文件
+        let label = handle.set_event_chapter("E01", 9).unwrap();
+        assert_eq!(label, "灯灭");
+        assert_eq!(handle.events()[0]["chapter"], serde_json::json!(9));
+        handle.set_clue_planted("F01", 9).unwrap();
+        assert_eq!(handle.clues_full()[0]["plantedChapter"], serde_json::json!(9));
+
+        // 晋升链的 outlineUpdates 写 storylines.json（不是 outline.json）
+        let payload = serde_json::json!({ "kind": "outlineUpdates", "updates": [{ "storylineID": "L01", "status": "断线", "note": "12 章无动作" }] });
+        let (applied, _) = handle.apply_payload(&payload).unwrap();
+        assert_eq!(applied, 1);
+        let sl = handle.storylines();
+        assert_eq!(sl[0]["status"], serde_json::json!("断线"));
+        assert_eq!(sl[0]["syncNote"], serde_json::json!("12 章无动作"));
+        assert!(!dir.join("outline.json").exists(), "绝不产生旧合并文件");
+
+        // 不存在对象报错（导演台拒拖野卡）
+        assert!(handle.set_event_chapter("E99", 1).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn worldline_promote_chain() {
         let home = temp_home("m7");
         unsafe { std::env::set_var("HOME", &home); }
@@ -566,33 +605,24 @@ impl ProjectHandle {
             }
             "outlineUpdates" => {
                 let updates = payload.get("updates").and_then(|d| d.as_array()).cloned().unwrap_or_default();
-                let path = self.root.join("outline.json");
-                let mut o: serde_json::Value = std::fs::read_to_string(&path).ok()
-                    .and_then(|t| serde_json::from_str(&t).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                let lines = o.get("storylines").and_then(|s| s.as_array()).cloned().unwrap_or_default();
-                let mut new_lines = lines;
+                let mut lines = self.storylines();
                 for u in updates {
                     let sid = u.get("storylineID").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                    if let Some(pos) = new_lines.iter().position(|l| l.get("id").and_then(|i| i.as_str()) == Some(sid.as_str())) {
-                        let upd = u.clone();
-                        let l = &mut new_lines[pos];
-                        if let (Some(obj), Some(l_obj)) = (upd.as_object(), l.as_object_mut()) {
-                            if let Some(st) = obj.get("status") { l_obj.insert("status".into(), st.clone()); }
-                            l_obj.insert("syncNote".into(), obj.get("note").cloned().unwrap_or(serde_json::json!("")));
-                            l_obj.insert("syncAt".into(), serde_json::json!(iso_now()));
+                    if let Some(pos) = lines.iter().position(|l| l.get("id").and_then(|i| i.as_str()) == Some(sid.as_str())) {
+                        let l = &mut lines[pos];
+                        if let Some(st) = u.get("status") {
+                            if let Some(obj) = l.as_object_mut() { obj.insert("status".into(), st.clone()); }
+                        }
+                        if let Some(obj) = l.as_object_mut() {
+                            obj.insert("syncNote".into(), u.get("note").cloned().unwrap_or(serde_json::json!("")));
+                            obj.insert("syncAt".into(), serde_json::json!(iso_now()));
                         }
                         applied += 1;
                     } else {
                         skipped.push(format!("[{sid}] 未找到"));
                     }
                 }
-                if let Some(obj) = o.as_object_mut() {
-                    obj.insert("storylines".into(), serde_json::json!(new_lines));
-                    let tmp = path.with_extension("json.tmp");
-                    std::fs::write(&tmp, serde_json::to_string_pretty(&o).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-                    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-                }
+                self.save_array("storylines.json", &lines)?;
             }
             "canonClassify" => {
                 let items = payload.get("items").and_then(|c| c.as_array()).cloned().unwrap_or_default();
@@ -718,6 +748,53 @@ impl ProjectHandle {
     }
     pub fn events(&self) -> Vec<serde_json::Value> {
         self.read_array("events.json")
+    }
+    #[allow(dead_code)] // 幕带（stages）可视化排在 M7-4
+    pub fn stages(&self) -> Vec<serde_json::Value> {
+        self.read_array("stages.json")
+    }
+
+    fn save_array(&self, file: &str, arr: &[serde_json::Value]) -> Result<(), String> {
+        let path = self.root.join(file);
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(arr).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    /// 导演台：作者亲笔拖卡改期（主权编辑，直写台账；非 AI 通道）。
+    pub fn set_event_chapter(&self, event_id: &str, chapter: u32) -> Result<String, String> {
+        let mut events = self.events();
+        let idx = events
+            .iter()
+            .position(|e| e.get("id").and_then(|i| i.as_str()) == Some(event_id))
+            .ok_or_else(|| format!("事件 {event_id} 不存在"))?;
+        let obj = events[idx].as_object_mut().ok_or("事件条目格式异常")?;
+        obj.insert("chapter".into(), serde_json::json!(chapter));
+        let label = obj
+            .get("objectiveFact")
+            .and_then(|f| f.as_str())
+            .unwrap_or(event_id)
+            .chars()
+            .take(12)
+            .collect();
+        self.save_array("events.json", &events)?;
+        Ok(label)
+    }
+
+    /// 导演台：拖动伏笔埋设卡改埋入章。
+    pub fn set_clue_planted(&self, clue_id: &str, chapter: u32) -> Result<String, String> {
+        let mut clues = self.clues_full();
+        let idx = clues
+            .iter()
+            .position(|x| x.get("id").and_then(|i| i.as_str()) == Some(clue_id))
+            .ok_or_else(|| format!("伏笔 {clue_id} 不存在"))?;
+        let obj = clues[idx].as_object_mut().ok_or("伏笔条目格式异常")?;
+        obj.insert("plantedChapter".into(), serde_json::json!(chapter));
+        obj.insert("lastActionChapter".into(), serde_json::json!(chapter));
+        let label = obj.get("title").and_then(|t| t.as_str()).unwrap_or(clue_id).chars().take(12).collect();
+        self.save_array("clues.json", &clues)?;
+        Ok(label)
     }
     pub fn memory_facts(&self) -> Vec<serde_json::Value> {
         let path = self.root.join("memory.json");

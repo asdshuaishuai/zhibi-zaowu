@@ -252,6 +252,7 @@ worldlines.json: [{
 
 - **M7-1 ✅**：`app/src/canvas.rs::CanvasPanel` — 节点卡（故事线/事件/人物/伏笔/设定）+ `canvas()` 三次贝塞尔边（influence/plant/payoff，暗线虚线 PURPLE）+ 拖节点/空白平移/±缩放/⊡复位 + 点选一阶影响半径侧板 + 读者视角（隐未揭示事件与暗线）；视图态持久化 `canvas.json`（view/pos/reader），不碰正典。侧栏 Mode::Canvas（Waypoints 图标）。
 - **M7-2 ✅**：数据底座 `worldlines.json`（α 基准行，Rust `ensure_m7_files` + novel-pack `ensureDirs`/自愈三处同语义）；novel-pack 五工具 `get_world_state/propose_worldline/simulate_worldline/promote_diff/archive_worldline`（共 22 工具注册通过）；`OraclePanel`（Mode::Oracle，Sparkle 图标）：世界线列表 + 影响清单逐条「晋升为提案」（走 `store.promote_diff`，幂等）+ 衍生 line 归属标 + 底部假设 composer（发射 `oracle_task` 进同一条 DSH 会话，轨迹窗全程可见）；`canonRevise`（采纳前自动备份到 `canon/backups/`）/`outlineUpdates` 确定性落库双端（TS+Rust）实现。
-- **M7-3 ⏳**：导演台面板待接（`prompts::director_task` 已就位）。
-- **M7-4 部分 ✅**：读者视角/暗线虚线/影响半径随 M7-1 落地；框选成组未做。
+- **M7-3 ✅**：`app/src/director.rs::DirectorPanel` — 8 章窗口排期板：事件卡（蓝点/暗线紫点）+ 伏笔埋设卡（琥珀◆）跨列拖拽改期，落点=列 on_mouse_up 命中，直写 `events.json.chapter`/`clues.json.plantedChapter`（作者主权亲笔通道，非 AI）；窗口外存量入「待排期」池；底部确定性预警条（无覆盖章/伏笔静默≥8 章/断线线/窗口内未揭示数）；每列「AI 核对」→ `prompts::director_task` 进 DSH 会话。侧栏 Mode::Director（Kanban 图标）。测试 `director_sovereign_edits` 通过。
+- **重要修复（M7-3 期间发现的双端错文件 bug）**：真实磁盘账本是 `storylines.json`/`events.json`/`stages.json` 三文件分储，旧 TS `outline()` 读 `outline.json`、`outlineUpdates` 落库也写 `outline.json`——对真实项目全是空读/错写。现 TS `outline()` 三文件合并读（outline.json 仅作兼容兜底），双端 `outlineUpdates` 落库统一改写 `storylines.json`；`memory.json` 人物键统一为 `aliases[].canonicalName`（TS world_state、Rust 画板人物节点同修）。
+- **M7-4 部分 ✅**：读者视角/暗线虚线/影响半径随 M7-1 落地；画板新增 `involve` 绿边（memory.facts subject×fromChapter 确定映射）；框选成组未做；stages 幕带可视化待接。
 - 交互原型：`design/canvas.html`（三视图可点可拖，已从首页卡片接入）；测试 `worldline_promote_chain` 通过（沙盒→晋升→采纳→备份→幂等→视图态往返全链）。

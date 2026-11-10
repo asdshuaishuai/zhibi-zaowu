@@ -452,7 +452,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
           const clues = await store.clues()
           const titles = await store.canonTitles()
           const mem = await store.readJSON<Record<string, unknown>>('memory.json', {})
-          const aliases = Array.isArray(mem['characterAliases']) ? (mem['characterAliases'] as any[]) : []
+          const aliases = Array.isArray(mem['aliases']) ? (mem['aliases'] as any[]) : []
           const wls = await store.worldlines()
           return JSON.stringify(
             {
@@ -466,7 +466,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean): void {
               })),
               clues: clues.map((c: any) => ({ id: c.id, title: c.title, status: c.status, plantedChapter: c.plantedChapter, lastActionChapter: c.lastActionChapter })),
               canon: titles.map((t) => ({ title: t })),
-              characters: aliases.map((a: any) => ({ name: a.alias ?? a.name ?? '?', canonical: a.canonical ?? '' })),
+              characters: aliases.map((a: any) => ({ canonical: a.canonicalName ?? '?', aka: (a.aliases ?? []).join('、') })),
               worldlines: wls.map((w) => ({ id: w.id, name: w.name, premise: w.premise, forkedChapter: w.forkedChapter, status: w.status, nodes: (w.nodes ?? []).length, diffs: (w.diffs ?? []).length, promoted: (w.diffs ?? []).filter((d: any) => d.promoted).length })),
             },
             null,
@@ -724,7 +724,7 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<string> {
         l.syncAt = new Date().toISOString()
         applied += 1
       }
-      await store.writeJSON('outline.json', { ...o, storylines: lines })
+      await store.saveStorylines(lines)
       return `大纲同步 ${applied}/${updates.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}`
     }
     default:

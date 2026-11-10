@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use crate::chat::{ChatEvent, ChatMsg, ChatPanel};
 use crate::canvas::{CanvasPanel, OracleEvent, OraclePanel};
+use crate::director::{DirectorEvent, DirectorPanel};
 use crate::dsh::{DshClient, DshEvent, model_route};
 use crate::editor::{EditorEvent, EditorPanel};
 use crate::inbox::{InboxEvent, InboxPanel};
@@ -57,6 +58,7 @@ pub enum Mode {
     Import,
     Graph,
     Canvas,
+    Director,
     Oracle,
 }
 
@@ -75,6 +77,7 @@ impl Mode {
             Mode::Import => "导入旧稿",
             Mode::Graph => "记忆图谱",
             Mode::Canvas => "剧情画板",
+            Mode::Director => "导演台",
             Mode::Oracle => "预言书",
         }
     }
@@ -94,13 +97,14 @@ impl Mode {
             Mode::Import => IconName::FolderInput,
             Mode::Graph => IconName::Network,
             Mode::Canvas => IconName::Waypoints,
+            Mode::Director => IconName::Kanban,
             Mode::Oracle => IconName::Sparkle,
         }
     }
 }
 
 /// 侧栏导航顺序（与原实现一致，只是改为数据表以便统一出行）。
-const NAV: [Mode; 13] = [
+const NAV: [Mode; 14] = [
     Mode::Editor,
     Mode::Outline,
     Mode::Canon,
@@ -109,6 +113,7 @@ const NAV: [Mode; 13] = [
     Mode::Clues,
     Mode::Characters,
     Mode::Canvas,
+    Mode::Director,
     Mode::Oracle,
     Mode::Graph,
     Mode::Snapshots,
@@ -210,6 +215,7 @@ pub struct Workspace {
     import_view: Entity<ImportPanel>,
     graph_view: Entity<GraphPanel>,
     canvas_view: Entity<CanvasPanel>,
+    director_view: Entity<DirectorPanel>,
     oracle_view: Entity<OraclePanel>,
     chat: Entity<ChatPanel>,
     /// 分支卡数据（与 EditorPanel 同步；采纳读这里）
@@ -305,6 +311,7 @@ impl Workspace {
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
         let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
         let canvas_view = cx.new(|cx| CanvasPanel::new(cx, handle.clone()));
+        let director_view = cx.new(|cx| DirectorPanel::new(cx, handle.clone(), chapter));
         let oracle_view = cx.new(|cx| OraclePanel::new(window, cx, handle.clone()));
         let chat = cx.new(|cx| ChatPanel::new(window, cx));
 
@@ -534,6 +541,18 @@ impl Workspace {
         )
         .detach();
 
+// 导演台：AI 核对走 DSH 会话（轨迹窗可见），拖卡改期是作者亲笔直写
+        cx.subscribe(
+            &director_view,
+            |this, _, ev: &DirectorEvent, cx| match ev {
+                DirectorEvent::Review(chap) => {
+                    let ch = if *chap == 0 { this.chapter } else { *chap };
+                    this.on_send(prompts::director_task(ch), cx);
+                }
+            },
+        )
+        .detach();
+
         cx.subscribe(
             &prose,
             |this, _, ev: &gpui_kit::component::input::InputEvent, cx| {
@@ -668,6 +687,7 @@ impl Workspace {
             import_view,
             graph_view,
             canvas_view,
+            director_view,
             oracle_view,
             chat,
             branches: Vec::new(),
@@ -798,6 +818,10 @@ impl Workspace {
             Mode::Canvas => {
                 self.canvas_view.update(cx, |panel, _cx| panel.refresh());
                 panel_handle(self.canvas_view.clone())
+            }
+            Mode::Director => {
+                self.director_view.update(cx, |panel, _cx| panel.refresh());
+                panel_handle(self.director_view.clone())
             }
             Mode::Oracle => panel_handle(self.oracle_view.clone()),
         };

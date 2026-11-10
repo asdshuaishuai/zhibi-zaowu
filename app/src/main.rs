@@ -4,6 +4,7 @@
 mod app_root;
 mod canvas;
 mod chat;
+mod director;
 mod dsh;
 mod editor;
 mod inbox;

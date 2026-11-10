@@ -141,12 +141,17 @@ impl CanvasPanel {
             counts[1] += 1;
         }
         for a in self.handle.aliases() {
-            let alias = s(&a, "alias");
+            let canon = s(&a, "canonicalName");
+            let aka = a
+                .get("aliases")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("、"))
+                .unwrap_or_default();
             nodes.push(CNode {
                 kind: "character",
-                id: format!("A:{alias}"),
-                label: alias,
-                meta: s(&a, "canonical"),
+                id: format!("A:{canon}"),
+                label: canon,
+                meta: aka,
                 hidden: false,
                 x: col("character"),
                 y: 60. + counts[2] as f32 * (NODE_H + 44.),
@@ -191,8 +196,25 @@ impl CanvasPanel {
             }
         }
 
-        // 边（数据驱动：事件挂线 / 伏笔埋收）
+        // 边（数据驱动：事件挂线 / 伏笔埋收 / 事实牵线）
         let mut edges: Vec<CEdge> = Vec::new();
+        // involve：记忆事实 subject=人名、fromChapter=事件章 → 人物↔事件
+        for f in self.handle.memory_facts() {
+            let subj = s(&f, "subject");
+            let ch = f.get("fromChapter").and_then(|v| v.as_u64());
+            let Some(ci) = nodes.iter().position(|n| n.kind == "character" && n.label == subj) else { continue };
+            for e in self.handle.events() {
+                if e.get("chapter").and_then(|v| v.as_u64()) == ch {
+                    if let Some(ei) = nodes.iter().position(|n| n.id == s(&e, "id")) {
+                        let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
+                        let has = edges.iter().any(|x| (x.from == ci && x.to == ei) || (x.from == ei && x.to == ci));
+                        if !has {
+                            edges.push(CEdge { from: ci, to: ei, kind: "involve", hidden: !revealed && f.get("publicToReader").and_then(|p| p.as_bool()) == Some(false) });
+                        }
+                    }
+                }
+            }
+        }
         for e in self.handle.events() {
             let eid = s(&e, "id");
             let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
@@ -269,6 +291,7 @@ impl CanvasPanel {
             let kind = match e.kind {
                 "plant" => "埋设",
                 "payoff" => "兑现",
+                "involve" => "牵涉",
                 _ => "影响",
             };
             out.push((format!("{kind}{dir}{}", if e.hidden { "·暗" } else { "" }), name));
@@ -317,10 +340,14 @@ impl Render for CanvasPanel {
                     |_, _, _| {},
                     move |bounds, _, window, _| {
                         for (x1, y1, x2, y2, kind, hidden) in &segs {
-                            let color = match *kind {
-                                "plant" | "payoff" => theme::AMBER(),
-                                _ if *hidden => theme::PURPLE(),
-                                _ => theme::DIM(),
+                            let color = if *hidden {
+                                theme::PURPLE()
+                            } else {
+                                match *kind {
+                                    "plant" | "payoff" => theme::AMBER(),
+                                    "involve" => theme::GREEN(),
+                                    _ => theme::DIM(),
+                                }
                             };
                             let mut b = PathBuilder::stroke(px(1.4));
                             if *hidden {
