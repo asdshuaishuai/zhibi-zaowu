@@ -747,6 +747,16 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
             case '伏笔':
               p = await store.addProposal({ capability: '预言书·晋升', title: `伏笔入账（线${w.id}）`, note: `晋升自世界线推演：${reason}`, payload: { kind: 'clues', clues: [{ title: String(d.targetRef), detail: after, plantedChapter: w.forkedChapter }], sourceRefs: [`线${w.id}`, `伏笔:${d.targetRef}`] } })
               break
+            case '人物':
+              // 人物新增 → 别名档案提案（人物/关系维事实源）
+              p = await store.addProposal({ capability: '预言书·晋升', title: `人物档案（线${w.id}）`, note: `晋升自世界线推演：${reason}`, payload: { kind: 'aliases', aliases: [{ canonicalName: String(d.targetRef), aliases: [] }], sourceRefs: [`线${w.id}`, `人物:${d.targetRef}`] } })
+              break
+            case '事件':
+              if (d.kind === 'add' && !(Number(args.targetChapter) > 0)) {
+                return '事件类新增影响请用「排期晋升」（带 targetChapter → plannedEvent），避免生成找不到故事线的空洞更新。'
+              }
+              p = await store.addProposal({ capability: '预言书·晋升', title: `大纲更新（线${w.id}）`, note: `晋升自世界线推演 ${d.target}·${d.targetRef}：${reason}`, payload: { kind: 'outlineUpdates', updates: [{ storylineID: String(d.targetRef), note: after }], sourceRefs: [`线${w.id}`, `故事线:${d.targetRef}`] } })
+              break
             default:
               p = await store.addProposal({ capability: '预言书·晋升', title: `大纲更新（线${w.id}）`, note: `晋升自世界线推演 ${d.target}·${d.targetRef}：${reason}`, payload: { kind: 'outlineUpdates', updates: [{ storylineID: String(d.targetRef), note: after }], sourceRefs: [`线${w.id}`, `故事线:${d.targetRef}`] } })
           }

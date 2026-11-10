@@ -432,7 +432,7 @@ impl CanvasPanel {
                         n.get("x").and_then(|v| v.as_f64()).unwrap_or(0.).abs() > 1.
                             || n.get("y").and_then(|v| v.as_f64()).unwrap_or(0.).abs() > 1.
                     });
-                    for (i, nj) in nn.iter().enumerate() {
+                    for nj in nn.iter() {
                         let raw_kind = s(nj, "kind");
                         let kind: &'static str = match raw_kind.as_str() {
                             "storyline" => "storyline",
@@ -1450,15 +1450,32 @@ impl Render for OraclePanel {
                     (theme::AMBER(), theme::AMBER_SOFT())
                 };
                 let idx_u = idx;
+                // 事件类新增：预告的是「后续要发生的事」——按分歧章做排期晋升（plannedEvent），
+                // 不走 outlineUpdates（那条路要找故事线 id，必然落空）。
+                let event_add = target == "事件" && s(&d, "kind") == "add";
+                let fork_ch = w.get("forkedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let btn_label = if event_add { "晋升排期" } else { "晋升为提案" };
                 let promote_btn = Button::new(SharedString::from(format!("promote-{idx}")))
                     .xsmall()
-                    .label("晋升为提案")
+                    .label(btn_label)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let wid = this.selected.clone().unwrap_or_default();
-                        match this.handle.promote_diff(&wid, idx_u) {
+                        let res = if event_add {
+                            if fork_ch == 0 {
+                                Err("该线没有分歧章（forkedChapter=0），无法排期晋升".to_string())
+                            } else {
+                                this.handle.promote_diff_chapter(&wid, idx_u, fork_ch)
+                            }
+                        } else {
+                            this.handle.promote_diff(&wid, idx_u)
+                        };
+                        match res {
                             Ok(pid) => {
-                                this.message =
-                                    Some(format!("已晋升 → 提案 {pid}（收件箱待裁决）").into());
+                                this.message = Some(if event_add {
+                                    format!("已排期晋升（第{fork_ch}章）→ 提案 {pid}（收件箱待裁决）").into()
+                                } else {
+                                    format!("已晋升 → 提案 {pid}（收件箱待裁决）").into()
+                                });
                                 cx.emit(OracleEvent::Promoted {
                                     worldline: wid.clone(),
                                     proposal_id: pid,

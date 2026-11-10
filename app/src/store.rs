@@ -656,6 +656,44 @@ mod tests {
     }
 
     #[test]
+    fn worldline_promote_targets() {
+        let home = temp_home("wltargets");
+        unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("晋升分流").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        let mut lines = h.worldlines();
+        lines.push(serde_json::json!({
+            "id": "β", "name": "预测", "kind": "forecast", "premise": "x", "forkedChapter": 7,
+            "status": "已推演", "nodes": [], "edges": [],
+            "diffs": [
+                { "target": "人物", "targetRef": "镖局遗孤", "kind": "add", "after": "新增人物", "reason": "承接伏笔" },
+                { "target": "事件", "targetRef": "新", "kind": "add", "after": "回镇遇伏", "reason": "F01 到期" }
+            ],
+            "derived": {}
+        }));
+        h.save_worldlines(&lines).unwrap();
+
+        // 人物 add → aliases 提案（不再落成找不到故事线的 outlineUpdates）
+        let pid = h.promote_diff("β", 0).unwrap();
+        let p = h.proposals().into_iter().find(|p| p.id == pid).unwrap();
+        assert_eq!(p.payload["kind"], serde_json::json!("aliases"));
+        assert_eq!(p.payload["aliases"][0]["canonicalName"], serde_json::json!("镖局遗孤"));
+        let (applied, _) = h.accept_proposal(&pid).unwrap();
+        assert_eq!(applied, 1);
+        assert!(h.aliases().iter().any(|a| a["canonicalName"] == serde_json::json!("镖局遗孤")));
+
+        // 事件 add 无章 → 拒绝并指路排期晋升
+        let err = h.promote_diff("β", 1).unwrap_err();
+        assert!(err.contains("排期晋升"), "{err}");
+        // 带章 → plannedEvent 提案
+        let pid2 = h.promote_diff_chapter("β", 1, 7).unwrap();
+        let p2 = h.proposals().into_iter().find(|p| p.id == pid2).unwrap();
+        assert_eq!(p2.payload["kind"], serde_json::json!("plannedEvent"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn worldline_archive_toggle() {
         let home = temp_home("wlarch");
         unsafe { std::env::set_var("HOME", &home); }
@@ -2336,6 +2374,13 @@ impl ProjectHandle {
             ("设定", "add") => serde_json::json!({ "kind": "canon", "docs": [{ "title": target_ref, "content": after }], "sourceRefs": [format!("线{worldline_id}"), format!("设定:{target_ref}")] }),
             ("设定", _) => serde_json::json!({ "kind": "canonRevise", "items": [{ "title": target_ref, "content": after }], "sourceRefs": [format!("线{worldline_id}"), format!("设定:{target_ref}")] }),
             ("伏笔", _) => serde_json::json!({ "kind": "clues", "clues": [{ "title": target_ref, "detail": after, "plantedChapter": forked }], "sourceRefs": [format!("线{worldline_id}"), format!("伏笔:{target_ref}")] }),
+            // 人物新增 → 别名档案提案（人物/关系维的事实源）
+            ("人物", _) => serde_json::json!({ "kind": "aliases", "aliases": [{ "canonicalName": target_ref, "aliases": [] }], "sourceRefs": [format!("线{worldline_id}"), format!("人物:{target_ref}")] }),
+            // 事件新增必须带排期章（promote_diff_chapter → plannedEvent）；无章时明确拒绝，
+            // 否则会生成一条「找不到故事线」的 outlineUpdates。
+            ("事件", "add") => {
+                return Err("事件类新增影响请用「排期晋升」（预言书/导演台按章晋升 → plannedEvent）".into())
+            }
             _ => serde_json::json!({ "kind": "outlineUpdates", "updates": [{ "storylineID": target_ref, "note": after }], "sourceRefs": [format!("线{worldline_id}"), format!("故事线:{target_ref}")] }),
         };
         let id = uuid_like();
