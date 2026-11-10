@@ -196,7 +196,9 @@ zhibi-next/
 2. **novel-pack 分发：随应用内置**，经 `cordis.patch.yml` 自动挂载；`dsh plugin --profile sdk add` 独立安装能力保留。
 3. **GPUI Kit 钉 0.9.0**（crates.io 源为准；git main 0.9.1 存在 API 漂移，不采用）——全仓零警告验证通过。
 
-## 10. 无限画板 · 导演台 · 预言书（世界线推演）
+## 10. 无限画板 · 世界线 · 预言书（多重世界线）
+
+> 命名沿革：本节「世界线」排期板原名「导演台」（对齐 AI 短剧工具的叫法），2026-11-10 更名。
 
 对标 AI 短剧工具的「无限画板 + 导演台」，但执笔的对象不是分镜，而是**叙事结构本身**：
 剧情线路、人物关系、暗线发展、因果影响与延伸——再加上一个别家没有的东西：
@@ -207,7 +209,7 @@ zhibi-next/
 | 视图 | 是什么 | 核心动作 |
 |---|---|---|
 | **画板 Canvas** | 无限缩放的叙事关系图：节点=故事线/事件/人物/伏笔/设定；边=埋设→兑现、参与、冲突、影响、暗线 | 框选、连线、拖节点改挂线；双击节点开「影响半径」 |
-| **导演台 Director** | 章 × 幕的排期板：把事件卡/伏笔卡排进未来章节，看覆盖度与节奏（断线预警、钩子同型预警、对白占比带） | 拖卡入章 → 触发骨架合同核对；闸门分实时显示 |
+| **世界线（排期板）Director** | 章 × 幕的排期板：把事件卡/伏笔卡排进未来章节，看覆盖度与节奏（断线预警、钩子同型预警、对白占比带） | 拖卡入章 → 触发骨架合同核对；闸门分实时显示 |
 | **预言书 Oracle** | 世界线沙盒：从当前章 fork 一条假设线（「如果师兄第15章没死」），AI 推演连锁影响，产出**对原始设定的影响清单**与人物/设定衍生 | 提假设 → 推演 → 看 diff → 把某条衍生「晋升」为正式提案 |
 
 ### 10.2 数据模型（新增 worldlines.json，沙盒与正典物理隔离）
@@ -245,7 +247,7 @@ worldlines.json: [{
 
 1. **M7-1 画板骨架**：GPUI 无限画布（pan/zoom + 节点卡 + SVG 边），读正典渲染当前书的关系图；
 2. **M7-2 预言书**：worldlines.json + 上面五个工具 + 预言书面板（假设输入 → 推演流进轨迹窗 → diff 列表 → 晋升）；
-3. **M7-3 导演台**：章×幕排期板 + 拖卡触发骨架合同核对；
+3. **M7-3 世界线排期板（原导演台）**：章×幕排期板 + 拖卡触发骨架合同核对；
 4. **M7-4 画板增强**：影响半径高亮、读者视角、框选成组、暗线虚线。
 
 ### 10.6 落地状态（2026-11-10）
@@ -255,7 +257,7 @@ worldlines.json: [{
 - **M7-3 ✅**：`app/src/director.rs::DirectorPanel` — 8 章窗口排期板：事件卡（蓝点/暗线紫点）+ 伏笔埋设卡（琥珀◆）跨列拖拽改期，落点=列 on_mouse_up 命中，直写 `events.json.chapter`/`clues.json.plantedChapter`（作者主权亲笔通道，非 AI）；窗口外存量入「待排期」池；底部确定性预警条（无覆盖章/伏笔静默≥8 章/断线线/窗口内未揭示数）；每列「AI 核对」→ `prompts::director_task` 进 DSH 会话。侧栏 Mode::Director（Kanban 图标）。测试 `director_sovereign_edits` 通过。
 - **重要修复（M7-3 期间发现的双端错文件 bug）**：真实磁盘账本是 `storylines.json`/`events.json`/`stages.json` 三文件分储，旧 TS `outline()` 读 `outline.json`、`outlineUpdates` 落库也写 `outline.json`——对真实项目全是空读/错写。现 TS `outline()` 三文件合并读（outline.json 仅作兼容兜底），双端 `outlineUpdates` 落库统一改写 `storylines.json`；`memory.json` 人物键统一为 `aliases[].canonicalName`（TS world_state、Rust 画板人物节点同修）。
 - **M7-4 ✅（画板增强收口）**：读者视角/暗线虚线/影响半径随 M7-1 落地；画板新增 `involve` 绿边（memory.facts subject×fromChapter 确定映射）；**Shift 点选成组**（多选集 + 组拖，非 Shift 单选；「清空选择」按钮；侧板显「已选 N 个节点」）。
-- **M7-4 导演台幕带 ✅**：列间按 `stages.json` 的 `chapterStart/chapterEnd` 标注卷名（衬线 PURPLE）+ theme 副题，无阶段归属显「—」。
+- **M7-4 世界线幕带 ✅**：列间按 `stages.json` 的 `chapterStart/chapterEnd` 标注卷名（衬线 PURPLE）+ theme 副题，无阶段归属显「—」。
 - **框选成组的取舍**：gpui-pre 的 `MouseDownEvent`/`MouseMoveEvent` 的 `position` 为窗口坐标而非面板内坐标，橡皮筋命中会偏移；故 M7-4 先用 Shift 点选成组（无坐标歧义）；**M7-4b 已落地真·橡皮筋**：`canvas()` 的 prepaint 回调每帧把 stage 窗口原点写回 `Rc<RefCell<Option<..>>>`，鼠标事件坐标据此换算面板内坐标做命中测试（空白 Shift 拖拽出框，抬起即成组）。
 - 交互原型：`design/canvas.html`（三视图可点可拖，已从首页卡片接入）；测试 `worldline_promote_chain` 通过（沙盒→晋升→采纳→备份→幂等→视图态往返全链）。
 
@@ -294,7 +296,7 @@ worldlines.json: [{
 
 1. **M8-1 ✅ 画布维度化**：`Dim` 枚举 + 七维映射 + dim-keyed 持久化 + 顶栏页签。
 2. **M8-2 ✅ 双态**：`propose_worldline` 增 kind 参数（what-if 默认/forecast 预测：fork=下一章、diffs 全为 add 计划）；`prompts::forecast_task`（读大纲→无则读成稿→预测三走向×节拍级节点）；OraclePanel 按 kind 分组（固化=自动只读卡；预测线/假设线分列）；「预测续写」composer 双模式按钮。
-3. **M8-3 ✅ 预测线→导演台联动**：导演台新增「预测候选」虚线列（扫描 forecast 线 add 型事件/故事线 diff，排除已晋升）；拖入章列 = `promote_diff_chapter`（带章号晋升→**plannedEvent 提案**，非直写台账——与实卡改期语义区分）；新提案 kind `plannedEvent` 双端确定性落库（events.json 追加 `E{seq}` happened=false revealed=false + plannedFrom 溯源）；实链验证：预测→排期→采纳=E01@13章入账且标记"待写成"，二次排期晋升被拒。
+3. **M8-3 ✅ 预测线→世界线排期板联动**：世界线排期板新增「预测候选」虚线列（扫描 forecast 线 add 型事件/故事线 diff，排除已晋升）；拖入章列 = `promote_diff_chapter`（带章号晋升→**plannedEvent 提案**，非直写台账——与实卡改期语义区分）；新提案 kind `plannedEvent` 双端确定性落库（events.json 追加 `E{seq}` happened=false revealed=false + plannedFrom 溯源）；实链验证：预测→排期→采纳=E01@13章入账且标记"待写成"，二次排期晋升被拒。
 
 4. **M8-4 ✅ 世界线增强（实机驱动）**：画布新增第八维「预言」——直接渲染世界线沙盒的 nodes/edges（node 卡标「线β · event/character/storyline」、预测/假设节点一律琥珀虚线、隐藏边紫虚线），左上「世界线：β」chip 可切换线；计划事件（happened=false）在总览/时间/事件维统一「计划(线X)」标 + 琥珀虚线框；预言书补 fork 章显示、归档/恢复按钮与「已归档」沉底分组、影响清单按 target 分组（事件→故事线→设定→人物→伏笔）并显示已排期章；α 固化卡文案收口为单行（固化 · 成稿 N 章 · 定事 N · 伏笔 N/N）。
    - **M8-4b**：预言书右列「在画布查看」——跨面板跳转（切画布预言维并选中该线，实机验证通过）；影响清单 before/after 红→绿对照（与原型一致）。

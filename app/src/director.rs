@@ -1,4 +1,4 @@
-//! M7-3 导演台：章 × 事件/伏笔排期板（design/canvas.html 的「导演台」视图实现）。
+//! M7-3 世界线排期板（原「导演台」）：章 × 事件/伏笔排期板（design/canvas.html 的实现）。
 //!
 //! 主权与铁律的分工：拖卡改期 = 作者亲笔（直写 events.json/clues.json，
 //! 这是台账的"手改"通道，与编辑正文同级，AI 无此权力）；「AI 核对本章」=
@@ -638,7 +638,7 @@ impl Render for DirectorPanel {
                             .text_size(theme::FONT_META)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::TEXT())
-                            .child("导演台 · 排期板"),
+                            .child("世界线 · 排期板"),
                     )
                     .child(
                         div().flex_1().text_size(theme::FONT_LABEL).text_color(theme::FAINT()).child(
@@ -734,7 +734,7 @@ impl BasePanel for DirectorPanel {
 
 impl ComponentPanel for DirectorPanel {
     fn tab_name(&self, _: &App) -> Option<SharedString> {
-        Some("导演台".into())
+        Some("世界线".into())
     }
 
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -742,6 +742,6 @@ impl ComponentPanel for DirectorPanel {
             .text_size(theme::FONT_BODY)
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme::TEXT())
-            .child("导演台")
+            .child("世界线")
     }
 }

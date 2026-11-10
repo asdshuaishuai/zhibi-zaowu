@@ -560,7 +560,7 @@ mod tests {
         assert_eq!(planned["plannedFrom"], serde_json::json!("线β"));
         assert!(handle.promote_diff_chapter("β", 0, 10).is_err(), "二次排期晋升被拒");
 
-        // 不存在对象报错（导演台拒拖野卡）
+        // 不存在对象报错（世界线排期板拒拖野卡）
         assert!(handle.set_event_chapter("E99", 1).is_err());
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -1947,7 +1947,7 @@ impl ProjectHandle {
         )
     }
 
-    /// 导演台：作者亲笔拖卡改期（主权编辑，直写台账；非 AI 通道）。
+    /// 世界线排期板：作者亲笔拖卡改期（主权编辑，直写台账；非 AI 通道）。
     pub fn set_event_chapter(&self, event_id: &str, chapter: u32) -> Result<String, String> {
         let mut events = self.read_array_checked("events.json")?;
         let idx = events
@@ -1967,7 +1967,7 @@ impl ProjectHandle {
         Ok(label)
     }
 
-    /// 导演台：拖动伏笔埋设卡改埋入章。
+    /// 世界线排期板：拖动伏笔埋设卡改埋入章。
     pub fn set_clue_planted(&self, clue_id: &str, chapter: u32) -> Result<String, String> {
         let mut clues = self.read_array_checked("clues.json")?;
         let idx = clues
@@ -2379,7 +2379,7 @@ impl ProjectHandle {
             // 事件新增必须带排期章（promote_diff_chapter → plannedEvent）；无章时明确拒绝，
             // 否则会生成一条「找不到故事线」的 outlineUpdates。
             ("事件", "add") => {
-                return Err("事件类新增影响请用「排期晋升」（预言书/导演台按章晋升 → plannedEvent）".into())
+                return Err("事件类新增影响请用「排期晋升」（预言书/世界线按章晋升 → plannedEvent）".into())
             }
             _ => serde_json::json!({ "kind": "outlineUpdates", "updates": [{ "storylineID": target_ref, "note": after }], "sourceRefs": [format!("线{worldline_id}"), format!("故事线:{target_ref}")] }),
         };

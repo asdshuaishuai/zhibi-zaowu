@@ -105,10 +105,10 @@ before/after/reason，衍生实体自动标 line。\
     )
 }
 
-/// 导演台排期核对任务书（M7-3）：章×幕排期板触发骨架合同核对。
+/// 世界线排期核对任务书（M7-3，原「导演台」）：章×幕排期板触发骨架合同核对。
 pub fn director_task(chapter: u32) -> String {
     format!(
-        "导演台核对第{chapter}章排期：对照骨架合同（到期伏笔应收/种/兑）与故事线健康度，\
+        "世界线排期板核对第{chapter}章排期：对照骨架合同（到期伏笔应收/种/兑）与故事线健康度，\
 给出本章的事件/伏笔挂接建议与冲突预警；需要落账的部分用 propose_clues / propose_outline_updates 提案，只报告不代改。{}",
         BASIS_RULE
     )

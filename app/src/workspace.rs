@@ -80,7 +80,7 @@ impl Mode {
             Mode::Import => "导入旧稿",
             Mode::Graph => "记忆图谱",
             Mode::Canvas => "剧情画板",
-            Mode::Director => "导演台",
+            Mode::Director => "世界线",
             Mode::Oracle => "预言书",
             Mode::BookInfo => "书目信息",
         }
@@ -608,7 +608,7 @@ impl Workspace {
         )
         .detach();
 
-// 导演台：AI 核对走 DSH 会话（轨迹窗可见），拖卡改期是作者亲笔直写
+// 世界线（排期板）：AI 核对走 DSH 会话（轨迹窗可见），拖卡改期是作者亲笔直写
         cx.subscribe(
             &director_view,
             |this, _, ev: &DirectorEvent, cx| match ev {

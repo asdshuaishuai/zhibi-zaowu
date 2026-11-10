@@ -18,7 +18,7 @@ zhibi-next/
 │       ├── workspace.rs   # 工作台装配 + DSH 事件分发
 │       ├── editor.rs      # 稿纸编辑器（选区浮条轮询/进度/速记/分支卡）
 │       ├── canvas.rs      # 剧情画板 + 预言书（M7/M8 结构视图，七维织网+世界线双态）
-│       ├── director.rs    # 导演台排期板（M7-3 + 预测候选）
+│       ├── director.rs    # 世界线排期板（M7-3，原导演台 + 预测候选）
 │       ├── bookinfo.rs    # 书目信息（题材/简介/目标章数/章字数目标）
 │       ├── trajectory.rs  # 右侧轨迹面板（对话式时间线）
 │       └── dsh/           # DSH sdk 子进程客户端（NDJSON JSON-RPC over stdio）
@@ -81,11 +81,11 @@ cargo build           # 仅构建
 - [x] **M6** 打包：`scripts/build_app.sh` 出 macOS `.app`（Info.plist/icns/ad-hoc 签名，release 19MB 验证）；
       `scripts/build_app_linux.sh` Linux 原生构建 → AppImage（appimagetool/linuxdeploy，缺则 tar.gz 回退）；
       GPUI 图形栈需目标机原生编译（无法从 macOS 交叉），Windows 同理待 Win 主机 runner。自动更新待补
-- [x] **M7** 结构视图三件套（无限画板/导演台/预言书）：
+- [x] **M7** 结构视图三件套（无限画板/世界线/预言书）：
       画板=节点图（故事线/事件/人物/伏笔/设定五类卡，`canvas()`+`PathBuilder` 贝塞尔边，
       暗线虚线紫/伏笔琥珀/人物牵涉绿；拖拽/平移/±缩放/橡皮筋框选成组（prepaint 原点换算）/
       一阶影响半径侧板/读者视角隐线；视图态 `canvas.json` 持久化）；
-      导演台=8 章窗口排期板（事件/伏笔卡跨列拖拽**作者亲笔直写台账**、幕带卷名、
+      世界线=8 章窗口排期板（事件/伏笔卡跨列拖拽**作者亲笔直写台账**、幕带卷名、
       确定性合同预警、列级「AI 核对」→ director_task）；
       预言书=世界线沙盒（α 基准/β… 推演只写 `worldlines.json`；影响清单逐条晋升→收件箱；
       `canonRevise` 采纳前自动备份 `canon/backups/`；衍生实体 `line:β` 归属标；
