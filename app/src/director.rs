@@ -15,7 +15,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, App, Context, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
 use crate::store::ProjectHandle;
@@ -272,6 +272,17 @@ impl Render for DirectorPanel {
         let warnings = self.warnings();
         let msg = self.message.clone();
         let drag_active = self.drag.is_some();
+        let stages = self.handle.stages();
+        let stage_of = |chap: u32| -> Option<(String, String)> {
+            for st in &stages {
+                let a = st.get("chapterStart").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let b = st.get("chapterEnd").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                if chap >= a && chap <= b {
+                    return Some((s(st, "name"), s(st, "theme")));
+                }
+            }
+            None
+        };
 
         let mut board: Vec<AnyElement> = Vec::new();
         for i in 0..COLS {
@@ -323,6 +334,31 @@ impl Render for DirectorPanel {
                                     cx.emit(DirectorEvent::Review(chap));
                                 })),
                         ),
+                )
+                .child(
+                    div()
+                        .px(theme::PAD_SM)
+                        .py(theme::GAP_XS)
+                        .text_size(theme::FONT_MICRO)
+                        .line_height(relative(1.35))
+                        .child(match stage_of(chap) {
+                            Some((name, theme_name)) => div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .font_family(theme::FAMILY_SERIF)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::PURPLE())
+                        .child(SharedString::from(name)),
+                )
+                .when(!theme_name.is_empty(), |d| {
+                    d.child(
+                        div().text_color(theme::FAINT()).child(SharedString::from(theme_name)),
+                    )
+                }),
+                            None => div().text_color(theme::LINE()).child("—"),
+                        }),
                 )
                 .child(
                     div()

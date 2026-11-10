@@ -52,7 +52,7 @@ pub struct CEdge {
 }
 
 enum Drag {
-    Node(usize, Point<Pixels>),
+    Node(Vec<usize>, Point<Pixels>),
     Pan(Point<Pixels>),
 }
 
@@ -65,7 +65,7 @@ pub struct CanvasPanel {
     nodes: Vec<CNode>,
     edges: Vec<CEdge>,
     view: (f32, f32, f32), // x, y, k
-    selected: Option<usize>,
+    sel: Vec<usize>,
     drag: Option<Drag>,
     reader: bool,
 }
@@ -82,7 +82,7 @@ impl CanvasPanel {
             nodes: Vec::new(),
             edges: Vec::new(),
             view: (0., 0., 1.),
-            selected: None,
+            sel: Vec::new(),
             drag: None,
             reader: false,
         };
@@ -253,7 +253,7 @@ impl CanvasPanel {
 
         self.nodes = nodes;
         self.edges = edges;
-        self.selected = None;
+        self.sel.clear();
     }
 
     fn save_state(&self) {
@@ -278,7 +278,7 @@ impl CanvasPanel {
 
     /// 选中节点的一阶影响邻域（侧板行）。
     fn neighbor_rows(&self) -> Vec<(String, String)> {
-        let Some(sel) = self.selected else { return Vec::new() };
+        let Some(&sel) = self.sel.last() else { return Vec::new() };
         let mut out = Vec::new();
         for e in &self.edges {
             let (name, dir) = if e.from == sel {
@@ -377,7 +377,7 @@ impl Render for CanvasPanel {
             if reader && n.hidden {
                 continue;
             }
-            let sel = self.selected == Some(i);
+            let sel = self.sel.contains(&i);
             let dot = match n.kind {
                 "storyline" => theme::ACCENT(),
                 "event" => theme::BLUE(),
@@ -400,8 +400,24 @@ impl Render for CanvasPanel {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                        this.selected = Some(i);
-                        this.drag = Some(Drag::Node(i, ev.position));
+                        if ev.modifiers.shift {
+                            // Shift 点选：加/去多选集
+                            match this.sel.iter().position(|x| *x == i) {
+                                Some(pos) => {
+                                    this.sel.remove(pos);
+                                    this.drag = None;
+                                }
+                                None => {
+                                    this.sel.push(i);
+                                    this.drag = Some(Drag::Node(this.sel.clone(), ev.position));
+                                }
+                            }
+                        } else {
+                            if !this.sel.contains(&i) {
+                                this.sel = vec![i];
+                            }
+                            this.drag = Some(Drag::Node(this.sel.clone(), ev.position));
+                        }
                         cx.notify();
                     }),
                 )
@@ -450,11 +466,13 @@ impl Render for CanvasPanel {
             }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 match &mut this.drag {
-                    Some(Drag::Node(i, last)) => {
+                    Some(Drag::Node(ids, last)) => {
                         let dx = (ev.position.x - last.x).as_f32() / this.view.2;
                         let dy = (ev.position.y - last.y).as_f32() / this.view.2;
-                        this.nodes[*i].x += dx;
-                        this.nodes[*i].y += dy;
+                        for &i in ids.iter() {
+                            this.nodes[i].x += dx;
+                            this.nodes[i].y += dy;
+                        }
                         *last = ev.position;
                         cx.notify();
                     }
@@ -477,9 +495,11 @@ impl Render for CanvasPanel {
             .on_mouse_down_out(cx.listener(|this, _, _, _| this.drag = None));
 
         // 侧板：一阶影响半径
-        let sel_title: Option<String> = self
-            .selected
-            .map(|i| format!("{}（{}）", self.nodes[i].label, self.nodes[i].id));
+        let sel_title: Option<String> = match self.sel.len() {
+            0 => None,
+            1 => Some(format!("{}（{}）", self.nodes[self.sel[0]].label, self.nodes[self.sel[0]].id)),
+            n => Some(format!("已选 {n} 个节点（成组可拖）")),
+        };
         let rows = self.neighbor_rows();
         let side = div()
             .absolute()
@@ -504,7 +524,7 @@ impl Render for CanvasPanel {
                         .text_size(theme::FONT_LABEL)
                         .line_height(relative(theme::LINE_HEIGHT_BODY))
                         .text_color(theme::FAINT())
-                        .child(if true { "实线=明线，虚线=暗线（未揭示）；黄线=伏笔埋/收。点选节点看一阶影响。" } else { "" }),
+                        .child(if true { "实线=明线，虚线=暗线；黄=伏笔埋/收，绿=人物牵涉。点选看影响，Shift 点选多个可成组拖拽。" } else { "" }),
                 )
             }).children(rows.into_iter().map(|(kind, name)| {
                 div()
@@ -571,7 +591,18 @@ impl Render for CanvasPanel {
                         this.refresh();
                         cx.notify();
                     })),
-            );
+            )
+            .when(!self.sel.is_empty(), |d| {
+                d.child(
+                    Button::new("clear-sel")
+                        .xsmall()
+                        .label("清空选择")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.sel.clear();
+                            cx.notify();
+                        })),
+                )
+            });
 
         stage.child(side).child(bar)
     }
