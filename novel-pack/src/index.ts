@@ -727,6 +727,105 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<string> {
       await store.saveStorylines(lines)
       return `大纲同步 ${applied}/${updates.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}`
     }
+    case 'skeleton': {
+      const chapter = Number(payload.chapter ?? 0)
+      if (!chapter) return '骨架缺章号'
+      const rel = `chapters/ch-${String(chapter).padStart(3, '0')}/meta.json`
+      const meta = await store.readJSON<Record<string, unknown>>(rel, {})
+      meta['beats'] = payload.beats ?? []
+      meta['skeletonApproved'] = true
+      meta['approvedAt'] = new Date().toISOString()
+      await store.writeJSON(rel, meta)
+      return '骨架批准入 meta（解锁该章草稿流）'
+    }
+    case 'report': {
+      const chapter = Number(payload.chapter ?? 0)
+      if (!chapter) return '报告缺章号'
+      const rel = `chapters/ch-${String(chapter).padStart(3, '0')}/meta.json`
+      const meta = await store.readJSON<Record<string, unknown>>(rel, {})
+      meta['report'] = payload.findings ?? []
+      meta['reportAt'] = new Date().toISOString()
+      await store.writeJSON(rel, meta)
+      return '验证报告归档章 meta（正文未动）'
+    }
+    case 'deslop': {
+      const chapter = Number(payload.chapter ?? 0)
+      if (!chapter) return '去AI味缺章号'
+      const suggestions: any[] = Array.isArray(payload.suggestions) ? payload.suggestions : []
+      let text = await store.chapterProse(chapter)
+      if (!text || !text.trim()) return `第${chapter}章还没有正文，无从替换`
+      let hit = 0
+      const skipped: string[] = []
+      const snapRel = `chapters/ch-${String(chapter).padStart(3, '0')}/snapshots/${new Date().toISOString().replace(/[:.]/g, '-')}.md`
+      for (const sg of suggestions) {
+        const o = String(sg.original ?? ''), r = String(sg.replacement ?? '')
+        if (!o) continue
+        const at = text.indexOf(o)
+        if (at < 0) { skipped.push(`${o.slice(0, 12)}…未命中`); continue }
+        if (hit === 0) await store.writeText(snapRel, text) // 首次改写前快照
+        text = text.slice(0, at) + r + text.slice(at + o.length)
+        hit += 1
+      }
+      if (!hit) return `所有建议的 original 都未命中正文：${skipped.join('、')}`
+      await store.writeText(`chapters/ch-${String(chapter).padStart(3, '0')}/prose.md`, text)
+      return `去AI味逐处替换 ${hit}/${suggestions.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}（首次替换前已快照）`
+    }
+    case 'memoryPack': {
+      const chapter = Number(payload.chapter ?? 0)
+      const facts: any[] = Array.isArray(payload.facts) ? payload.facts : []
+      const mem = await store.readJSON<Record<string, unknown>>('memory.json', {})
+      const cur = Array.isArray(mem['facts']) ? (mem['facts'] as any[]) : []
+      let added = 0
+      const skipped: string[] = []
+      for (const f of facts) {
+        const dup = cur.some((x) => x.subject === f.subject && x.predicate === f.predicate && x.object === f.object && (x.fromChapter === (f.fromChapter ?? chapter) || x.chapter === chapter))
+        if (dup) { skipped.push(String(f.subject ?? '?')); continue }
+        cur.push({ id: crypto.randomUUID(), fromChapter: f.fromChapter ?? chapter, source: 'extracted', ...f })
+        added += 1
+      }
+      mem['facts'] = cur
+      await store.writeJSON('memory.json', mem)
+      return `事实入账 ${added}/${facts.length}${skipped.length ? '；已在账：' + skipped.join('、') : ''}`
+    }
+    case 'dossier': {
+      const chapter = Number(payload.chapter ?? 0)
+      const all = await store.readJSON<any[]>('dossiers.json', [])
+      const entry = {
+        chapter,
+        headline: payload.headline ?? '',
+        scenes: payload.scenes ?? [], cast: payload.cast ?? [],
+        hooks: payload.hooks ?? [], relics: payload.relics ?? [],
+        advanced: payload.advanced ?? [], turns: payload.turns ?? [],
+        updatedAt: new Date().toISOString(),
+      }
+      const pos = all.findIndex((d) => Number(d.chapter) === chapter)
+      if (pos >= 0) all[pos] = entry; else all.push(entry)
+      all.sort((a, b) => Number(a.chapter) - Number(b.chapter))
+      await store.writeJSON('dossiers.json', all)
+      return `第${chapter}章档案卡入库（同章覆盖）`
+    }
+    case 'clueFixes': {
+      const fixes: any[] = Array.isArray(payload.fixes) ? payload.fixes : []
+      const written = await store.writtenChapters()
+      const latest = Math.max(written.length ? written[written.length - 1] : 1, 1)
+      const clues = await store.clues()
+      let applied = 0
+      const skipped: string[] = []
+      for (const fx of fixes) {
+        const cid = String(fx.clueID ?? ''), k = String(fx.kind ?? ''), detail = String(fx.detail ?? '')
+        const c = clues.find((x: any) => x.id === cid) as any
+        if (!c) { skipped.push(`${cid} 不在台账`); continue }
+        if (k === '回收' || k === '已回收') c.status = '已兑现'
+        else if (k === '搁置') c.status = '搁置'
+        else if (k === '放弃') c.status = '放弃'
+        c.lastActionChapter = latest
+        c.actionLog = [...(Array.isArray(c.actionLog) ? c.actionLog : []), { at: latest, kind: k, detail, ts: new Date().toISOString() }]
+        applied += 1
+      }
+      if (!applied) return `没有可应用的修复：${skipped.join('、')}`
+      await store.writeJSON('clues.json', clues)
+      return `埋点修复入账 ${applied}/${fixes.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}（未动正文）`
+    }
     default:
       return `未知提案类型：${payload.kind ?? '（空）'}`
   }

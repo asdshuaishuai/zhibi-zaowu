@@ -18,7 +18,9 @@
 ## C. 提案闭环（铁律）
 - [ ] 搭骨架/一键验证/去AI味/记一笔/盘点/归类 各跑一遍：产出全部进收件箱，**正文与台账零直写**
 - [ ] 采纳=幂等（重复点无效）；草稿采纳前自动快照；拒收可回灌理由
-- [ ] canon/clues/canonClassify/draft/canonRevise/outlineUpdates 六类采纳真实落库；其余 kind 如实报「尚未实现」不静默
+- [ ] 十二类提案采纳全真实落库：canon/clues/canonClassify/draft/canonRevise/outlineUpdates/
+      skeleton/report/deslop/memoryPack/dossier/clueFixes（deslop 逐处替换+快照先行；memoryPack 去重；
+      clueFixes 只动台账与动作日志）；无工具历史名 kind 如实报错不静默
 
 ## D. 结构三件套（M7 新验收面）
 - [ ] **剧情画板**：节点卡=线/事件/人物/伏笔/设定五类；灰实线=挂线、琥珀=伏笔埋收、绿=人物牵涉、紫虚线=暗线；拖节点/空白平移/±/⊡ 缩放；点选→右侧一阶影响半径；**空白 Shift 拖拽橡皮筋框选成组→组内一起拖**；「读者视角」切换隐去未揭示与暗线；重开面板位置保留（canvas.json）

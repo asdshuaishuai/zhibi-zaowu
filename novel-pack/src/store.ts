@@ -14,7 +14,7 @@
 
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 export function safeFileName(s: string): string {
   return s.replace(/[/\\:*?"<>|\n\r\t]/g, '_').trim() || '未命名'
@@ -84,6 +84,7 @@ export class NovelStore {
   async writeJSON(rel: string, value: unknown): Promise<void> {
     await this.ensureDirs()
     const p = this.path(rel)
+    await mkdir(dirname(p), { recursive: true }) // 任意嵌套父目录（snapshots/ 等）
     const tmp = p + '.tmp'
     await writeFile(tmp, JSON.stringify(value, null, 2), 'utf8')
     await rename(tmp, p)
@@ -97,6 +98,7 @@ export class NovelStore {
   async writeText(rel: string, text: string): Promise<void> {
     await this.ensureDirs()
     const p = this.path(rel)
+    await mkdir(dirname(p), { recursive: true })
     const tmp = p + '.tmp'
     await writeFile(tmp, text, 'utf8')
     await rename(tmp, p)

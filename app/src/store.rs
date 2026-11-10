@@ -414,6 +414,53 @@ mod tests {
     }
 
     #[test]
+    fn proposal_kinds_apply() {
+        let home = temp_home("kinds");
+        unsafe { std::env::set_var("HOME", &home); }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("落库测试").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        h.ensure_chapter(3).unwrap();
+        h.save_prose(3, "他缓缓地转过身，缓缓地说话。").unwrap();
+        std::fs::write(dir.join("clues.json"), serde_json::to_string(&serde_json::json!([
+            { "id": "F01", "title": "虎符", "status": "埋下", "plantedChapter": 1, "lastActionChapter": 1 }
+        ])).unwrap()).unwrap();
+
+        // skeleton → meta 批准
+        h.apply_payload(&serde_json::json!({"kind":"skeleton","chapter":3,"beats":[{"title":"拍一"}]})).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("chapters").join("ch-003").join("meta.json")).unwrap()).unwrap();
+        assert_eq!(meta["skeletonApproved"], serde_json::json!(true));
+        // report → meta 归档
+        h.apply_payload(&serde_json::json!({"kind":"report","chapter":3,"findings":[{"kind":"连续性"}]})).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("chapters").join("ch-003").join("meta.json")).unwrap()).unwrap();
+        assert_eq!(meta["report"].as_array().unwrap().len(), 1);
+        // deslop → 快照先行逐处替换；二次幂等失败
+        let (a1, _) = h.apply_payload(&serde_json::json!({"kind":"deslop","chapter":3,"suggestions":[{"original":"缓缓地转过身","replacement":"转过身"},{"original":"不存在的东西","replacement":"x"}]})).unwrap();
+        assert_eq!(a1, 1);
+        assert_eq!(h.prose(3), "他转过身，缓缓地说话。");
+        assert!(!h.snapshots(3).is_empty(), "首次改写前自动快照");
+        assert!(h.apply_payload(&serde_json::json!({"kind":"deslop","chapter":3,"suggestions":[{"original":"缓缓地转过身","replacement":"转过身"}]})).is_err());
+        // memoryPack → 入账 + 去重
+        h.apply_payload(&serde_json::json!({"kind":"memoryPack","chapter":3,"facts":[{"subject":"沈砚","predicate":"获得","object":"断刀"}]})).unwrap();
+        let (_, sk) = h.apply_payload(&serde_json::json!({"kind":"memoryPack","chapter":3,"facts":[{"subject":"沈砚","predicate":"获得","object":"断刀"}]})).unwrap();
+        assert_eq!(sk.len(), 1);
+        let m: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("memory.json")).unwrap()).unwrap();
+        assert_eq!(m["facts"].as_array().unwrap().len(), 1);
+        // dossier → 同章覆盖
+        h.apply_payload(&serde_json::json!({"kind":"dossier","chapter":3,"headline":"v1"})).unwrap();
+        h.apply_payload(&serde_json::json!({"kind":"dossier","chapter":3,"headline":"v2"})).unwrap();
+        let ds = h.read_array("dossiers.json");
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0]["headline"], serde_json::json!("v2"));
+        // clueFixes → 状态+动作日志
+        h.apply_payload(&serde_json::json!({"kind":"clueFixes","fixes":[{"clueID":"F01","kind":"回收","detail":"第3章兑现"}]})).unwrap();
+        let cl = h.clues_full();
+        assert_eq!(cl[0]["status"], serde_json::json!("已兑现"));
+        assert_eq!(cl[0]["actionLog"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn worldline_promote_chain() {
         let home = temp_home("m7");
         unsafe { std::env::set_var("HOME", &home); }
@@ -661,9 +708,147 @@ impl ProjectHandle {
                 self.save_prose(chapter, text)?;
                 applied += 1;
             }
-            "memo" | "report" | "deslop" | "skeleton" | "memoryPack" | "dossier" | "clueFixes" | "storylines" | "outlineEvents" => {
-                // M3 后续：这些 payload 的确定性落库逐个补齐；先如实报告未支持
-                return Err(format!("「{kind}」落库尚未实现（M3 后续）——提案保持待审"));
+            "skeleton" => {
+                let chapter = payload.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                if chapter == 0 { return Err("骨架缺章号".into()); }
+                self.ensure_chapter(chapter)?;
+                let beats = payload.get("beats").cloned().unwrap_or_else(|| serde_json::json!([]));
+                self.meta_patch(chapter, &[
+                    ("beats", beats),
+                    ("skeletonApproved", serde_json::json!(true)),
+                    ("approvedAt", serde_json::json!(iso_now())),
+                ])?;
+                applied += 1;
+            }
+            "report" => {
+                // 验证报告归档进章节 meta（只读产物，不触正文）
+                let chapter = payload.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                if chapter == 0 { return Err("报告缺章号".into()); }
+                self.ensure_chapter(chapter)?;
+                let findings = payload.get("findings").cloned().unwrap_or_else(|| serde_json::json!([]));
+                self.meta_patch(chapter, &[
+                    ("report", findings),
+                    ("reportAt", serde_json::json!(iso_now())),
+                ])?;
+                applied += 1;
+            }
+            "deslop" => {
+                // 逐处替换：找不到 original 的跳过并记录；首次改写前自动快照
+                let chapter = payload.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                if chapter == 0 { return Err("去AI味缺章号".into()); }
+                let suggestions = payload.get("suggestions").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                if suggestions.is_empty() { return Err("没有逐处建议".into()); }
+                let mut text = self.prose(chapter);
+                if text.trim().is_empty() { return Err(format!("第{chapter}章还没有正文，无从替换")); }
+                let mut hit = 0usize;
+                for sg in &suggestions {
+                    let o = sg.get("original").and_then(|v| v.as_str()).unwrap_or("");
+                    let r = sg.get("replacement").and_then(|v| v.as_str()).unwrap_or("");
+                    if o.is_empty() { continue; }
+                    if text.contains(o) {
+                        if hit == 0 { self.snapshot_prose(chapter)?; }
+                        // 只替换第一处命中（逐条采纳语义，幂等防误伤重复段）
+                        text = text.replacen(o, r, 1);
+                        hit += 1;
+                    } else {
+                        skipped.push(format!("原文未命中：{}…", o.chars().take(12).collect::<String>()));
+                    }
+                }
+                if hit == 0 { return Err("所有建议的 original 都未命中正文——提案保持待审".into()); }
+                self.save_prose(chapter, &text)?;
+                applied = hit;
+            }
+            "memoryPack" => {
+                // 事实入账 memory.json.facts（subject+predicate+object+fromChapter 去重）
+                let chapter = payload.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                let facts = payload.get("facts").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let path = self.root.join("memory.json");
+                let mut mem: serde_json::Value = std::fs::read_to_string(&path).ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let mut cur = mem.get("facts").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+                let mut added = 0usize;
+                for f in facts {
+                    let dup = cur.iter().any(|x| {
+                        x.get("subject") == f.get("subject")
+                            && x.get("predicate") == f.get("predicate")
+                            && x.get("object") == f.get("object")
+                            && (x.get("fromChapter") == f.get("fromChapter") || x.get("chapter") == f.get("chapter"))
+                    });
+                    if dup { skipped.push(format!("事实已在账：{}", f.get("subject").and_then(|v|v.as_str()).unwrap_or("?"))); continue; }
+                    let mut entry = f.clone();
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.entry("id").or_insert_with(|| serde_json::json!(uuid_like()));
+                        obj.entry("fromChapter").or_insert(serde_json::json!(chapter));
+                        obj.entry("source").or_insert(serde_json::json!("extracted"));
+                    }
+                    cur.push(entry);
+                    added += 1;
+                }
+                mem["facts"] = serde_json::json!(cur);
+                std::fs::write(&path, serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                applied = added;
+            }
+            "dossier" => {
+                // 档案卡入 dossiers.json（同章覆盖：最新档案为准）
+                let chapter = payload.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                let mut all = self.read_array("dossiers.json");
+                let entry = serde_json::json!({
+                    "chapter": chapter,
+                    "headline": payload.get("headline").cloned().unwrap_or(serde_json::json!("")),
+                    "scenes": payload.get("scenes").cloned().unwrap_or(serde_json::json!([])),
+                    "cast": payload.get("cast").cloned().unwrap_or(serde_json::json!([])),
+                    "hooks": payload.get("hooks").cloned().unwrap_or(serde_json::json!([])),
+                    "relics": payload.get("relics").cloned().unwrap_or(serde_json::json!([])),
+                    "advanced": payload.get("advanced").cloned().unwrap_or(serde_json::json!([])),
+                    "turns": payload.get("turns").cloned().unwrap_or(serde_json::json!([])),
+                    "updatedAt": iso_now(),
+                });
+                if let Some(pos) = all.iter().position(|d| d.get("chapter").and_then(|c| c.as_u64()) == Some(chapter as u64)) {
+                    all[pos] = entry;
+                } else {
+                    all.push(entry);
+                }
+                all.sort_by_key(|d| d.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0));
+                self.save_array("dossiers.json", &all)?;
+                applied += 1;
+            }
+            "clueFixes" => {
+                // 埋点修复动作落台账（只动 clues.json 与动作日志，不动正文）
+                let fixes = payload.get("fixes").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let latest = self.next_chapter_number().saturating_sub(1).max(1);
+                let mut clues = self.clues_full();
+                for fx in fixes {
+                    let cid = fx.get("clueID").and_then(|v| v.as_str()).unwrap_or("");
+                    let k = fx.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    let detail = fx.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+                    let Some(pos) = clues.iter().position(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid)) else {
+                        skipped.push(format!("{cid} 不在台账（补登记类请先走伏笔盘点提案）"));
+                        continue;
+                    };
+                    let new_status = match k {
+                        "回收" | "已回收" => Some("已兑现"),
+                        "搁置" => Some("搁置"),
+                        "放弃" => Some("放弃"),
+                        "补埋" | "改期" => None,
+                        _ => None,
+                    };
+                    let c = &mut clues[pos];
+                    if let Some(obj) = c.as_object_mut() {
+                        if let Some(st) = new_status { obj.insert("status".into(), serde_json::json!(st)); }
+                        obj.insert("lastActionChapter".into(), serde_json::json!(latest));
+                        let mut log = obj.get("actionLog").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                        log.push(serde_json::json!({ "at": latest, "kind": k, "detail": detail, "ts": iso_now() }));
+                        obj.insert("actionLog".into(), serde_json::json!(log));
+                    }
+                    applied += 1;
+                }
+                if applied == 0 { return Err(format!("没有可应用的修复：{}", skipped.join("、"))); }
+                self.save_array("clues.json", &clues)?;
+            }
+            "memo" | "storylines" | "outlineEvents" => {
+                // 无工具产生这些 kind（历史兼容名）：如实报告，提案保持待审
+                return Err(format!("「{kind}」无对应落库语义——提案保持待审"));
             }
             other => return Err(format!("未知提案类型：{other}")),
         }
@@ -819,6 +1004,24 @@ impl ProjectHandle {
             })
             .unwrap_or_default()
     }
+    /// 合并写章 meta（骨架/报告/标题共用）。
+    pub(crate) fn meta_patch(&self, n: u32, patch: &[(&str, serde_json::Value)]) -> Result<(), String> {
+        let dir = self.root.join("chapters").join(chapter_dir_name(n));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let meta = dir.join("meta.json");
+        let mut v: serde_json::Value = std::fs::read_to_string(&meta).ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(obj) = v.as_object_mut() {
+            for (k, val) in patch {
+                obj.insert((*k).to_string(), val.clone());
+            }
+        }
+        let tmp = meta.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, meta).map_err(|e| e.to_string())
+    }
+
     pub fn set_chapter_title(&self, n: u32, title: &str) -> Result<(), String> {
         let dir = self.root.join("chapters").join(chapter_dir_name(n));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

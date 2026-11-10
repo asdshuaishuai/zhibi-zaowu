@@ -94,8 +94,11 @@ cargo build           # 仅构建
 - 局域网 OpenAI 兼容路由（`zhibi-lan`）已写进 patch 并条件挂载，但其适配器依赖
   `@deepseek-ai/dsh-environment` 尚未发布——发布后自动点亮；当前真实模型回环走
   `deepseek-official`（需 DEEPSEEK_API_KEY）。
-- 骨架/验证/去AI味/记忆/档案卡等 kind 的确定性落库：canon/clues/canonClassify/draft/
-  canonRevise/outlineUpdates 已实现（双端同语义）；其余采纳时如实报「尚未实现」并保持待审。
+- **提案落库现已全 kind 覆盖**（双端同语义 + 行为测试）：canon/clues/canonClassify/draft/
+  canonRevise/outlineUpdates + 本轮补齐的 **skeleton**（meta 批准+节拍）/**report**（章 meta 归档）/
+  **deslop**（逐处替换，未命中跳过记因，首次改写前自动快照）/**memoryPack**（事实入账去重）/
+  **dossier**（档案卡同章覆盖）/**clueFixes**（台账状态+动作日志，不动正文）。
+  仅剩 memo/storylines/outlineEvents 三个历史名——无工具会产生，如实报「无对应语义」。
 - 装饰级**内联幽灵文本**（Tab 采纳那种）复审计后仍是库边界：gpui_base 内嵌 input 虽带
   `RangeDecorationCollection` 类型，但 TextareaState 未向调用方暴露 setter 入口——
   当前用轨迹气泡+一键采纳达成同等语义；竖排封面题字同（无 writing-mode）。
