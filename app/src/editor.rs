@@ -29,6 +29,12 @@ pub enum EditorEvent {
     RunCapability(String),
     /// 选区创作（kind 键；Workspace 读选区文本拼任务书）
     SelectionAction(&'static str),
+    /// 分支卡：采纳第 ix 个走向（快照后并入正文）
+    AdoptBranch(usize),
+    /// 分支卡：换一批
+    RerollBranches,
+    /// 分支卡：全部不要
+    DismissBranches,
 }
 
 pub struct EditorPanel {
@@ -42,6 +48,8 @@ pub struct EditorPanel {
     /// 速记（随手记，喂「让AI记一笔」）
     pub notes: Entity<InputState>,
     last_saved: String,
+    /// 分支卡（原型三选一）：AI 产出的走向列表，采纳一个即并入正文
+    pub branches: Vec<String>,
 }
 
 impl EditorPanel {
@@ -61,7 +69,7 @@ impl EditorPanel {
         let notes = cx.new(|cx| InputState::new(window, cx).placeholder("速记：埋了什么、要改什么、下一步想写什么…（「让AI记一笔」会带上）"));
         // 发话框一变就重渲染：发送按钮的空文本置灰态需要跟着实时刷新
         cx.subscribe(&prompt, |_, _, _: &InputEvent, cx| cx.notify()).detach();
-        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, notes, last_saved: String::new() };
+        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, notes, last_saved: String::new(), branches: Vec::new() };
         // 正文一变就重渲染（字数/进度实时）
         cx.subscribe(&prose, |_, _, _: &InputEvent, cx| cx.notify()).detach();
         panel
@@ -71,6 +79,13 @@ impl EditorPanel {
 impl EditorPanel {
     pub fn set_saved_at(&mut self, stamp: String, cx: &mut Context<Self>) {
         self.last_saved = stamp;
+        cx.notify();
+    }
+}
+
+impl EditorPanel {
+    pub fn set_branches(&mut self, branches: Vec<String>, cx: &mut Context<Self>) {
+        self.branches = branches;
         cx.notify();
     }
 }
@@ -412,6 +427,123 @@ impl Render for EditorPanel {
             .child(save)
             .child(send);
 
+
+        // ── 分支卡（原型三选一）：AI 走向就绪时浮出，采纳一个即并入正文 ──
+        let branch_section = {
+            let branches = self.branches.clone();
+            if branches.is_empty() {
+                div().id("branches-empty").child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_MD)
+                        .mx(theme::PAD_XL)
+                        .mt(theme::GAP_MD)
+                        .px(theme::PAD_MD)
+                        .py(theme::PAD_SM)
+                        .rounded(theme::RADIUS_PANEL)
+                        .bg(theme::PANEL2())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .child(
+                            div()
+                                .text_size(theme::FONT_LABEL)
+                                .text_color(theme::FAINT())
+                                .child("还没有走向——按 ⌘⇧B 让 AI 给三个"),
+                        ),
+                )
+            } else {
+                let mut cards = Vec::new();
+                for (ix, body) in branches.iter().enumerate() {
+                    let name = body
+                        .chars()
+                        .take_while(|c| *c != '】' && *c != '\n')
+                        .collect::<String>()
+                        .trim_start_matches('【')
+                        .to_string();
+                    let preview = body.chars().skip(0).collect::<String>();
+                    let preview: String = preview
+                        .chars()
+                        .skip(name.chars().count() + 1)
+                        .take(130)
+                        .collect();
+                    let adopt_ix = ix;
+                    cards.push(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .flex_col()
+                            .gap(theme::GAP_SM)
+                            .p(theme::PAD_MD)
+                            .rounded(theme::RADIUS_PANEL)
+                            .bg(theme::PANEL())
+                            .border_1()
+                            .border_color(theme::LINE())
+                            .hover(|s| s.border_color(theme::ACCENT_BORDER()))
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_SMALL)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::ACCENT())
+                                    .child(SharedString::from(if name.is_empty() {
+                                        format!("走向 {}", (b'A' + ix as u8) as char)
+                                    } else {
+                                        name
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_LABEL)
+                                    .line_height(relative(theme::LINE_HEIGHT_BODY))
+                                    .text_color(theme::DIM())
+                                    .child(SharedString::from(preview)),
+                            )
+                            .child(
+                                accent_button(format!("adopt-branch-{ix}"), "采纳此走向", &*cx)
+                                    .on_click(cx.listener(move |_this, _, _, cx| {
+                                        cx.emit(EditorEvent::AdoptBranch(adopt_ix));
+                                    })),
+                            ),
+                    );
+                }
+                div()
+                    .id("branches-row")
+                    .flex()
+                    .flex_col()
+                    .gap(theme::GAP_SM)
+                    .mx(theme::PAD_XL)
+                    .mt(theme::GAP_MD)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_MD)
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_LABEL)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::TEXT())
+                                    .child("AI 给了几个走向——选一个，或换一批"),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                neutral_button("reroll", "换一批", theme::PANEL2(), theme::DIM(), &*cx)
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.emit(EditorEvent::RerollBranches);
+                                    })),
+                            )
+                            .child(
+                                neutral_button("dismiss", "全部不要", theme::PANEL2(), theme::DIM(), &*cx)
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.emit(EditorEvent::DismissBranches);
+                                    })),
+                            ),
+                    )
+                    .child(div().flex().gap(theme::GAP_MD).w_full().children(cards))
+            }
+        };
+
         div()
             .flex()
             .flex_col()
@@ -423,6 +555,7 @@ impl Render for EditorPanel {
             .child(stats)
             .child(notes_row)
             .child(tools_row)
+            .child(branch_section)
             .child(sel_row)
             .child(scroll)
             .child(footer)

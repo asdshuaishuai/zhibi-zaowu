@@ -2,7 +2,7 @@
 //! 视觉对齐 design/shelf.html（页头 + 3:4 书卡网格 + 新建入口）；
 //! 颜色/间距/圆角/字号一律取自 `crate::theme`（唯一事实源，勿在此写裸色值）。
 
-use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariants};
+use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement,
@@ -104,6 +104,9 @@ fn cover_tint(title: &str) -> gpui_kit::Rgba {
 impl Render for ShelfView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.books.len();
+        let today_words: usize = self.books.iter().map(|b| b.today_words).sum();
+        let daily_goal: usize = 2500;
+        let today_ratio = (today_words as f32 / daily_goal as f32).min(1.);
         let mut cards = Vec::new();
         for (i, b) in self.books.iter().enumerate() {
             let dir = b.dir.clone();
@@ -124,21 +127,54 @@ impl Render for ShelfView {
                         cx.emit(ShelfEvent::Open(dir.clone()));
                     }))
                     .child(
-                        // 封面：3:4 暗底 + 居中衬线题字（宣纸色 COVER_TEXT）。
+                        // 封面：3:4 暗底 + 居中衬线大字题签 + 朱砂短线 + 右下品牌印。
                         div()
+                            .relative()
                             .aspect_ratio(COVER_ASPECT)
                             .bg(cover_tint(&b.title))
                             .flex()
+                            .flex_col()
                             .items_center()
                             .justify_center()
+                            .gap(theme::GAP_MD)
                             .child(
                                 div()
-                                    .text_size(theme::FONT_TITLE)
+                                    .text_size(px(30.))
+                                    .line_height(relative(1.25))
                                     .font_family(theme::FAMILY_SERIF)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::COVER_TEXT())
                                     .child(SharedString::from(
-                                        b.title.chars().take(6).collect::<String>(),
+                                        b.title.chars().take(4).collect::<String>(),
                                     )),
+                            )
+                            .child(
+                                div()
+                                    .w(px(28.))
+                                    .h(px(2.))
+                                    .rounded(px(1.))
+                                    .bg(theme::ACCENT().alpha(0.72)),
+                            )
+                            .child(
+                                // 右下「执」字朱砂印——app icon 的隐喻落到书卡上。
+                                div()
+                                    .absolute()
+                                    .bottom(theme::PAD_MD)
+                                    .right(theme::PAD_MD)
+                                    .w(px(22.))
+                                    .h(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(4.))
+                                    .bg(theme::ACCENT().alpha(0.82))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_family(theme::FAMILY_SERIF)
+                                            .text_color(theme::ON_ACCENT())
+                                            .child("执"),
+                                    ),
                             ),
                     )
                     .child(
@@ -162,39 +198,82 @@ impl Render for ShelfView {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(theme::GAP_MD)
-                                    .text_size(theme::FONT_LABEL)
+                                    .gap(theme::GAP_SM)
+                                    .child(status_chip(store::shelf_status(b.chapters, b.words)))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .text_size(theme::FONT_LABEL)
+                                            .text_color(theme::FAINT())
+                                            .child(SharedString::from(format!(
+                                                "{} · {} 章 · {} 字",
+                                                if b.genre.is_empty() { "未设题材" } else { &b.genre },
+                                                b.chapters,
+                                                store::fmt_thousands(b.words)
+                                            ))),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_TAG)
                                     .text_color(theme::FAINT())
-                                    .child(SharedString::from(if b.genre.is_empty() {
-                                        "未设题材".to_string()
-                                    } else {
-                                        b.genre.clone()
-                                    }))
-                                    .child(SharedString::from(format!("{} 章", b.chapters)))
-                                    .child(SharedString::from(format!("{} 字", b.words))),
+                                    .child(SharedString::from(store::relative_time(b.updated))),
                             ),
                     ),
             );
         }
 
-        // 主按钮：朱砂实心 + 白字 + 8px 圆角；hover 提亮一档、按下压暗
-        //（ButtonVariants::custom 覆写库主题，规则 5/7）。
-        let hover_accent = theme::ACCENT().blend(theme::ON_ACCENT().alpha(0.12));
-        let active_accent = theme::ACCENT().blend(theme::BG().alpha(0.16));
-        let new_button = Button::new("new-book")
-            .label("＋ 新建作品")
-            .custom(
-                ButtonCustomVariant::new(cx)
-                    .color(theme::ACCENT().into())
-                    .foreground(theme::ON_ACCENT().into())
-                    .hover(hover_accent.into())
-                    .active(active_accent.into()),
-            )
-            .rounded(ButtonRounded::Size(theme::RADIUS_BTN))
-            .text_size(theme::FONT_BODY)
+        let new_button = div()
+            .id("new-book-card")
+            .w(BOOK_CARD_W)
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(theme::GAP_MD)
+            .border_1()
+            .border_dashed()
+            .border_color(theme::LINE())
+            .rounded(theme::RADIUS_CARD)
+            .cursor_pointer()
+            .hover(|s| s.border_color(theme::ACCENT_BORDER()).bg(theme::PANEL()))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.create_book(window, cx);
-            }));
+            }))
+            .child(
+                div()
+                    .aspect_ratio(COVER_ASPECT)
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(theme::GAP_MD)
+                    .child(
+                        div()
+                            .w(px(44.))
+                            .h(px(44.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(22.))
+                            .bg(theme::PANEL2())
+                            .child(
+                                div()
+                                    .text_size(px(22.))
+                                    .text_color(theme::DIM())
+                                    .child("＋"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(theme::FONT_LABEL)
+                            .text_color(theme::FAINT())
+                            .child("新建作品"),
+                    ),
+            );
 
         let grid = div()
             .flex()
@@ -260,12 +339,60 @@ impl Render for ShelfView {
                     .child(div().flex_1())
                     .child(
                         div()
-                            .text_size(theme::FONT_LABEL)
-                            .text_color(theme::FAINT())
-                            .child(SharedString::from(format!("{count} 本书"))),
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_MD)
+                            .child(
+                                ProgressCircle::new("today-goal")
+                                    .value(today_ratio)
+                                    .color(theme::ACCENT()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.))
+                                    .child(
+                                        div()
+                                            .text_size(theme::FONT_META)
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme::TEXT())
+                                            .child(SharedString::from(format!(
+                                                "今日 {} 字",
+                                                store::fmt_thousands(today_words)
+                                            ))),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(theme::FONT_TAG)
+                                            .text_color(theme::FAINT())
+                                            .child(SharedString::from(format!("{count} 本书"))),
+                                    ),
+                            ),
                     ),
             )
             .when(count == 0, |this| this.child(empty_hint))
             .child(grid)
     }
+}
+
+/// 状态 chip（规则 6/10）：写作中=绿、规划中=蓝、新建=中性。
+fn status_chip(status: &'static str) -> impl IntoElement {
+    let (fg, soft, border) = match status {
+        "写作中" => (theme::GREEN(), theme::GREEN_SOFT(), theme::GREEN_BORDER()),
+        "规划中" => (theme::BLUE(), theme::BLUE_SOFT(), theme::BLUE_BORDER()),
+        _ => (theme::DIM(), theme::PANEL2(), theme::LINE()),
+    };
+    div()
+        .flex()
+        .items_center()
+        .px(theme::PAD_XS)
+        .py(px(1.))
+        .rounded(px(9.))
+        .border_1()
+        .border_color(border)
+        .bg(soft)
+        .text_size(theme::FONT_TAG)
+        .text_color(fg)
+        .child(status)
 }

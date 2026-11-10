@@ -56,12 +56,15 @@ pub struct NovelProject {
 
 pub struct ProjectRef {
     /// 项目目录（ShelfEvent::Open 携带）
-    #[allow(dead_code)]
     pub dir: PathBuf,
     pub title: String,
     pub genre: String,
     pub chapters: usize,
     pub words: usize,
+    /// 今日净增字数（dailyWords 里今天那条）
+    pub today_words: usize,
+    /// 目录修改时间（相对时间展示用）
+    pub updated: Option<std::time::SystemTime>,
 }
 
 fn epoch_to_iso8601(secs: u64) -> String {
@@ -121,7 +124,16 @@ pub fn list_projects() -> Vec<ProjectRef> {
             .unwrap_or_else(|| d.file_stem().unwrap_or_default().to_string_lossy().to_string());
         let genre = project.as_ref().map(|p| p.genre.clone()).unwrap_or_default();
         let (chapters, words) = count_chapters(&d);
-        out.push(ProjectRef { dir: d, title, genre, chapters, words });
+        let today = today_key();
+        let today_words = std::fs::read_to_string(d.join("project.json"))
+            .ok()
+            .and_then(|t| {
+                let v: serde_json::Value = serde_json::from_str(&t).ok()?;
+                Some(v.get("dailyWords")?.get(today.as_str())?.as_u64()? as usize)
+            })
+            .unwrap_or(0);
+        let updated = d.metadata().and_then(|m| m.modified()).ok();
+        out.push(ProjectRef { dir: d, title, genre, chapters, words, today_words, updated });
     }
     out
 }
@@ -856,4 +868,71 @@ fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     format!("{:016x}", nanos)
+}
+
+
+/// 今日键（yyyy-MM-dd，本地历法近似：UTC 日期——M2 未引 chrono，误差在 ±8h 内可接受）。
+fn today_key() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = secs / 86_400;
+    let (y, m, d) = civil_from_days(days as i64);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn civil_from_days(z0: i64) -> (i64, u32, u32) {
+    let z = z0 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
+}
+
+/// 相对时间：刚刚 / x 分钟前 / x 小时前 / x 天前。
+pub fn relative_time(ts: Option<std::time::SystemTime>) -> String {
+    let Some(t) = ts else { return String::new() };
+    let Ok(elapsed) = std::time::SystemTime::now().duration_since(t) else {
+        return "刚刚".into();
+    };
+    let mins = elapsed.as_secs() / 60;
+    if mins < 1 {
+        "刚刚".into()
+    } else if mins < 60 {
+        format!("{mins} 分钟前")
+    } else if mins < 60 * 24 {
+        format!("{} 小时前", mins / 60)
+    } else {
+        format!("{} 天前", mins / (60 * 24))
+    }
+}
+
+/// 书架状态徽标：有正文=写作中；有章节无正文=规划中；否则=新建。
+pub fn shelf_status(chapters: usize, words: usize) -> &'static str {
+    if words > 0 {
+        "写作中"
+    } else if chapters > 0 {
+        "规划中"
+    } else {
+        "新建"
+    }
+}
+
+/// 千分位数字。
+pub fn fmt_thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }

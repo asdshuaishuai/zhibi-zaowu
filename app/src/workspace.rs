@@ -14,11 +14,12 @@ use gpui_kit::component::{Icon, Sizable, TitleBar};
 use gpui_kit::{
     AnyElement, App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, relative,
+    StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 use serde_json::Value;
 use std::rc::Rc;
 
+use crate::chat::{ChatEvent, ChatMsg, ChatPanel};
 use crate::dsh::{DshClient, DshEvent, model_route};
 use crate::editor::{EditorEvent, EditorPanel};
 use crate::inbox::{InboxEvent, InboxPanel};
@@ -182,8 +183,7 @@ pub struct Workspace {
     handle: Rc<ProjectHandle>,
     dock_area: Entity<DockArea>,
     inbox: Entity<InboxPanel>,
-    /// 订阅保持；正文读写走 prose Entity
-    #[allow(dead_code)]
+    /// 正文读写走 prose Entity；分支卡经 set_branches 同步
     editor: Entity<EditorPanel>,
     canon_view: Entity<CanonPanel>,
     outline_view: Entity<OutlinePanel>,
@@ -195,6 +195,11 @@ pub struct Workspace {
     snapshots_view: Entity<SnapshotsPanel>,
     import_view: Entity<ImportPanel>,
     graph_view: Entity<GraphPanel>,
+    chat: Entity<ChatPanel>,
+    /// 分支卡数据（与 EditorPanel 同步；采纳读这里）
+    branches: Vec<String>,
+    toast: Option<SharedString>,
+    toast_seq: u64,
     mode: Mode,
     trajectory: Entity<TrajectoryPanel>,
     prose: Entity<TextareaState>,
@@ -283,6 +288,7 @@ impl Workspace {
         let snapshots_view = cx.new(|cx| SnapshotsPanel::new(cx, handle.clone(), chapter));
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
         let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
+        let chat = cx.new(|cx| ChatPanel::new(window, cx));
 
         cx.subscribe_in(
             &import_view,
@@ -466,7 +472,8 @@ impl Workspace {
         let center = DockLayout::tabs().panel_view(panel_handle(editor.clone()), cx);
         let right = DockLayout::tabs()
             .panel_view(panel_handle(trajectory.clone()), cx)
-            .panel_view(panel_handle(inbox.clone()), cx);
+            .panel_view(panel_handle(inbox.clone()), cx)
+            .panel_view(panel_handle(chat.clone()), cx);
         dock_area.update(cx, |area, cx| {
             area.set_center(center, window, cx);
             area.set_dock(DockPlacement::Right, right, window, cx);
@@ -475,6 +482,16 @@ impl Workspace {
 
         cx.subscribe_in(&dock_area, window, |_, _, _: &DockEvent, _, _| {})
             .detach();
+
+        cx.subscribe_in(&chat, window, |this, _, ev: &ChatEvent, _window, cx| match ev {
+            ChatEvent::Send(text) => {
+                this.chat.update(cx, |panel, cx| {
+                    panel.push(ChatMsg { role: "user".into(), text: text.clone() }, cx)
+                });
+                this.on_send(text.clone(), cx);
+            }
+        })
+        .detach();
 
         cx.subscribe(
             &prose,
@@ -525,7 +542,7 @@ impl Workspace {
         cx.subscribe_in(
             &editor,
             window,
-            |this, _, ev: &EditorEvent, _window, cx| match ev {
+            |this, _, ev: &EditorEvent, window, cx| match ev {
                 EditorEvent::SendRequested(text) => this.on_send(text.clone(), cx),
                 EditorEvent::SaveRequested => this.save_current(cx),
                 EditorEvent::RunCapability(cap) => {
@@ -538,6 +555,41 @@ impl Workspace {
                         }
                     }
                     this.on_send(task, cx);
+                }
+                EditorEvent::AdoptBranch(ix) => {
+                    if let Some(body) = this.branches.get(*ix).cloned() {
+                        let _ = this.handle.snapshot_prose(this.chapter);
+                        // 去掉【X】标记行，取走向正文
+                        let content = body
+                            .splitn(2, '】')
+                            .nth(1)
+                            .map(|t| t.trim_start_matches(['\n', ' ', '\r']).to_string())
+                            .unwrap_or(body.clone());
+                        let cur = this.prose.read(cx).value().to_string();
+                        let sep = if cur.is_empty() || cur.ends_with('\n') { "" } else { "\n\n" };
+                        let next = format!("{cur}{sep}{content}");
+                        this.prose.update(cx, |state, cx| {
+                            state.set_value(next.as_str(), window, cx);
+                        });
+                        this.branches.clear();
+                        this.editor.update(cx, |panel, cx| {
+                            panel.set_branches(Vec::new(), cx)
+                        });
+                        this.save_current(cx);
+                        this.show_toast("已采纳走向（快照已存）", cx);
+                        this.trajectory.update(cx, |panel, cx| {
+                            panel.push(TrajKind::Info("走向已并入正文 · 快照已存".into()), cx);
+                        });
+                    }
+                }
+                EditorEvent::RerollBranches => {
+                    let task = prompts::task_for("branches", this.chapter);
+                    this.on_send(task, cx);
+                }
+                EditorEvent::DismissBranches => {
+                    this.branches.clear();
+                    this.editor.update(cx, |panel, cx| panel.set_branches(Vec::new(), cx));
+                    this.show_toast("走向已收起", cx);
                 }
                 EditorEvent::SelectionAction(kind) => {
                     let selected = this.prose.read(cx).selected_text().to_string();
@@ -574,6 +626,10 @@ impl Workspace {
             snapshots_view,
             import_view,
             graph_view,
+            chat,
+            branches: Vec::new(),
+            toast: None,
+            toast_seq: 0,
             mode: Mode::Editor,
             trajectory,
             prose,
@@ -592,6 +648,26 @@ impl Workspace {
     }
 
     /// 输入变化 → 1.5 秒防抖自动保存（先落盘纪律）
+    fn show_toast(&mut self, msg: &str, cx: &mut Context<Self>) {
+        self.toast_seq += 1;
+        let seq = self.toast_seq;
+        self.toast = Some(SharedString::from(msg.to_string()));
+        cx.notify();
+        let weak = cx.weak_entity();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(2500))
+                .await;
+            let _ = weak.update(cx, |ws, cx| {
+                if ws.toast_seq == seq {
+                    ws.toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn focus_handle(&self, _cx: &Context<Self>) -> gpui_kit::FocusHandle {
         self.workspace_focus.clone()
     }
@@ -792,6 +868,7 @@ impl Workspace {
     }
 
     fn on_send(&mut self, text: String, cx: &mut Context<Self>) {
+        self.chat.update(cx, |panel, cx| panel.set_busy(true, cx));
         self.trajectory.update(cx, |panel, cx| {
             panel.push(TrajKind::User(text.clone()), cx);
         });
@@ -939,12 +1016,37 @@ impl Workspace {
                 })
             }
             "assistant/message" => {
-                let text = assistant_text(&data);
+                let text = assistant_text_full(&data);
                 if text.is_empty() {
                     None
+                } else if text.contains('【') && (text.contains("A】") || text.contains("B】")) {
+                    // 分支卡：解析【A】【B】【C】段落
+                    let branches: Vec<String> = text
+                        .split('【')
+                        .filter(|seg| !seg.trim().is_empty())
+                        .map(|seg| format!("【{seg}").trim_end().to_string())
+                        .collect();
+                    self.branches = branches.clone();
+                    let n = branches.len();
+                    self.editor.update(cx, |panel, cx| panel.set_branches(branches, cx));
+                    self.chat.update(cx, |panel, cx| {
+                        panel.set_busy(false, cx);
+                        panel.push(ChatMsg { role: "assistant".into(), text: "给了几个走向——在稿纸下方选一个，或换一批。".into() }, cx);
+                    });
+                    self.show_toast("走向已就绪", cx);
+                    Some(TrajKind::Info(format!("{n} 个走向已就绪，稿纸下方可选")))
                 } else if let Some(original) = self.pending_sel.take() {
+                    self.chat.update(cx, |panel, cx| {
+                        panel.set_busy(false, cx);
+                        panel.push(ChatMsg { role: "assistant".into(), text: text.clone() }, cx);
+                    });
                     Some(TrajKind::SelectionDraft { original, text })
                 } else {
+                    let t = text.clone();
+                    self.chat.update(cx, |panel, cx| {
+                        panel.set_busy(false, cx);
+                        panel.push(ChatMsg { role: "assistant".into(), text: t }, cx);
+                    });
                     Some(TrajKind::Text(text))
                 }
             }
@@ -1015,6 +1117,26 @@ async fn initialize_with(
     Ok(())
 }
 
+fn assistant_text_full(data: &Value) -> String {
+    data.get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|b| {
+                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        b.get("text").and_then(|t| t.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+}
+
 fn summarize_tool_result(data: &Value) -> String {
     let message = data.get("message");
     let content = message
@@ -1038,29 +1160,6 @@ fn summarize_tool_result(data: &Value) -> String {
     } else {
         head
     }
-}
-
-fn assistant_text(data: &Value) -> String {
-    data.get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_array())
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|b| {
-                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        b.get("text").and_then(|t| t.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .unwrap_or_default()
-        .chars()
-        .take(300)
-        .collect()
 }
 
 impl Render for Workspace {
@@ -1267,6 +1366,32 @@ impl Render for Workspace {
                             .child(dock),
                     ),
             )
+            .child({
+                let toast = self.toast.clone();
+                match toast {
+                    Some(t) => div()
+                        .absolute()
+                        .bottom(theme::PAD_XL)
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .px(theme::PAD_LG)
+                                .py(theme::PAD_SM)
+                                .rounded(px(9.))
+                                .bg(theme::PANEL2())
+                                .border_1()
+                                .border_color(theme::LINE())
+                                .shadow_md()
+                                .text_size(theme::FONT_SMALL)
+                                .text_color(theme::TEXT())
+                                .child(t),
+                        ),
+                    None => div().hidden(),
+                }
+            })
             .child(
                 StatusBar::new()
                     .bg(theme::PANEL())

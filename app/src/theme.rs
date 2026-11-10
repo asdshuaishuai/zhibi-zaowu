@@ -237,6 +237,8 @@ pub const FONT_TITLE_SM: Pixels = px(15.);
 #[allow(dead_code)]
 pub const FONT_STAT: Pixels = px(17.);
 /// 18px —— 页标题 h1。
+/// 预留：标题档（书架封面改用 30px 大字题签后未用）
+#[allow(dead_code)]
 pub const FONT_TITLE: Pixels = px(18.);
 /// 20px —— 书架大标题。
 pub const FONT_PAGE_TITLE: Pixels = px(20.);
