@@ -16,7 +16,9 @@ zhibi-next/
 │   └── src/
 │       ├── main.rs        # 窗口启动
 │       ├── workspace.rs   # 工作台装配 + DSH 事件分发
-│       ├── editor.rs      # 中央编辑器面板（M1 占位稿 + 发话输入条）
+│       ├── editor.rs      # 稿纸编辑器（选区浮条轮询/进度/速记/分支卡）
+│       ├── canvas.rs      # 剧情画板 + 预言书（M7 结构视图双面板）
+│       ├── director.rs    # 导演台排期板（M7-3）
 │       ├── trajectory.rs  # 右侧轨迹面板（对话式时间线）
 │       └── dsh/           # DSH sdk 子进程客户端（NDJSON JSON-RPC over stdio）
 ├── scripts/
@@ -72,12 +74,28 @@ cargo build           # 仅构建
 - [x] **M5** 台账页：设定（类别分组+归类）/ 大纲·时间线（真相|读者已知+同步/审查）/ 伏笔台账（+盘点）/
       记忆中枢（事实账本+记一笔）/ 人物卡（别名归一）/ 写作统计（14 天柱状+提案账本）/
       记忆图谱（列表视图）/ 导入旧稿（第N章启发式 → 提案制，单测覆盖）/ 快照页（恢复）/ 导出合并稿
-- [~] **M6** 打包：`scripts/build_app.sh` 出 macOS `.app`（Info.plist/icns/ad-hoc 签名，release 17MB 验证）；
-      设置页（端点+真实连通测试 ureq）。Win/Linux 同工程可编译，各自打包格式待补；自动更新待补
+- [x] **M6** 打包：`scripts/build_app.sh` 出 macOS `.app`（Info.plist/icns/ad-hoc 签名，release 19MB 验证）；
+      `scripts/build_app_linux.sh` Linux 原生构建 → AppImage（appimagetool/linuxdeploy，缺则 tar.gz 回退）；
+      GPUI 图形栈需目标机原生编译（无法从 macOS 交叉），Windows 同理待 Win 主机 runner。自动更新待补
+- [x] **M7** 结构视图三件套（无限画板/导演台/预言书）：
+      画板=节点图（故事线/事件/人物/伏笔/设定五类卡，`canvas()`+`PathBuilder` 贝塞尔边，
+      暗线虚线紫/伏笔琥珀/人物牵涉绿；拖拽/平移/±缩放/橡皮筋框选成组（prepaint 原点换算）/
+      一阶影响半径侧板/读者视角隐线；视图态 `canvas.json` 持久化）；
+      导演台=8 章窗口排期板（事件/伏笔卡跨列拖拽**作者亲笔直写台账**、幕带卷名、
+      确定性合同预警、列级「AI 核对」→ director_task）；
+      预言书=世界线沙盒（α 基准/β… 推演只写 `worldlines.json`；影响清单逐条晋升→收件箱；
+      `canonRevise` 采纳前自动备份 `canon/backups/`；衍生实体 `line:β` 归属标；
+      假设 composer→`oracle_task` 进同一条 DSH 会话，轨迹窗全程可见）。
+      novel-pack 22 工具（M7 五工具在真实《断刀记验证》台账验证）；4 Rust 单测全绿
 
-已知边界（如实）：
+已知边界（如实，2026-11-10 复审计）：
+- 「选区创作」浮条**已解决**：库无 `SelectionChanged` 事件，但 `selected_text()` 可读 →
+  220ms 轮询比对，有选区才浮现（鼠标划选与 Shift+方向键通吃）。
 - 局域网 OpenAI 兼容路由（`zhibi-lan`）已写进 patch 并条件挂载，但其适配器依赖
   `@deepseek-ai/dsh-environment` 尚未发布——发布后自动点亮；当前真实模型回环走
   `deepseek-official`（需 DEEPSEEK_API_KEY）。
-- 骨架/验证/去AI味等 payload 的确定性落库在 Rust 侧已实现 canon/clues/canonClassify/draft；
-  其余 kind 采纳时会如实报「尚未实现」并保持待审（不静默丢弃）。
+- 骨架/验证/去AI味/记忆/档案卡等 kind 的确定性落库：canon/clues/canonClassify/draft/
+  canonRevise/outlineUpdates 已实现（双端同语义）；其余采纳时如实报「尚未实现」并保持待审。
+- 装饰级**内联幽灵文本**（Tab 采纳那种）复审计后仍是库边界：gpui_base 内嵌 input 虽带
+  `RangeDecorationCollection` 类型，但 TextareaState 未向调用方暴露 setter 入口——
+  当前用轨迹气泡+一键采纳达成同等语义；竖排封面题字同（无 writing-mode）。

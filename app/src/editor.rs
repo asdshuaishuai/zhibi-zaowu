@@ -7,6 +7,7 @@
 //! 都是最后合入，能盖住主题派生值）。
 
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::component::dock::PanelEvent;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -50,6 +51,9 @@ pub struct EditorPanel {
     last_saved: String,
     /// 分支卡（原型三选一）：AI 产出的走向列表，采纳一个即并入正文
     pub branches: Vec<String>,
+    /// 选区状态（kit 无 SelectionChanged 事件 → 220ms 轮询 selected_text 回填）
+    has_sel: bool,
+    sel_chars: usize,
 }
 
 impl EditorPanel {
@@ -69,9 +73,34 @@ impl EditorPanel {
         let notes = cx.new(|cx| InputState::new(window, cx).placeholder("速记：埋了什么、要改什么、下一步想写什么…（「让AI记一笔」会带上）"));
         // 发话框一变就重渲染：发送按钮的空文本置灰态需要跟着实时刷新
         cx.subscribe(&prompt, |_, _, _: &InputEvent, cx| cx.notify()).detach();
-        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, notes, last_saved: String::new(), branches: Vec::new() };
+        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, notes, last_saved: String::new(), branches: Vec::new(), has_sel: false, sel_chars: 0 };
         // 正文一变就重渲染（字数/进度实时）
         cx.subscribe(&prose, |_, _, _: &InputEvent, cx| cx.notify()).detach();
+        // 选区轮询：库无 SelectionChanged 事件，但 selected_text 可读——
+        // 220ms 比对一次，浮现/收起「选区创作」浮条（鼠标划选、Shift+方向都盖住）
+        let weak = cx.weak_entity();
+        cx.spawn(async move |_, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(220)).await;
+                let alive = weak
+                    .update(cx, |this, cx| {
+                        let n = this.prose.read(cx).selected_text().len_chars();
+                        if n != this.sel_chars {
+                            this.sel_chars = n;
+                            let now = n > 0;
+                            if now != this.has_sel {
+                                this.has_sel = now;
+                                cx.notify();
+                            }
+                        }
+                    })
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
         panel
     }
 }
@@ -349,8 +378,11 @@ impl Render for EditorPanel {
             .child(
                 div()
                     .text_size(theme::FONT_LABEL)
-                    .text_color(theme::FAINT())
-                    .child("选区创作（先选中正文一段）："),
+                    .text_color(if self.has_sel { theme::ACCENT() } else { theme::FAINT() })
+                    .child(SharedString::from(format!(
+                        "选区创作 ▸ 已选 {} 字（点按钮即以此段为改写对象）",
+                        self.sel_chars
+                    ))),
             )
             .children(
                 crate::prompts::SELECTION_BUTTONS
@@ -553,7 +585,7 @@ impl Render for EditorPanel {
             .child(notes_row)
             .child(tools_row)
             .child(branch_section)
-            .child(sel_row)
+            .when(self.has_sel, |d| d.child(sel_row))
             .child(scroll)
             .child(footer)
     }
