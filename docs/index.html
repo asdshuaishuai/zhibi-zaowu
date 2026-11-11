@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>执笔造物 · 人写正文，AI 记账</title>
-<meta name="description" content="执笔造物 —— 桌面写作台。正文由你写，AI 只做账房与工匠：设定、伏笔、时间线摊在一张板上，每一种「如果」各长一枝。">
+<title>执笔造物 · 写作不是生成，是造一个世界</title>
+<meta name="description" content="执笔造物 —— 桌面写作台。你是创始者，AI 是你的权柄：设定、伏笔、时间线摊成一张网，每一个「如果」长成一枝世界。">
 <style>
 :root{
   --paper:#F4F0E6; --paper2:#FAF7EE; --ink:#1C1B18; --body:#4A4740;
@@ -62,6 +62,7 @@ h1 em{font-style:normal;color:var(--red)}
 .sec-head h2{font-family:var(--serif);font-size:clamp(24px,2.6vw,31px);font-weight:700;
   color:var(--ink);margin:0;letter-spacing:.01em}
 .sec-head .en{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint)}
+.sec-lead{max-width:40em;font-size:14px;line-height:1.95;margin:-16px 0 42px;color:var(--muted)}
 
 /* ── 目录式三行 ───────────────────────── */
 .index{border-top:1px solid var(--rule-soft)}
@@ -175,11 +176,11 @@ footer a:hover{color:var(--red)}
     <div class="cols">
       <div class="c1">
         <p class="kicker">桌面写作台 · macOS</p>
-        <h1>写作不是生成，<br>是你<em>一笔一笔写</em>。</h1>
+        <h1>写作不是生成，<br>是<em>造一个世界</em>。</h1>
       </div>
       <div class="c2">
-        <p class="lead">正文永远是你自己写。AI 在旁边打杂：翻设定、记伏笔、算排期、推演「如果」——
-          做完写成一纸提案，等你点头，或者摇头。</p>
+        <p class="lead">你是创始者：世界的样子由你定，正文由你落笔。AI 是你的权柄——翻设定、记伏笔、
+          推演每一种「如果」。它做得再多，也不替你决定。</p>
         <div class="links">
           <a href="#download">怎么装 →</a>
           <a href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank" rel="noopener">查看源码 ↗</a>
@@ -194,7 +195,7 @@ footer a:hover{color:var(--red)}
     <div class="bar"></div>
     <div class="foot">
       <span>GPUI · RUST</span>
-      <span>人写正文，AI 记账</span>
+      <span>作者是创始者，AI 是权柄</span>
       <span>二〇二六</span>
     </div>
   </div>
@@ -204,9 +205,10 @@ footer a:hover{color:var(--red)}
   <div class="wrap">
     <div class="sec-head">
       <span class="num">01</span>
-      <h2>所有设定，摊在一张桌上</h2>
+      <h2>你写的不是一部作品，是一个世界</h2>
       <span class="en">WORLD / BOARD</span>
     </div>
+    <p class="sec-lead">设定、人物、伏笔、时间线，在这个世界里互相牵着。摊开看，才知道哪里还空着。</p>
     <div class="index">
       <div class="irow">
         <span class="n">01</span>
@@ -237,9 +239,10 @@ footer a:hover{color:var(--red)}
   <div class="wrap">
     <div class="sec-head">
       <span class="num">02</span>
-      <h2>你写，它记账</h2>
+      <h2>你是创始者，AI 是你的权柄</h2>
       <span class="en">WHO DOES WHAT</span>
     </div>
+    <p class="sec-lead">权柄能替你跑腿，不能替你拍板。</p>
     <div class="law">
       <div class="col">
         <h3>你</h3>
@@ -267,7 +270,7 @@ footer a:hover{color:var(--red)}
   <div class="wrap">
     <div class="sec-head">
       <span class="num">03</span>
-      <h2>「如果当初」可以有很多个</h2>
+      <h2>世界不是一条线</h2>
       <span class="en">WORLDLINE</span>
     </div>
     <div class="treegrid">
@@ -462,16 +465,16 @@ footer a:hover{color:var(--red)}
         </svg></div>
       <div class="wlc">
         <h3>世界树</h3>
-        <p>主干从第 1 章长到现在，像一棵树的干。你在某一章问一句「如果当初……」，就从那里分出一枝：
-          枝上结的果，是那个世界已经推演过的事；叶子是还没写的可能。</p>
+        <p>主干是已经写下的此世。你在某一章问一句「如果」，那里就多出一枝——每一个事件，都多一种 if。
+          枝与枝并行、交错，从同一个根上长出不同的宇宙。</p>
         <ul class="wllist">
-          <li><span class="sw" style="background:#33424C"></span>α · 主线，已经写成<span class="ch">只读</span></li>
+          <li><span class="sw" style="background:#33424C"></span>α · 此世，已经写成<span class="ch">只读</span></li>
           <li><span class="sw" style="background:#A63F2B"></span>β · 如果那一箭没挡下<span class="ch">第 11 章</span></li>
           <li><span class="sw" style="background:#6F7C55"></span>γ · 照着大纲往下推<span class="ch">第 24 章</span></li>
           <li><span class="sw" style="background:#A97843"></span>δ · 如果旧账没翻到<span class="ch">第 18 章</span></li>
         </ul>
-        <p class="note">同一份世界线能看两遍：并轨图是平行线，世界树是一棵树。归档的世界留成枯枝。
-          演示稿《断刀记》，三十章，四条线。</p>
+        <p class="note">世界树让你看到更多的可能：这一笔落下之前，还有多少条没走的路。并轨图看平行，
+          世界树看生长；归档的世界留成枯枝。演示稿《断刀记》，三十章，四条线。</p>
       </div>
     </div>
   </div>
@@ -611,7 +614,7 @@ footer a:hover{color:var(--red)}
 <footer>
   <div class="wrap">
     <span class="mark">执</span>
-    <span>执笔造物 · 人写正文，AI 记账</span>
+    <span>执笔造物 · 作者是创始者，AI 是权柄</span>
     <span class="sp"></span>
     <span>宋体 / 系统无衬线 / 等宽</span>
     <span>GPUI · Rust · MIT</span>
