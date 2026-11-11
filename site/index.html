@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>执笔造物 · 人写正文，AI 理账</title>
+<meta name="description" content="执笔造物 —— 以人为创世主的 AI 小说/剧本创作工作台。无限画板、多重世界线、全程可视的 AI 轨迹，一切产出由你裁决。">
+<style>
+  :root{
+    --bg:#121317; --panel:#181a1f; --panel2:#1f2228; --line:#2a2d34;
+    --text:#ded9d0; --dim:#9a968e; --faint:#615e58;
+    --ink:#c96f4a; --ink-soft:rgba(201,111,74,.13); --ink-border:rgba(201,111,74,.42);
+    --paper:#e9e4d6; --green:#7fae72; --blue:#6f9bc4; --amber:#d9a05b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,"PingFang SC","Songti SC",serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+  a{color:inherit;text-decoration:none}
+
+  /* 顶栏 */
+  nav{position:sticky;top:0;z-index:20;background:rgba(18,19,23,.86);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;gap:26px;height:60px}
+  .brand{display:flex;align-items:center;gap:10px;font-family:"Songti SC",serif;font-weight:700;font-size:17px;letter-spacing:.06em}
+  .brand img{width:26px;height:26px;border-radius:6px}
+  .brand .seal{width:26px;height:26px;border-radius:6px;background:linear-gradient(180deg,#bb3b2d,#8e2418);display:flex;align-items:center;justify-content:center;color:#f4f0e6;font-size:15px;font-weight:700}
+  nav .sp{flex:1}
+  nav a.lnk{font-size:13px;color:var(--dim)}
+  nav a.lnk:hover{color:var(--text)}
+  .btn{display:inline-flex;align-items:center;gap:7px;border-radius:9px;padding:9px 18px;font-size:13.5px;font-weight:500;transition:.16s}
+  .btn.primary{background:var(--ink);color:#fff}
+  .btn.primary:hover{background:#d57b53}
+  .btn.ghost{border:1px solid var(--line);color:var(--dim)}
+  .btn.ghost:hover{border-color:var(--ink-border);color:var(--text)}
+
+  /* 首屏 */
+  header{padding:96px 0 76px;text-align:center;position:relative;overflow:hidden}
+  header::before{content:"界";position:absolute;left:50%;top:36%;transform:translate(-50%,-50%);font-family:"Songti SC",serif;font-size:460px;color:rgba(233,228,214,.022);pointer-events:none;user-select:none}
+  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--ink);border:1px solid var(--ink-border);background:var(--ink-soft);border-radius:99px;padding:4px 14px;margin-bottom:26px;letter-spacing:.08em}
+  h1{font-family:"Songti SC",serif;font-size:58px;line-height:1.16;font-weight:700;letter-spacing:.02em}
+  h1 .ink{color:var(--ink)}
+  header p.lead{margin:22px auto 0;max-width:600px;color:var(--dim);font-size:16px;line-height:1.9}
+  header .cta{margin-top:38px;display:flex;justify-content:center;gap:14px;flex-wrap:wrap}
+  .meta{margin-top:26px;font-size:12px;color:var(--faint);font-family:ui-monospace,monospace}
+
+  section{padding:76px 0;border-top:1px solid var(--line)}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:38px}
+  .sec-head .no{font-family:ui-monospace,monospace;font-size:12px;color:var(--ink);letter-spacing:.1em}
+  .sec-head h2{font-family:"Songti SC",serif;font-size:30px;font-weight:700}
+  .sec-head .sub{color:var(--faint);font-size:13px}
+
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;transition:.18s}
+  .card:hover{border-color:var(--ink-border);transform:translateY(-2px)}
+  .card .ic{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:14px;background:var(--ink-soft);color:var(--ink);border:1px solid var(--ink-border)}
+  .card h3{font-family:"Songti SC",serif;font-size:17px;margin-bottom:8px}
+  .card p{font-size:13px;color:var(--dim);line-height:1.75}
+  .card .tag{display:inline-block;margin-top:12px;font-size:10.5px;font-family:ui-monospace,monospace;color:var(--faint);border:1px solid var(--line);border-radius:7px;padding:2px 9px}
+
+  /* 铁律 */
+  .law{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .law .col{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px}
+  .law .col h3{font-family:"Songti SC",serif;font-size:19px;margin-bottom:14px;display:flex;align-items:center;gap:9px}
+  .law .col ul{list-style:none;display:flex;flex-direction:column;gap:10px}
+  .law .col li{font-size:13px;color:var(--dim);display:flex;gap:9px;line-height:1.7}
+  .law .col li::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--ink);margin-top:9px;flex:none}
+  .law .col.no li::before{background:var(--green)}
+
+  /* 世界线示意 */
+  .lanes{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:28px;overflow:hidden}
+  .lanes svg{width:100%;height:auto;display:block}
+  .lanes .legend{display:flex;gap:22px;margin-top:16px;font-size:11.5px;color:var(--faint);flex-wrap:wrap}
+  .lanes .legend i{display:inline-block;width:16px;height:2px;vertical-align:middle;margin-right:6px}
+
+  /* 界面预览 */
+  .shots{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .shot{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .shot .cap{padding:14px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .shot .cap b{font-family:"Songti SC",serif;font-size:14px;font-weight:600}
+  .shot .cap span{font-size:11.5px;color:var(--faint)}
+  .shot .viz{height:210px;position:relative;background:var(--panel2);overflow:hidden}
+
+  /* 下载 */
+  .dl{background:linear-gradient(180deg,var(--panel),var(--bg));border:1px solid var(--line);border-radius:16px;padding:44px;text-align:center}
+  .dl h2{font-family:"Songti SC",serif;font-size:28px;margin-bottom:12px}
+  .dl p{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  .dl .row{display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
+  .dl .note{margin-top:22px;font-size:11.5px;color:var(--faint);font-family:ui-monospace,monospace;line-height:1.9}
+
+  footer{border-top:1px solid var(--line);padding:36px 0 46px;color:var(--faint);font-size:12px}
+  footer .wrap{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  footer .sp{flex:1}
+  footer a:hover{color:var(--dim)}
+
+  @media(max-width:820px){
+    h1{font-size:40px} .grid{grid-template-columns:1fr} .law,.shots{grid-template-columns:1fr}
+    nav .wrap{height:54px} .brand span.full{display:none}
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="seal">执</span><span class="full">执笔造物</span></a>
+    <span class="sp"></span>
+    <a class="lnk" href="#world">世界观</a>
+    <a class="lnk" href="#law">铁律</a>
+    <a class="lnk" href="#worldline">世界线</a>
+    <a class="lnk" href="#download">下载</a>
+    <a class="lnk" href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">GitHub</a>
+  </div>
+</nav>
+
+<header id="top">
+  <div class="wrap">
+    <div class="kicker">人执笔 · AI 研墨 · 作者即创世主</div>
+    <h1>写作不是生成，<br>是<span class="ink">造一个世界</span>。</h1>
+    <p class="lead">
+      执笔造物是一个桌面创作工作台：正文永远由你落笔，AI 只做账房与工匠——
+      把设定、伏笔、时间线、人物关系织成一张可交互的图；把每一种「如果」铺成平行的世界线。
+      它的一切行动可见、可回放、可裁决。
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="#download">下载 macOS 版</a>
+      <a class="btn ghost" href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">查看源码</a>
+    </div>
+    <div class="meta">GPUI · Rust · 内嵌 DSH Agent 运行时 · 项目数据本地 .zhibi 目录</div>
+  </div>
+</header>
+
+<section id="world">
+  <div class="wrap">
+    <div class="sec-head"><span class="no">01 / WORLD</span><h2>世界不是大纲，是一张网</h2><span class="sub">Canvas</span></div>
+    <div class="grid">
+      <div class="card">
+        <div class="ic">◇</div>
+        <h3>无限画板</h3>
+        <p>故事线、事件、人物、伏笔、设定都是节点。实线是明线，虚线是暗线；拖动、缩放、框选成组，像整理一张真正的世界地图。</p>
+        <span class="tag">七维视图 · 关系/时间/转折</span>
+      </div>
+      <div class="card">
+        <div class="ic">◈</div>
+        <h3>导演台排期</h3>
+        <p>八章窗口的排期板：把事件卡、伏笔卡拖进未来章节，覆盖度、静默逾期、断线预警由确定性规则实时算出——不是印象，是账。</p>
+        <span class="tag">幕带 · 合同预警 · AI 核对</span>
+      </div>
+      <div class="card">
+        <div class="ic">◆</div>
+        <h3>人物卡</h3>
+        <p>别名归一、事实账、首次出场与关系边自动聚合成卡牌。AI 可以补关系，但每一笔都要你点头才会挂上去。</p>
+        <span class="tag">别名归一 · 关系边 · 事实锚</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="law">
+  <div class="wrap">
+    <div class="sec-head"><span class="no">02 / LAW</span><h2>AI 只提案，人签收</h2><span class="sub">Iron Law</span></div>
+    <div class="law">
+      <div class="col no">
+        <h3>人类侧</h3>
+        <ul>
+          <li>正文只由作者落笔；AI 不存在任何直接写正文的通道</li>
+          <li>提案收件箱逐条审阅：采纳、拒收（理由回灌给 AI）</li>
+          <li>采纳前自动快照，任何一步都可回滚</li>
+          <li>拖卡改期、拖节点挪位，都是作者亲笔直写台账</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3>AI 侧</h3>
+        <ul>
+          <li>所有产出以提案登记：设定、伏笔、骨架、草稿、关系、大纲</li>
+          <li>每条提案附依据：引自哪条既有事实 / 设定 / 伏笔</li>
+          <li>工具调用、参数、产出条数全程显示在轨迹窗，可回放</li>
+          <li>宿主令牌门禁：AI 无法自行调用采纳接口</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="worldline">
+  <div class="wrap">
+    <div class="sec-head"><span class="no">03 / WORLDLINE</span><h2>每一种「如果」，都是一条平行线</h2><span class="sub">Oracle</span></div>
+    <div class="lanes">
+      <svg viewBox="0 0 1000 200" role="img" aria-label="世界线示意">
+        <defs>
+          <linearGradient id="fade" x1="0" x2="1"><stop offset="0" stop-color="#6f9bc4" stop-opacity=".95"/><stop offset="1" stop-color="#6f9bc4" stop-opacity=".35"/></linearGradient>
+          <linearGradient id="fadeA" x1="0" x2="1"><stop offset="0" stop-color="#c96f4a" stop-opacity=".95"/><stop offset="1" stop-color="#c96f4a" stop-opacity=".45"/></linearGradient>
+          <linearGradient id="fadeG" x1="0" x2="1"><stop offset="0" stop-color="#7fae72" stop-opacity=".9"/><stop offset="1" stop-color="#7fae72" stop-opacity=".3"/></linearGradient>
+        </defs>
+        <!-- 章节刻度 -->
+        <g stroke="#2a2d34" stroke-width="1">
+          <line x1="60" y1="26" x2="60" y2="182"/><line x1="197" y1="26" x2="197" y2="182"/>
+          <line x1="334" y1="26" x2="334" y2="182"/><line x1="471" y1="26" x2="471" y2="182"/>
+          <line x1="608" y1="26" x2="608" y2="182"/><line x1="745" y1="26" x2="745" y2="182"/>
+          <line x1="882" y1="26" x2="882" y2="182"/>
+        </g>
+        <g fill="#615e58" font-size="9" font-family="ui-monospace,monospace">
+          <text x="56" y="196">1</text><text x="190" y="196">5</text><text x="326" y="196">10</text>
+          <text x="462" y="196">15</text><text x="598" y="196">20</text><text x="736" y="196">25</text><text x="872" y="196">30</text>
+        </g>
+        <!-- α 基线 -->
+        <path d="M60 40 H960" stroke="url(#fade)" stroke-width="2" fill="none"/>
+        <circle cx="60" cy="40" r="3.5" fill="#6f9bc4"/>
+        <text x="24" y="44" fill="#6f9bc4" font-size="11" font-family="ui-monospace,monospace">α</text>
+        <!-- β：第 12 章分叉 -->
+        <path d="M420 40 C 440 40 440 84 470 84 H960" stroke="url(#fadeA)" stroke-width="2" fill="none"/>
+        <circle cx="420" cy="40" r="3" fill="#c96f4a"/>
+        <text x="24" y="88" fill="#c96f4a" font-size="11" font-family="ui-monospace,monospace">β</text>
+        <g fill="#c96f4a"><circle cx="560" cy="84" r="2.5"/><circle cx="700" cy="84" r="2.5"/><circle cx="810" cy="84" r="2.5"/></g>
+        <!-- γ：第 8 章分叉 -->
+        <path d="M292 40 C 312 40 312 128 342 128 H960" stroke="url(#fadeG)" stroke-width="2" fill="none" opacity=".85"/>
+        <circle cx="292" cy="40" r="3" fill="#7fae72"/>
+        <text x="24" y="132" fill="#7fae72" font-size="11" font-family="ui-monospace,monospace">γ</text>
+        <g fill="#7fae72" opacity=".9"><circle cx="480" cy="128" r="2.5"/><circle cx="640" cy="128" r="2.5"/></g>
+        <!-- 注释 -->
+        <text x="470" y="66" fill="#615e58" font-size="9.5" font-family="ui-monospace,monospace">分叉于第 12 章</text>
+      </svg>
+      <div class="legend">
+        <span><i style="background:#6f9bc4"></i>α · 正典（已固化，只读）</span>
+        <span><i style="background:#c96f4a"></i>β · 预测线（按大纲/成稿向前推演）</span>
+        <span><i style="background:#7fae72"></i>γ · 假设线（what-if）</span>
+        <span>推演只写沙盒；影响逐条晋升为提案，采纳才动正典</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head"><span class="no">04 / WORKSPACE</span><h2>一张桌子，四个视角</h2><span class="sub">Workspace</span></div>
+    <div class="shots">
+      <div class="shot">
+        <div class="viz" id="viz-editor"></div>
+        <div class="cap"><b>稿纸</b><span>字数目标 · 对白占比 · 速记 · 选区创作浮条</span></div>
+      </div>
+      <div class="shot">
+        <div class="viz" id="viz-canvas"></div>
+        <div class="cap"><b>画板</b><span>节点/边 · 暗线虚线 · 影响半径</span></div>
+      </div>
+      <div class="shot">
+        <div class="viz" id="viz-traj"></div>
+        <div class="cap"><b>轨迹</b><span>工具调用与产出条数全程可见</span></div>
+      </div>
+      <div class="shot">
+        <div class="viz" id="viz-cards"></div>
+        <div class="cap"><b>人物卡</b><span>别名归一 · 事实账 · 关系</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="download">
+  <div class="wrap">
+    <div class="dl">
+      <h2>下载执笔造物</h2>
+      <p>macOS（Apple Silicon / Intel）。应用内置 DSH 运行时，无需安装 Node 或 npm。</p>
+      <div class="row">
+        <a class="btn primary" href="https://github.com/asdshuaishuai/zhibi-zaowu/releases/latest" target="_blank">下载最新版</a>
+        <a class="btn ghost" href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">从源码构建</a>
+      </div>
+      <div class="note">
+        项目数据存放在 ~/Documents/执笔/*.zhibi（与旧版执笔双向兼容）· 密钥只在本机 · 不联云<br>
+        模型接入：DeepSeek 官方 API 或任意 OpenAI 兼容端点（局域网亦可）
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span class="seal" style="width:20px;height:20px;font-size:11px;border-radius:5px">执</span>
+    <span>执笔造物 · 人写正文，AI 理账</span>
+    <span class="sp"></span>
+    <a href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">GitHub</a>
+    <span>MIT</span>
+    <span>© 2026</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  // 四张示意小图：纯 CSS/SVG 画，不引外部图
+  function svg(w,h,inner){return '<svg viewBox="0 0 '+w+' '+h+'" style="width:100%;height:100%">'+inner+'</svg>'}
+  var d=document;
+  // 稿纸：纸面 + 几行字 + 选区浮条
+  d.getElementById('viz-editor').innerHTML = svg(420,210,
+    '<rect x="40" y="14" width="340" height="182" rx="10" fill="#1b1d22" stroke="#2a2d34"/>'+
+    '<g fill="#3b3e46"><rect x="66" y="38" width="288" height="6" rx="3"/><rect x="66" y="54" width="270" height="6" rx="3"/><rect x="66" y="70" width="292" height="6" rx="3"/><rect x="66" y="86" width="180" height="6" rx="3"/><rect x="66" y="110" width="286" height="6" rx="3"/><rect x="66" y="126" width="240" height="6" rx="3"/></g>'+
+    '<rect x="66" y="102" width="240" height="20" rx="4" fill="rgba(201,111,74,.14)" stroke="rgba(201,111,74,.42)"/>'+
+    '<g opacity=".9"><rect x="70" y="150" width="52" height="18" rx="5" fill="rgba(201,111,74,.16)" stroke="rgba(201,111,74,.45)"/><rect x="128" y="150" width="40" height="18" rx="5" fill="#24262d" stroke="#2e3138"/><rect x="174" y="150" width="40" height="18" rx="5" fill="#24262d" stroke="#2e3138"/></g>'+
+    '<text x="77" y="163" fill="#c96f4a" font-size="9" font-family="ui-monospace,monospace">拉深</text>'
+  );
+  // 画板：节点 + 曲线
+  d.getElementById('viz-canvas').innerHTML = svg(420,210,
+    '<g stroke="#4a4d55" fill="none" stroke-width="1.2"><path d="M120 60 C 180 60 180 100 240 100"/><path d="M120 150 C 180 150 180 110 240 110"/><path d="M240 100 C 290 100 290 60 340 60" stroke-dasharray="4 4"/></g>'+
+    '<g><rect x="50" y="44" width="72" height="32" rx="7" fill="#1e2026" stroke="#c96f4a"/><rect x="50" y="134" width="72" height="32" rx="7" fill="#1e2026" stroke="#2e3138"/>'+
+    '<rect x="204" y="84" width="72" height="32" rx="7" fill="#1e2026" stroke="#6f9bc4"/><rect x="304" y="44" width="72" height="32" rx="7" fill="#1e2026" stroke="#2e3138" stroke-dasharray="4 4"/></g>'+
+    '<g fill="#8e8b85" font-size="8" font-family="ui-monospace,monospace"><text x="58" y="64">L01 主线</text><text x="58" y="154">L02 副线</text><text x="212" y="104">E07 事件</text><text x="312" y="64">F08 伏笔</text></g>'
+  );
+  // 轨迹：气泡
+  d.getElementById('viz-traj').innerHTML = svg(420,210,
+    '<g font-size="8.5" font-family="ui-monospace,monospace">'+
+    '<rect x="40" y="30" width="150" height="38" rx="8" fill="rgba(201,111,74,.14)" stroke="rgba(201,111,74,.42)"/><text x="52" y="46" fill="#ded9d0">get_world_state</text><text x="52" y="58" fill="#615e58">24 节点 · 30 事件</text>'+
+    '<rect x="60" y="80" width="170" height="38" rx="8" fill="rgba(127,174,114,.12)" stroke="rgba(127,174,114,.4)"/><text x="72" y="96" fill="#7fae72">propose_relations</text><text x="72" y="108" fill="#615e58">4 条 · 待裁决</text>'+
+    '<rect x="40" y="130" width="140" height="38" rx="8" fill="#1e2026" stroke="#2e3138"/><text x="52" y="146" fill="#ded9d0">simulate_worldline</text><text x="52" y="158" fill="#615e58">5 节点 · 3 影响</text>'+
+    '</g>'
+  );
+  // 人物卡
+  d.getElementById('viz-cards').innerHTML = svg(420,210,
+    '<g><rect x="46" y="30" width="96" height="140" rx="9" fill="#1b1d22" stroke="#2e3138"/><rect x="46" y="30" width="96" height="66" rx="9" fill="rgba(201,111,74,.16)"/><text x="82" y="76" fill="#e8ddca" font-size="26" font-family="Songti SC,serif">沈</text><text x="58" y="116" fill="#ded9d0" font-size="9">沈砚</text><text x="58" y="130" fill="#615e58" font-size="7.5">小砚 · 砚哥</text><rect x="52" y="140" width="40" height="14" rx="4" fill="#22252b" stroke="#2e3138"/><text x="57" y="150" fill="#8e8b85" font-size="7">8 事实</text></g>'+
+    '<g><rect x="158" y="30" width="96" height="140" rx="9" fill="#1b1d22" stroke="#2e3138"/><rect x="158" y="30" width="96" height="66" rx="9" fill="rgba(111,155,196,.16)"/><text x="194" y="76" fill="#e8ddca" font-size="26" font-family="Songti SC,serif">老</text><text x="170" y="116" fill="#ded9d0" font-size="9">老周</text><text x="170" y="130" fill="#615e58" font-size="7.5">周慎 · 周叔</text><rect x="164" y="140" width="40" height="14" rx="4" fill="#22252b" stroke="#2e3138"/><text x="169" y="150" fill="#8e8b85" font-size="7">11 事实</text></g>'+
+    '<g><rect x="270" y="30" width="96" height="140" rx="9" fill="#1b1d22" stroke="#2e3138"/><rect x="270" y="30" width="96" height="66" rx="9" fill="rgba(127,174,114,.16)"/><text x="306" y="76" fill="#e8ddca" font-size="26" font-family="Songti SC,serif">沈</text><text x="282" y="116" fill="#ded9d0" font-size="9">沈芜</text><text x="282" y="130" fill="#615e58" font-size="7.5">人影 · 观灯人</text><rect x="276" y="140" width="40" height="14" rx="4" fill="#22252b" stroke="#2e3138"/><text x="281" y="150" fill="#8e8b85" font-size="7">6 事实</text></g>'
+  );
+})();
+</script>
+</body>
+</html>

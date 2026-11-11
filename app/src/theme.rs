@@ -1,4 +1,4 @@
-//! 执笔 3.0 设计令牌 —— 全站唯一颜色/间距/圆角/排版事实源。
+//! 执笔造物 设计令牌 —— 全站唯一颜色/间距/圆角/排版事实源。
 //!
 //! 色板对齐 `design/design.css:3-10`（--bg/--panel/--panel2/--line/--text/--dim/--faint/
 //! --accent/--green/--blue/--purple/--red 及各 soft）与 `design/workspace.html:18-33`

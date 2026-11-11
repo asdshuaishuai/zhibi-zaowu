@@ -1,4 +1,4 @@
-//! 执笔 3.0 —— 跨端 AI 小说写作工作台（GPUI 前端 + DSH agent 底座）。
+//! 执笔造物 —— 跨端 AI 小说/剧本创作工作台（GPUI 前端 + 内嵌 DSH agent 底座）。
 //! 两层结构：书架首页（与内容严格分层，参考旧版执笔）→ 打开作品进三栏工作区。
 
 mod app_root;
@@ -90,7 +90,7 @@ fn main() {
 
             handle
                 .update(cx, |_view, window, _cx| {
-                    window.set_window_title("执笔 3.0 — 人写正文，AI 理账");
+                    window.set_window_title("执笔造物 — 人写正文，AI 理账");
                     window.activate_window();
                 })
                 .expect("failed to update window");

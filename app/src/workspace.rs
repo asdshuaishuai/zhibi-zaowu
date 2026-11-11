@@ -1553,7 +1553,7 @@ impl Render for Workspace {
                                         div()
                                             .text_size(theme::FONT_LABEL)
                                             .text_color(theme::DIM())
-                                            .child("执笔 3.0"),
+                                            .child("执笔造物"),
                                     )
                                     .child(
                                         div()

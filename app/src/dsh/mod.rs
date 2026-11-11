@@ -56,14 +56,90 @@ pub struct DshClient {
 }
 
 impl DshClient {
+    /// 包内运行时定位：.app/Contents/Resources/runtime/{node/bin/node, dsh/lib/bin.js}。
+    /// 也兼容从仓库 target 目录运行的开发态（向上找 .vendor）。
+    fn bundled_runtime() -> Option<(String, String)> {
+        let exe = std::env::current_exe().ok()?;
+        let mut dir = exe.parent()?.to_path_buf();
+        for _ in 0..5 {
+            // macOS .app：MacOS/ → Contents/Resources/runtime
+            let rt = dir.join("Resources").join("runtime");
+            let node = rt.join("node").join("bin").join("node");
+            let binjs = rt.join("dsh").join("lib").join("bin.js");
+            if node.exists() && binjs.exists() {
+                return Some((node.display().to_string(), binjs.display().to_string()));
+            }
+            // 开发态：仓库根 .vendor
+            let v = dir.join(".vendor");
+            let node2 = v.join("node").join("bin").join("node");
+            let binjs2 = v.join("dsh").join("lib").join("bin.js");
+            if node2.exists() && binjs2.exists() {
+                return Some((node2.display().to_string(), binjs2.display().to_string()));
+            }
+            dir = dir.parent()?.to_path_buf();
+        }
+        None
+    }
+
+    /// 包内能力包 patch：Resources/runtime/novel-pack/cordis.patch.yml。
+    /// patch 模板里的 plugin 路径是构建机绝对路径，不能直接用于分发——
+    /// 这里把 name 行重写成包内实际路径，落到缓存目录后返回临时 patch。
+    fn bundled_patch() -> Option<String> {
+        let exe = std::env::current_exe().ok()?;
+        let mut dir = exe.parent()?.to_path_buf();
+        for _ in 0..5 {
+            let rt = dir.join("Resources").join("runtime").join("novel-pack");
+            let tpl = rt.join("cordis.patch.yml");
+            if tpl.exists() {
+                let entry = rt.join("src").join("index.ts");
+                let text = std::fs::read_to_string(&tpl).ok()?;
+                let entry_s = entry.display().to_string();
+                // 只改 plugin 的 name 行（含 novel-pack/src/index.ts 的那一行）
+                let rewritten: String = text
+                    .lines()
+                    .map(|line| {
+                        let t = line.trim_start();
+                        if t.starts_with("name:") && line.contains("novel-pack") {
+                            format!("      name: {entry_s}")
+                        } else {
+                            line.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let cache = std::env::temp_dir().join("zhibi-runtime");
+                std::fs::create_dir_all(&cache).ok()?;
+                let out = cache.join("novel-pack.patch.yml");
+                std::fs::write(&out, rewritten).ok()?;
+                return Some(out.display().to_string());
+            }
+            // 开发态：仓库内 patch
+            let dev = dir.join("novel-pack").join("cordis.patch.yml");
+            if dev.exists() {
+                return Some(dev.display().to_string());
+            }
+            dir = dir.parent()?.to_path_buf();
+        }
+        None
+    }
+
     /// 启动 `dsh --profile sdk` 子进程并开始读流。root 传入打开的项目目录
     /// （作为 ZHIBI_ROOT 环境变量交给 novel-pack 的 config.root）。
     pub fn spawn(root: &std::path::Path) -> Result<(Self, async_channel::Receiver<DshEvent>)> {
+        // 启动顺序：ZHIBI_DSH_BIN 覆盖 → 包内 runtime/node + runtime/dsh/lib/bin.js
+        //（与 .app 一起分发，不依赖全局 npm）→ PATH 里的 dsh（开发态）。
+        let mut node_prefix: Option<(String, String)> = None; // (node, bin.js)
+        if std::env::var("ZHIBI_DSH_BIN").is_err() {
+            if let Some((node, binjs)) = Self::bundled_runtime() {
+                node_prefix = Some((node, binjs));
+            }
+        }
         let bin = std::env::var("ZHIBI_DSH_BIN").unwrap_or_else(|_| "dsh".to_string());
         // novel-pack 能力包：ZHIBI_PACK_PATCH 指定；默认找仓库相对路径
         let mut args: Vec<String> = vec!["--profile".into(), "sdk".into()];
         let patch = std::env::var("ZHIBI_PACK_PATCH")
             .ok()
+            .or_else(|| Self::bundled_patch())
             .or_else(|| {
                 let cwd = std::path::Path::new("novel-pack/cordis.patch.yml");
                 cwd.exists().then(|| cwd.display().to_string())
@@ -83,7 +159,15 @@ impl DshClient {
             args.push("--patch".into());
             args.push(patch);
         }
-        let mut child = Command::new(&bin)
+        let mut cmd = match &node_prefix {
+            Some((node, binjs)) => {
+                let mut c = Command::new(node);
+                c.arg(binjs);
+                c
+            }
+            None => Command::new(&bin),
+        };
+        let mut child = cmd
             .args(&args)
             .env("ZHIBI_ROOT", root)
             .stdin(Stdio::piped())

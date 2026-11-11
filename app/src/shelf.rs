@@ -565,7 +565,7 @@ impl Render for ShelfView {
                     .media(EmptyMedia::new().with_variant(EmptyMediaVariant::Icon))
                     .title(EmptyTitle::new().child("书架还是空的"))
                     .description(EmptyDescription::new().child(
-                        "点下方「＋ 新建作品」开一本新书——执笔会建好书名目录与稿纸，第一次打开就能落笔。",
+                        "点下方「＋ 新建作品」开一本新书——执笔造物会建好书名目录与稿纸，第一次打开就能落笔。",
                     )),
             );
 

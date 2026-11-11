@@ -2,12 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>执笔 3.0 · 完整可交互原型</title>
+<title>执笔造物 · 完整可交互原型</title>
 </head>
 <body style="margin:0;background:#101114">
 <div id="zhibi-app" class="za">
 <style>
-  /* ── 执笔 3.0 可交互原型 · 墨底/宣纸/朱砂 ── */
+  /* ── 执笔造物 可交互原型 · 墨底/宣纸/朱砂 ── */
   .za { --bg:#17181c; --panel:#1e2026; --panel2:#24262d; --line:#2e3138; --text:#d8d5cf; --dim:#8e8b85; --faint:#5d5b57;
        --accent:#c96f4a; --accent-soft:rgba(201,111,74,.14); --green:#7fae72; --green-soft:rgba(127,174,114,.12);
        --blue:#6f9bc4; --blue-soft:rgba(111,155,196,.12); --purple:#a08cc0; --red:#c0605c; --red-soft:rgba(192,96,92,.12);
@@ -190,7 +190,7 @@
 
 <div class="za-tb">
   <div class="za-dots"><i></i><i></i><i></i></div>
-  <span class="nm" id="za-crumb">执笔 3.0 — <b>书架</b></span>
+  <span class="nm" id="za-crumb">执笔造物 — <b>书架</b></span>
   <span class="sp"></span>
   <span class="za-chip" id="za-dshchip">DSH：未启动</span>
   <button class="za-ib" data-act="focus-toggle" title="只留稿纸">专注</button>
@@ -304,7 +304,7 @@
   }
   function renderCrumb() {
     const names = { shelf:'书架', editor:'第12章 · 断刀', outline:'大纲 · 时间线', clues:'伏笔台账', canon:'设定', memory:'记忆中枢', stats:'写作统计', inbox:'提案收件箱', settings:'设置' };
-    $('za-crumb').innerHTML = `执笔 3.0 — <b>${esc(names[S.screen] || '')}</b>`;
+    $('za-crumb').innerHTML = `执笔造物 — <b>${esc(names[S.screen] || '')}</b>`;
     $('za-dshchip').textContent = 'DSH：已连接（sdk 子进程）';
     $('za-dshchip').className = 'za-chip g';
   }
