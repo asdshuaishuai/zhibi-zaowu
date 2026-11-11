@@ -256,13 +256,14 @@
 <section id="download">
   <div class="wrap">
     <div class="dl">
-      <h2>下载执笔造物</h2>
-      <p>macOS（Apple Silicon / Intel）。应用内置 DSH 运行时，无需安装 Node 或 npm。</p>
+      <h2>获取执笔造物</h2>
+      <p>当前以源码分发：一条命令打包出自带运行时的 macOS 应用，目标机器无需安装 Node / npm。</p>
       <div class="row">
-        <a class="btn primary" href="https://github.com/asdshuaishuai/zhibi-zaowu/releases/latest" target="_blank">下载最新版</a>
-        <a class="btn ghost" href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">从源码构建</a>
+        <a class="btn primary" href="https://github.com/asdshuaishuai/zhibi-zaowu#构建与运行" target="_blank">构建指南</a>
+        <a class="btn ghost" href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">查看源码</a>
       </div>
       <div class="note">
+        <code>scripts/vendor_runtime.sh</code> 一次性内置 Node + DSH → <code>scripts/build_app.sh</code> 产出 执笔造物.app<br>
         项目数据存放在 ~/Documents/执笔/*.zhibi（与旧版执笔双向兼容）· 密钥只在本机 · 不联云<br>
         模型接入：DeepSeek 官方 API 或任意 OpenAI 兼容端点（局域网亦可）
       </div>
