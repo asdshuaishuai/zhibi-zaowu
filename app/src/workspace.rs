@@ -66,6 +66,29 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// 开发预览用：ZHIBI_MODE 的键 → 模式（也接受中文 label）
+    pub(crate) fn from_key(k: &str) -> Option<Mode> {
+        let k = k.trim().to_ascii_lowercase();
+        Some(match k.as_str() {
+            "editor" | "章节" => Mode::Editor,
+            "outline" | "大纲" => Mode::Outline,
+            "canon" | "设定" => Mode::Canon,
+            "memory" | "记忆" => Mode::Memory,
+            "stats" | "统计" => Mode::Stats,
+            "clues" | "伏笔" => Mode::Clues,
+            "characters" | "人物" => Mode::Characters,
+            "settings" | "设置" => Mode::Settings,
+            "snapshots" | "快照" => Mode::Snapshots,
+            "import" | "导入" => Mode::Import,
+            "graph" | "图谱" => Mode::Graph,
+            "canvas" | "画板" => Mode::Canvas,
+            "director" | "世界线" => Mode::Director,
+            "oracle" | "预言书" | "预言" => Mode::Oracle,
+            "bookinfo" | "书目" => Mode::BookInfo,
+            _ => return None,
+        })
+    }
+
     fn label(&self) -> &'static str {
         match self {
             Mode::Editor => "章节",
@@ -927,6 +950,11 @@ impl Workspace {
             }
         }
         self.inbox.update(cx, |panel, cx| panel.refresh(cx));
+    }
+
+    /// 开发预览入口：打开作品后直接切到某页（ZHIBI_MODE）
+    pub(crate) fn open_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        self.switch_center(mode, window, cx);
     }
 
     fn switch_center(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {

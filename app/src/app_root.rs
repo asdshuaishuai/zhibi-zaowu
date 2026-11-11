@@ -15,11 +15,27 @@ pub struct AppRoot {
 impl AppRoot {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let shelf = cx.new(|cx| ShelfView::new(window, cx));
+        let mut this = Self { shelf: Some(shelf.clone()), workspace: None };
         cx.subscribe_in(&shelf, window, |this, _, ev: &ShelfEvent, window, cx| match ev {
             ShelfEvent::Open(dir) => this.open_project(dir.clone(), window, cx),
         })
         .detach();
-        Self { shelf: Some(shelf), workspace: None }
+        // 开发预览：ZHIBI_OPEN=<作品目录> [ZHIBI_MODE=oracle] 启动即进工作区/指定页
+        if let Ok(dir) = std::env::var("ZHIBI_OPEN") {
+            let dir = dir.trim().to_string();
+            if !dir.is_empty() {
+                this.open_project(std::path::PathBuf::from(dir), window, cx);
+                if let Some(ws) = this.workspace.clone() {
+                    if let Some(mode) = std::env::var("ZHIBI_MODE")
+                        .ok()
+                        .and_then(|m| crate::workspace::Mode::from_key(&m))
+                    {
+                        ws.update(cx, |w, cx| w.open_mode(mode, window, cx));
+                    }
+                }
+            }
+        }
+        this
     }
 
     fn open_project(&mut self, dir: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {

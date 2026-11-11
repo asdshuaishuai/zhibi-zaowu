@@ -637,8 +637,7 @@ mod tests {
 
     #[test]
     fn project_meta_roundtrip() {
-        let home = temp_home("project");
-        unsafe { std::env::set_var("HOME", &home); }
+        let (home, _home_guard) = use_home("project");
         std::thread::sleep(std::time::Duration::from_millis(5));
         let dir = create_project("书目测试").unwrap();
         let h = ProjectHandle::open(&dir).unwrap();
@@ -664,8 +663,7 @@ mod tests {
 
     #[test]
     fn worldline_promote_targets() {
-        let home = temp_home("wltargets");
-        unsafe { std::env::set_var("HOME", &home); }
+        let (home, _home_guard) = use_home("wltargets");
         std::thread::sleep(std::time::Duration::from_millis(5));
         let dir = create_project("晋升分流").unwrap();
         let h = ProjectHandle::open(&dir).unwrap();
@@ -702,8 +700,7 @@ mod tests {
 
     #[test]
     fn worldline_archive_toggle() {
-        let home = temp_home("wlarch");
-        unsafe { std::env::set_var("HOME", &home); }
+        let (home, _home_guard) = use_home("wlarch");
         std::thread::sleep(std::time::Duration::from_millis(5));
         let dir = create_project("归档测试").unwrap();
         let h = ProjectHandle::open(&dir).unwrap();
@@ -724,8 +721,7 @@ mod tests {
 
     #[test]
     fn relations_payload_applies() {
-        let home = temp_home("relations");
-        unsafe { std::env::set_var("HOME", &home); }
+        let (home, _home_guard) = use_home("relations");
         std::thread::sleep(std::time::Duration::from_millis(5));
         let dir = create_project("关系测试").unwrap();
         let h = ProjectHandle::open(&dir).unwrap();
@@ -750,8 +746,7 @@ mod tests {
 
     #[test]
     fn legacy_payload_without_kind() {
-        let home = temp_home("legacy");
-        unsafe { std::env::set_var("HOME", &home); }
+        let (home, _home_guard) = use_home("legacy");
         std::thread::sleep(std::time::Duration::from_millis(5));
         let dir = create_project("旧格式").unwrap();
         let h = ProjectHandle::open(&dir).unwrap();

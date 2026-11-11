@@ -1200,6 +1200,14 @@ pub enum OracleEvent {
     ViewOnCanvas { worldline: String },
 }
 
+/// 世界线的两种看法：并轨图（横轴=章节的平行线）与世界树（纵向生长的枝）。
+/// 两种并存，默认并轨（旧形态不改），世界树是新增视图。
+#[derive(Clone, Copy, PartialEq)]
+enum WlView {
+    Lanes,
+    Tree,
+}
+
 pub struct OraclePanel {
     focus_handle: FocusHandle,
     handle: Rc<ProjectHandle>,
@@ -1207,6 +1215,7 @@ pub struct OraclePanel {
     fork: Entity<InputState>,
     selected: Option<String>,
     message: Option<SharedString>,
+    view: WlView,
 }
 
 impl OraclePanel {
@@ -1221,7 +1230,15 @@ impl OraclePanel {
             .into_iter()
             .find(|w| s(w, "id") != "α")
             .map(|w| s(&w, "id"));
-        Self { focus_handle: cx.focus_handle(), handle, premise, fork, selected, message: None }
+        Self {
+            focus_handle: cx.focus_handle(),
+            handle,
+            premise,
+            fork,
+            selected,
+            message: None,
+            view: WlView::Lanes,
+        }
     }
 
     fn status_tag(status: &str) -> AnyElement {
@@ -1747,6 +1764,498 @@ impl Render for OraclePanel {
                     ),
             );
 
+        // —— 世界树：干 = 此世 α（纵向章节轴，根在第 1 章），枝 = 自分歧章长出的平行世界。
+        //    干居中、枝左右交替；每条枝再分小枝结叶 —— 树冠的读感靠「枝→小枝→叶」三层。
+        //    枝上的果 = 该世界已推演的节点；叶 = 新长出的世界；枯枝（虚线、下垂）= 归档世界。
+        //    几何全部按 320×480 定值算 —— 画布与覆盖层（章号、可点的世界徽）共用同一组坐标。
+        const TW: f32 = 320.;
+        const TH: f32 = 480.;
+        let mut worlds: Vec<(String, u32, usize, bool, bool, bool)> = Vec::new();
+        for w in &lines {
+            let id = s(w, "id");
+            if id == "α" {
+                continue;
+            }
+            let on = self.selected.as_deref() == Some(id.as_str());
+            worlds.push((
+                id,
+                w.get("forkedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                w.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+                on,
+                s(w, "kind") == "forecast",
+                s(w, "status") == "已归档",
+            ));
+        }
+        // 活枝按分叉章排序（早的在下），枯枝收在最上面
+        worlds.sort_by_key(|w| (w.5, w.1));
+
+        let now_ch = self.handle.next_chapter_number().saturating_sub(1).max(1);
+        let max_ch = now_ch.max(worlds.iter().map(|w| w.1).max().unwrap_or(0) + 2).max(10);
+        let trunk_x = 150.0f32;
+        let top_y = 42.0f32;
+        let base_y = TH - 40.;
+        let ch_y = move |ch: u32| base_y - (ch.min(max_ch) as f32 / max_ch as f32) * (base_y - top_y);
+
+        #[derive(Clone)]
+        struct Branch {
+            id: String,
+            fork_ch: u32,
+            fork_y: f32,
+            tip: (f32, f32),
+            c1: (f32, f32),
+            c2: (f32, f32),
+            side: f32,
+            nodes: usize,
+            on: bool,
+            forecast: bool,
+            archived: bool,
+        }
+        let mut branches: Vec<Branch> = Vec::with_capacity(worlds.len());
+        for (i, (id, fork, nn, on, forecast, archived)) in worlds.iter().enumerate() {
+            // 越早分叉（越靠下）的枝越长；左右交替长，再按 id 抖一点，免得两条枝一个角度
+            let k = worlds.len().saturating_sub(1 + i) as f32;
+            let h: u32 = id.chars().map(|c| c as u32).sum();
+            let j1 = (h % 7) as f32 * 3.0 - 9.0;
+            let j2 = (h % 5) as f32 * 5.0 - 10.0;
+            let side = if *archived {
+                -1.0f32
+            } else if i % 2 == 0 {
+                1.0
+            } else {
+                -1.0
+            };
+            let max_reach = if side > 0. { 150. } else { 104. };
+            let mut rise = 38. + 22. * k + (*nn).min(6) as f32 * 2.2 + j1;
+            let mut reach = (40. + 30. * k + j2).min(max_reach);
+            if *archived {
+                // 枯枝：向下垂，不再长
+                rise = -10. - k * 2.;
+            }
+            let fork_y = ch_y((*fork).max(1));
+            let avail = fork_y - top_y - 18.;
+            if rise > avail {
+                let sfa = avail / rise;
+                rise *= sfa;
+                reach *= sfa;
+            }
+            let tip = (trunk_x + side * reach, fork_y - rise);
+            branches.push(Branch {
+                id: id.clone(),
+                fork_ch: *fork,
+                fork_y,
+                tip,
+                c1: (trunk_x + side * reach * 0.05, fork_y - rise * 0.58),
+                c2: (tip.0 - side * reach * 0.45, tip.1 - rise * 0.05),
+                side,
+                nodes: *nn,
+                on: *on,
+                forecast: *forecast,
+                archived: *archived,
+            });
+        }
+
+        let mut tree = div().relative().w(px(TW)).h(px(TH)).flex_shrink_0().child({
+            let branches = branches.clone();
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let ox = bounds.origin.x.as_f32();
+                    let oy = bounds.origin.y.as_f32();
+                    let p = |x: f32, y: f32| point(px(ox + x), px(oy + y));
+                    let blue = theme::BLUE();
+                    let faint = theme::FAINT();
+                    let green = theme::GREEN();
+                    let amber = theme::AMBER();
+                    let accent = theme::ACCENT();
+                    let line_c = theme::LINE();
+                    let dot = |x: f32, y: f32, r: f32| {
+                        let k = 0.5523 * r;
+                        let mut b = PathBuilder::fill();
+                        b.move_to(p(x + r, y));
+                        b.cubic_bezier_to(p(x + r, y + k), p(x + k, y + r), p(x, y + r));
+                        b.cubic_bezier_to(p(x - k, y + r), p(x - r, y + k), p(x - r, y));
+                        b.cubic_bezier_to(p(x - r, y - k), p(x - k, y - r), p(x, y - r));
+                        b.cubic_bezier_to(p(x + k, y - r), p(x + r, y - k), p(x + r, y));
+                        b
+                    };
+                    let leaf = |bx: f32, by: f32, ang: f32, len: f32| {
+                        let (dx, dy) = (ang.cos(), ang.sin());
+                        let (nx, ny) = (-dy, dx);
+                        let hw = len * 0.30;
+                        let mut b = PathBuilder::fill();
+                        b.move_to(p(bx, by));
+                        b.cubic_bezier_to(
+                            p(bx + dx * len * 0.30 + nx * hw, by + dy * len * 0.30 + ny * hw),
+                            p(
+                                bx + dx * len * 0.82 + nx * hw * 0.65,
+                                by + dy * len * 0.82 + ny * hw * 0.65,
+                            ),
+                            p(bx + dx * len, by + dy * len),
+                        );
+                        b.cubic_bezier_to(
+                            p(
+                                bx + dx * len * 0.82 - nx * hw * 0.65,
+                                by + dy * len * 0.82 - ny * hw * 0.65,
+                            ),
+                            p(bx + dx * len * 0.30 - nx * hw, by + dy * len * 0.30 - ny * hw),
+                            p(bx, by),
+                        );
+                        b
+                    };
+                    let cubic = |p0: (f32, f32), c1: (f32, f32), c2: (f32, f32), p1: (f32, f32), t: f32| {
+                        let u = 1. - t;
+                        (
+                            u * u * u * p0.0
+                                + 3. * u * u * t * c1.0
+                                + 3. * u * t * t * c2.0
+                                + t * t * t * p1.0,
+                            u * u * u * p0.1
+                                + 3. * u * u * t * c1.1
+                                + 3. * u * t * t * c2.1
+                                + t * t * t * p1.1,
+                        )
+                    };
+                    // 根（第 1 章之前的世界，向土里散开）
+                    for sd in [-2.0f32, -1., 0., 1., 2.] {
+                        let off = sd * 13.;
+                        let a = 0.40 - sd.abs() * 0.09;
+                        let mut r = PathBuilder::stroke(px(1.0));
+                        r.move_to(p(trunk_x, base_y));
+                        r.cubic_bezier_to(
+                            p(trunk_x + sd * 3., base_y + 8.),
+                            p(trunk_x + off * 1.2, TH - 14.),
+                            p(trunk_x + off * 2.2, TH - 4.),
+                        );
+                        if let Ok(path) = r.build() {
+                            window.paint_path(path, hsla(blue).opacity(a));
+                        }
+                    }
+                    // 干：四段收梢（3.3 → 1.9）
+                    for (y0, y1, sw) in [
+                        (base_y, base_y - 150., 3.3),
+                        (base_y - 150., base_y - 290., 2.8),
+                        (base_y - 290., base_y - 370., 2.3),
+                        (base_y - 370., top_y, 1.9),
+                    ] {
+                        let mut t = PathBuilder::stroke(px(sw));
+                        t.move_to(p(trunk_x, y0));
+                        t.line_to(p(trunk_x, y1));
+                        if let Ok(path) = t.build() {
+                            window.paint_path(path, hsla(blue));
+                        }
+                    }
+                    let mut t2 = PathBuilder::stroke(px(1.0));
+                    t2.move_to(p(trunk_x + 4.2, base_y - 8.));
+                    t2.line_to(p(trunk_x + 4.2, top_y + 10.));
+                    if let Ok(path) = t2.build() {
+                        window.paint_path(path, hsla(blue).opacity(0.18));
+                    }
+                    // 章节刻度（每 5 章一格；章号写在分叉徽处）
+                    let mut ch = 5;
+                    while ch <= max_ch {
+                        let y = ch_y(ch);
+                        let mut tk = PathBuilder::stroke(px(1.0));
+                        tk.move_to(p(trunk_x - 3., y));
+                        tk.line_to(p(trunk_x + 3., y));
+                        if let Ok(path) = tk.build() {
+                            window.paint_path(path, hsla(line_c).opacity(0.70));
+                        }
+                        ch += 5;
+                    }
+                    // 枝 → 小枝 → 叶
+                    for b in branches.iter() {
+                        let c = if b.archived {
+                            faint
+                        } else if b.forecast {
+                            green
+                        } else {
+                            amber
+                        };
+                        let c = if b.on { accent } else { c };
+                        let mut bp = PathBuilder::stroke(px(if b.on {
+                            2.4
+                        } else if b.archived {
+                            1.0
+                        } else {
+                            1.7
+                        }));
+                        if b.archived {
+                            bp = bp.dash_array(&[px(3.), px(3.)]);
+                        }
+                        bp.move_to(p(trunk_x, b.fork_y));
+                        bp.cubic_bezier_to(p(b.c1.0, b.c1.1), p(b.c2.0, b.c2.1), p(b.tip.0, b.tip.1));
+                        if let Ok(path) = bp.build() {
+                            window.paint_path(
+                                path,
+                                hsla(c).opacity(if b.archived {
+                                    0.42
+                                } else if b.on {
+                                    1.
+                                } else {
+                                    0.92
+                                }),
+                            );
+                        }
+                        if let Ok(path) = dot(trunk_x, b.fork_y, 2.2).build() {
+                            window.paint_path(path, hsla(c));
+                        }
+                        if b.archived {
+                            // 枯枝：两截下垂的断杈
+                            for (t0, ang, len) in [(0.55f32, 0.55f32, 12.0f32), (0.85, 0.95, 9.)] {
+                                let (bx, by) = cubic((trunk_x, b.fork_y), b.c1, b.c2, b.tip, t0);
+                                let mut d = PathBuilder::stroke(px(0.9));
+                                d.move_to(p(bx, by));
+                                d.line_to(p(bx + ang.cos() * len, by + ang.sin() * len));
+                                if let Ok(path) = d.build() {
+                                    window.paint_path(path, hsla(c).opacity(0.42));
+                                }
+                            }
+                            continue;
+                        }
+                        // 果：已推演节点，沿枝由内向外
+                        let m = b.nodes.min(6);
+                        for k in 0..m {
+                            let t0 = if m > 1 {
+                                0.30 + 0.62 * (k as f32 / (m as f32 - 1.))
+                            } else {
+                                0.55
+                            };
+                            let (fx, fy) = cubic((trunk_x, b.fork_y), b.c1, b.c2, b.tip, t0);
+                            if let Ok(path) = dot(fx, fy, 1.6).build() {
+                                window.paint_path(path, hsla(c).opacity(0.50));
+                            }
+                        }
+                        // 小枝：沿切线上下扇，左右自动对称；枝梢长叶
+                        for (t0, da, len) in [
+                            (0.40f32, -0.85f32, 18.0f32),
+                            (0.55, -0.45, 23.),
+                            (0.70, -0.05, 25.),
+                            (0.84, 0.45, 21.),
+                            (0.95, -1.15, 15.),
+                        ] {
+                            let (bx, by) = cubic((trunk_x, b.fork_y), b.c1, b.c2, b.tip, t0);
+                            let (qx, qy) =
+                                cubic((trunk_x, b.fork_y), b.c1, b.c2, b.tip, (t0 + 0.01).min(1.));
+                            let tang = (qy - by).atan2(qx - bx);
+                            let ang = tang + da;
+                            let (ex, ey) = (bx + ang.cos() * len, by + ang.sin() * len);
+                            let (cx, cy) =
+                                (bx + ang.cos() * len * 0.45, by + ang.sin() * len * 0.45 - 4.);
+                            let mut tp = PathBuilder::stroke(px(if b.on { 1.15 } else { 0.95 }));
+                            tp.move_to(p(bx, by));
+                            tp.cubic_bezier_to(p(cx, cy), p(cx, cy - 3.), p(ex, ey));
+                            if let Ok(path) = tp.build() {
+                                window.paint_path(path, hsla(c).opacity(if b.on { 0.80 } else { 0.66 }));
+                            }
+                            for (la, ll) in [
+                                (ang - 0.55, 9.),
+                                (ang - 0.22, 13.),
+                                (ang + 0.14, 12.),
+                                (ang + 0.45, 9.),
+                            ] {
+                                if let Ok(path) = leaf(ex, ey, la, ll).build() {
+                                    window.paint_path(path, hsla(c).opacity(if b.on { 0.46 } else { 0.34 }));
+                                }
+                            }
+                            let (mx, my) = ((bx + ex) / 2., (by + ey) / 2.);
+                            for (la, ll) in [(ang - 1.0, 8.), (ang + 0.9, 8.)] {
+                                if let Ok(path) = leaf(mx, my, la, ll).build() {
+                                    window.paint_path(path, hsla(c).opacity(if b.on { 0.38 } else { 0.28 }));
+                                }
+                            }
+                        }
+                        // 枝端叶
+                        for (la, ll) in [(-2.1f32, 12.0f32), (-1.55, 16.), (-1.0, 14.), (-0.55, 11.)] {
+                            if let Ok(path) = leaf(b.tip.0, b.tip.1, la, ll).build() {
+                                window.paint_path(path, hsla(c).opacity(if b.on { 0.46 } else { 0.34 }));
+                            }
+                        }
+                    }
+                    // 树梢 = 此世此刻：一簇叶 + 两点果
+                    if let Ok(path) = dot(trunk_x, top_y, 2.6).build() {
+                        window.paint_path(path, hsla(blue));
+                    }
+                    for (ang, len) in [
+                        (-2.75f32, 12.0f32),
+                        (-2.35, 16.),
+                        (-2.0, 19.),
+                        (-1.65, 15.),
+                        (-1.3, 13.),
+                        (-0.95, 15.),
+                        (-0.6, 12.),
+                        (-0.3, 10.),
+                    ] {
+                        if let Ok(path) = leaf(trunk_x, top_y, ang, len).build() {
+                            window.paint_path(path, hsla(blue).opacity(0.38));
+                        }
+                    }
+                    for (dx, dy) in [(-9.0f32, -6.0f32), (8., -8.), (13., 2.)] {
+                        if let Ok(path) = dot(trunk_x + dx, top_y + dy, 1.6).build() {
+                            window.paint_path(path, hsla(blue).opacity(0.65));
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .size_full()
+        });
+        // 树梢标注
+        tree = tree.child(
+            div()
+                .absolute()
+                .left(px(trunk_x - 44.))
+                .top(px(top_y - 40.))
+                .w(px(88.))
+                .text_center()
+                .text_size(theme::FONT_MICRO)
+                .text_color(theme::BLUE())
+                .child("现在"),
+        );
+        // 分叉徽（世界 + 章号）：点一下切到那个世界
+        for b in &branches {
+            let c = if b.archived {
+                theme::FAINT()
+            } else if b.forecast {
+                theme::GREEN()
+            } else {
+                theme::AMBER()
+            };
+            let c = if b.on { theme::ACCENT() } else { c };
+            let pick = b.id.clone();
+            let label = b.id.clone();
+            let chip_x = trunk_x + b.side * 10. - 7.5;
+            let ch_label = format!("第{}章", b.fork_ch.max(1));
+            let ch_y_lab = if b.fork_y < top_y + 110. {
+                b.fork_y + 13.
+            } else {
+                b.fork_y - 15.
+            };
+            let ch_left = if b.side > 0. { chip_x + 18. } else { chip_x - 43. };
+            tree = tree.child(
+                div()
+                    .id(SharedString::from(format!("wfork-{}", b.id)))
+                    .absolute()
+                    .left(px(chip_x))
+                    .top(px(b.fork_y - 7.5))
+                    .w(px(15.))
+                    .h(px(15.))
+                    .rounded(px(7.5))
+                    .border_1()
+                    .border_color(c)
+                    .bg(if b.on { theme::ACCENT_SOFT() } else { theme::BG() })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected = Some(pick.clone());
+                        this.message = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(8.5))
+                            .font_family(theme::FAMILY_MONO)
+                            .text_color(c)
+                            .child(SharedString::from(label)),
+                    ),
+            );
+            tree = tree.child(
+                div()
+                    .absolute()
+                    .left(px(ch_left))
+                    .top(px(ch_y_lab))
+                    .w(px(40.))
+                    .when(b.side > 0., |d| d.text_left())
+                    .when(b.side < 0., |d| d.text_right())
+                    .text_size(px(8.5))
+                    .font_family(theme::FAMILY_MONO)
+                    .text_color(theme::FAINT())
+                    .child(SharedString::from(ch_label)),
+            );
+        }
+        if branches.is_empty() {
+            tree = tree.child(
+                div()
+                    .absolute()
+                    .left(px(trunk_x + 16.))
+                    .top(px(TH / 2. - 34.))
+                    .w(px(140.))
+                    .text_size(theme::FONT_LABEL)
+                    .line_height(relative(1.55))
+                    .text_color(theme::FAINT())
+                    .child("此世还没有分叉。在下方写一句「如果……」，世界会从那一章长出新枝。"),
+            );
+        }
+        let mut tree_col: Vec<AnyElement> = vec![
+            div()
+                .flex()
+                .items_baseline()
+                .gap(theme::GAP_SM)
+                .child(
+                    div()
+                        .text_size(theme::FONT_META)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::BLUE())
+                        .child("世界树"),
+                )
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::FAINT())
+                        .child(SharedString::from(format!(
+                            "干 = 此世 α · 枝 {} · 叶果 = 已推演",
+                            branches.len()
+                        ))),
+                )
+                .into_any_element(),
+            tree.into_any_element(),
+            div()
+                .w(px(TW))
+                .text_size(theme::FONT_MICRO)
+                .line_height(relative(1.5))
+                .text_color(theme::FAINT())
+                .child("根 = 第 1 章，梢 = 现在；每一次「如果」都在某一章分出一枝。枝上的果是那世界已推演的事，虚线枯枝是归档的世界。")
+                .into_any_element(),
+        ];
+        // 选中世界的名字（枝梢放不下，就在树下点名）
+        if let Some(wid) = worlds.iter().find(|w| w.3).map(|w| w.0.clone()) {
+            if let Some(line) = lines.iter().find(|x| s(x, "id") == wid) {
+                tree_col.insert(
+                    2,
+                    div()
+                        .w(px(TW))
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::ACCENT())
+                        .child(SharedString::from(format!(
+                            "▸ 世界{wid} · {}",
+                            s(line, "name")
+                        )))
+                        .into_any_element(),
+                );
+            }
+        }
+        // 选中世界的名字（枝梢放不下，就在树下点名）
+        if let Some(wid) = worlds.iter().find(|w| w.3).map(|w| w.0.clone()) {
+            if let Some(line) = lines.iter().find(|x| s(x, "id") == wid) {
+                tree_col.insert(
+                    2,
+                    div()
+                        .w(px(TW))
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::ACCENT())
+                        .child(SharedString::from(format!(
+                            "▸ 世界{wid} · {}",
+                            s(line, "name")
+                        )))
+                        .into_any_element(),
+                );
+            }
+        }
+
+        // —— 并轨图（旧形态，保留）：横轴=章节，α 是贯穿基线，其他线从各自分歧章分叉。
+        //    这是「线」的观感：平行时空，各自延伸，互不覆盖。
+        let lanes_el: Option<gpui_kit::AnyElement> = if self.view == WlView::Lanes {
         // —— 世界线并轨图：横轴=章节，α 是贯穿基线，其他线从各自分歧章分叉出去。
         //    这是「线」的观感：平行时空，各自延伸，互不覆盖。
         let lane_lines: Vec<(String, u32, usize, bool)> = lines
@@ -1866,31 +2375,168 @@ impl Render for OraclePanel {
                 )
                 .into_any_element()
         };
+            Some(lanes_el)
+        } else {
+            None
+        };
+
+
+        // 页头：并轨 / 世界树 双视图（旧形态默认，世界树是新增看法）
+        let seg = |label: &'static str, on: bool, key: &'static str| {
+            div()
+                .id(key)
+                .px(px(10.))
+                .py(px(3.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                .cursor_pointer()
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                        .child(label),
+                )
+        };
+        let head = div()
+            .flex_shrink_0()
+            .px(theme::PAD_LG)
+            .pt(theme::PAD_MD)
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .child(
+                div()
+                    .text_size(theme::FONT_META)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::TEXT())
+                    .child("世界线"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(theme::FONT_MICRO)
+                    .text_color(theme::FAINT())
+                    .child(match self.view {
+                        WlView::Lanes => "并轨：横轴 = 章节，α 是贯穿基线；其他线自分歧章分叉、平行延伸",
+                        WlView::Tree => "世界树：根 = 第 1 章，梢 = 现在；每一次「如果」都在某一章长出一枝",
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(4.))
+                    .child(seg("并轨", self.view == WlView::Lanes, "wl-view-lanes").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.view = WlView::Lanes;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(seg("世界树", self.view == WlView::Tree, "wl-view-tree").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.view = WlView::Tree;
+                            cx.notify();
+                        }),
+                    )),
+            );
+
+        let body = if let Some(lanes) = lanes_el {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .px(theme::PAD_LG)
+                        .pt(theme::PAD_MD)
+                        .child(lanes),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .gap(theme::GAP_GROUP)
+                        .p(theme::PAD_MD)
+                        .child(
+                            div()
+                                .id("wl-list")
+                                .w(px(280.))
+                                .flex_shrink_0()
+                                .min_h_0()
+                                .flex()
+                                .flex_col()
+                                .overflow_y_scroll()
+                                .children(list),
+                        )
+                        .child(
+                            div()
+                                .id("oracle-scroll")
+                                .flex_1()
+                                .min_w_0()
+                                .min_h_0()
+                                .flex()
+                                .flex_col()
+                                .gap(theme::GAP_XS)
+                                .overflow_y_scroll()
+                                .children(right),
+                        ),
+                )
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .gap(theme::GAP_GROUP)
+                .p(theme::PAD_MD)
+                .child(
+                    div()
+                        .id("wl-tree")
+                        .w(px(320.))
+                        .flex_shrink_0()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_SM)
+                        .overflow_y_scroll()
+                        .children(tree_col),
+                )
+                .child(
+                    div()
+                        .id("wl-list")
+                        .w(px(248.))
+                        .flex_shrink_0()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .children(list),
+                )
+                .child(
+                    div()
+                        .id("oracle-scroll")
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_XS)
+                        .overflow_y_scroll()
+                        .children(right),
+                )
+        };
 
         div()
             .size_full()
             .flex()
             .flex_col()
             .bg(theme::BG())
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .px(theme::PAD_LG)
-                    .pt(theme::PAD_MD)
-                    .child(lanes_el),
-            )
-            .child(
-                div()
-                    .id("oracle-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .gap(theme::GAP_GROUP)
-                    .p(theme::PAD_MD)
-                    .overflow_y_scroll()
-                    .child(div().w(px(280.)).flex_shrink_0().flex().flex_col().children(list))
-                    .child(div().flex_1().min_w_0().flex().flex_col().gap(theme::GAP_XS).children(right)),
-            )
+            .child(head)
+            .child(body)
             .child(composer)
     }
 }
