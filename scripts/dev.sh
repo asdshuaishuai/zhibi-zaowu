@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 执笔 3.0 开发启动：GPUI 前端 + DSH sdk 子进程
+# 执笔造物 开发启动：GPUI 前端 + DSH sdk 子进程
 #
 # 依赖：
 # - Node >= 24.9（dsh CLI 的 import.meta.main / 引擎要求），本脚本自动走 nvm 24

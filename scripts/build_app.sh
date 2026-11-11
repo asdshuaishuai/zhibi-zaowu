@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 执笔 3.0 macOS 打包：release 构建 → .app bundle → ad-hoc 签名
+# 执笔造物 macOS 打包：release 构建 → .app bundle → ad-hoc 签名
 # 跨端说明：Linux/Windows 用同一 cargo 工程直接构建（GPUI 原生支持），
 # 打包格式各自不同（deb/AppImage/MSI），脚本留 TODO 桩。
 set -euo pipefail

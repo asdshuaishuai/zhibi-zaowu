@@ -1,4 +1,4 @@
-# 执笔 3.0 Windows 打包：在 Windows 主机（或 CI windows runner）原生构建
+# 执笔造物 Windows 打包：在 Windows 主机（或 CI windows runner）原生构建
 # 用法（PowerShell）：
 #   .\scripts\build_app_windows.ps1            # 出 target\release\执笔-portable
 #   .\scripts\build_app_windows.ps1 -Installer # 另用 NSIS（makensis）出安装包
@@ -21,7 +21,7 @@ New-Item -ItemType Directory -Path $out | Out-Null
 Copy-Item $bin "$out\zhibi.exe"
 # dsh 依赖说明随包（Node>=24.9 + 全局 dsh；或 ZHIBI_DSH_BIN 指向 dsh.cmd 路径）
 @"
-执笔 3.0（Windows）
+执笔造物（Windows）
 依赖：Node >= 24.9，npm i -g @deepseek-ai/dsh
 可选：环境变量 ZHIBI_DSH_BIN 指向 dsh.cmd/dsh.exe
 "@ | Set-Content "$out\README.txt" -Encoding UTF8

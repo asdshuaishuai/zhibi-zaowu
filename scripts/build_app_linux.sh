@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 执笔 3.0 Linux 打包：在 Linux 主机上原生构建 → AppImage（回退 tar.gz）
+# 执笔造物 Linux 打包：在 Linux 主机上原生构建 → AppImage（回退 tar.gz）
 # 说明：GPUI 的 Linux 图形栈（wayland/x11 + 相关 -dev 包）必须在目标 Linux 本机编译，
 #       无法从 macOS 交叉出可用的 GUI 产物。本脚本在 Linux runner 上直接可用。
 set -euo pipefail

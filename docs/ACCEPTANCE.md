@@ -1,4 +1,4 @@
-# 执笔 3.0 实机验收清单（M1–M7 全量）
+# 执笔造物 实机验收清单（M1–M7 全量）
 
 构建：`./scripts/build_app.sh` → `open target/release/执笔.app`（依赖：Node≥24.9 + `npm i -g @deepseek-ai/dsh`；真实模型需 `DEEPSEEK_API_KEY`）。
 逐项打勾即验收；「期望」为验收标准，不符请记现象。
