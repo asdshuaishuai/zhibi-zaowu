@@ -1,493 +1,624 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>执笔造物 · 人写正文，AI 理账</title>
-<meta name="description" content="执笔造物 —— 以人为创世主的 AI 小说/剧本创作工作台。无限画板、多重世界线、全程可视的 AI 轨迹，一切产出由你裁决。">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>执笔造物 · 人写正文，AI 记账</title>
+<meta name="description" content="执笔造物 —— 桌面写作台。正文由你写，AI 只做账房与工匠：设定、伏笔、时间线摊在一张板上，每一种「如果」各长一枝。">
 <style>
-  :root{
-    --bg:#121317; --panel:#181a1f; --panel2:#1f2228; --line:#2a2d34;
-    --text:#ded9d0; --dim:#9a968e; --faint:#615e58;
-    --ink:#c96f4a; --ink-soft:rgba(201,111,74,.13); --ink-border:rgba(201,111,74,.42);
-    --paper:#e9e4d6; --green:#7fae72; --blue:#6f9bc4; --amber:#d9a05b;
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  html{scroll-behavior:smooth}
-  body{background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,"PingFang SC","Songti SC",serif;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
-  a{color:inherit;text-decoration:none}
+:root{
+  --paper:#F4F0E6; --paper2:#FAF7EE; --ink:#1C1B18; --body:#4A4740;
+  --muted:#6B675E; --faint:#8A857A; --rule:#D8D1C2; --rule-soft:#E4DDCD;
+  --red:#A63F2B; --olive:#6F7C55; --ochre:#A97843; --slate:#33424C;
+  --serif:"Songti SC","Source Han Serif SC","Noto Serif SC",Georgia,"Times New Roman",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,"Roboto Mono",monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--body);
+  font:15px/1.9 var(--sans);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1120px;margin:0 auto;padding:0 44px}
+.mark{width:26px;height:26px;background:var(--red);color:var(--paper2);border-radius:3px;
+  display:grid;place-items:center;font-family:var(--serif);font-size:15px;line-height:1;
+  transform:rotate(-1.5deg);flex:none}
 
-  /* 顶栏 */
-  nav{position:sticky;top:0;z-index:20;background:rgba(18,19,23,.86);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
-  nav .wrap{display:flex;align-items:center;gap:26px;height:60px}
-  .brand{display:flex;align-items:center;gap:10px;font-family:"Songti SC",serif;font-weight:700;font-size:17px;letter-spacing:.06em}
-  .brand img{width:26px;height:26px;border-radius:6px}
-  .brand .seal{width:26px;height:26px;border-radius:6px;background:linear-gradient(180deg,#bb3b2d,#8e2418);display:flex;align-items:center;justify-content:center;color:#f4f0e6;font-size:15px;font-weight:700}
-  nav .sp{flex:1}
-  nav a.lnk{font-size:13px;color:var(--dim)}
-  nav a.lnk:hover{color:var(--text)}
-  .btn{display:inline-flex;align-items:center;gap:7px;border-radius:9px;padding:9px 18px;font-size:13.5px;font-weight:500;transition:.16s}
-  .btn.primary{background:var(--ink);color:#fff}
-  .btn.primary:hover{background:#d57b53}
-  .btn.ghost{border:1px solid var(--line);color:var(--dim)}
-  .btn.ghost:hover{border-color:var(--ink-border);color:var(--text)}
+/* ── 页眉 ─────────────────────────────── */
+.mast{position:sticky;top:0;z-index:20;background:rgba(244,240,230,.94);
+  border-bottom:1px solid var(--rule);backdrop-filter:blur(6px)}
+.mast .wrap{height:64px;display:flex;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--serif);
+  font-size:16px;letter-spacing:.05em;color:var(--ink)}
+.mast nav{margin-left:auto;display:flex;gap:28px;font-size:12px;letter-spacing:.06em;color:var(--muted)}
+.mast nav a{padding-bottom:2px;border-bottom:1px solid transparent}
+.mast nav a:hover{color:var(--red);border-color:var(--red)}
 
-  /* 首屏 */
-  header{padding:96px 0 76px;text-align:center;position:relative;overflow:hidden}
-  header::before{content:"界";position:absolute;left:50%;top:36%;transform:translate(-50%,-50%);font-family:"Songti SC",serif;font-size:460px;color:rgba(233,228,214,.022);pointer-events:none;user-select:none}
-  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--ink);border:1px solid var(--ink-border);background:var(--ink-soft);border-radius:99px;padding:4px 14px;margin-bottom:26px;letter-spacing:.08em}
-  h1{font-family:"Songti SC",serif;font-size:58px;line-height:1.16;font-weight:700;letter-spacing:.02em}
-  h1 .ink{color:var(--ink)}
-  header p.lead{margin:22px auto 0;max-width:600px;color:var(--dim);font-size:16px;line-height:1.9}
-  header .cta{margin-top:38px;display:flex;justify-content:center;gap:14px;flex-wrap:wrap}
-  .meta{margin-top:26px;font-size:12px;color:var(--faint);font-family:ui-monospace,monospace}
+/* ── 首屏 ─────────────────────────────── */
+.hero{padding:84px 0 0}
+.hero .cols{display:grid;grid-template-columns:7fr 5fr;gap:0;align-items:end}
+.hero .c1{padding-right:56px}
+.hero .c2{padding-left:56px;border-left:1px solid var(--rule)}
+.kicker{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;color:var(--faint)}
+h1{font-family:var(--serif);font-weight:700;font-size:clamp(46px,5.4vw,74px);
+  line-height:1.17;letter-spacing:-.012em;color:var(--ink);margin:24px 0 0}
+h1 em{font-style:normal;color:var(--red)}
+.lead{font-size:15px;line-height:2.05;margin:0 0 30px;max-width:33em}
+.links{display:flex;gap:26px;font-size:13px}
+.links a{border-bottom:1px solid var(--rule);padding-bottom:3px}
+.links a:hover{color:var(--red);border-color:var(--red)}
+.facts{margin:36px 0 0;display:grid;grid-template-columns:auto 1fr;gap:7px 20px;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;color:var(--faint)}
+.facts dt{white-space:nowrap}
+.hero .bar{margin-top:68px;border-top:1px solid var(--ink)}
+.hero .foot{display:flex;justify-content:space-between;gap:24px;padding:13px 0 0;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--faint)}
 
-  section{padding:76px 0;border-top:1px solid var(--line)}
-  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:38px}
-  .sec-head .no{font-family:ui-monospace,monospace;font-size:12px;color:var(--ink);letter-spacing:.1em}
-  .sec-head h2{font-family:"Songti SC",serif;font-size:30px;font-weight:700}
-  .sec-head .sub{color:var(--faint);font-size:13px}
+/* ── 栏目 ─────────────────────────────── */
+.section{padding:104px 0 0}
+.sec-head{display:grid;grid-template-columns:46px 1fr auto;align-items:baseline;gap:20px;
+  border-top:1px solid var(--rule);padding-top:16px;margin-bottom:46px}
+.sec-head .num{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:var(--red)}
+.sec-head h2{font-family:var(--serif);font-size:clamp(24px,2.6vw,31px);font-weight:700;
+  color:var(--ink);margin:0;letter-spacing:.01em}
+.sec-head .en{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint)}
 
-  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;transition:.18s}
-  .card:hover{border-color:var(--ink-border);transform:translateY(-2px)}
-  .card .ic{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:14px;background:var(--ink-soft);color:var(--ink);border:1px solid var(--ink-border)}
-  .card h3{font-family:"Songti SC",serif;font-size:17px;margin-bottom:8px}
-  .card p{font-size:13px;color:var(--dim);line-height:1.75}
-  .card .tag{display:inline-block;margin-top:12px;font-size:10.5px;font-family:ui-monospace,monospace;color:var(--faint);border:1px solid var(--line);border-radius:7px;padding:2px 9px}
+/* ── 目录式三行 ───────────────────────── */
+.index{border-top:1px solid var(--rule-soft)}
+.irow{display:grid;grid-template-columns:46px 1.05fr 2.1fr 152px;gap:26px;
+  padding:25px 0;border-bottom:1px solid var(--rule-soft);align-items:start}
+.irow .n{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding-top:5px}
+.irow h3{margin:0;font-family:var(--serif);font-size:19px;font-weight:700;color:var(--ink)}
+.irow p{margin:0;font-size:14px;line-height:1.95}
+.irow .tag{font-family:var(--mono);font-size:10px;color:var(--faint);text-align:right;padding-top:6px;letter-spacing:.04em}
 
-  /* 铁律 */
-  .law{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  .law .col{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px}
-  .law .col h3{font-family:"Songti SC",serif;font-size:19px;margin-bottom:14px;display:flex;align-items:center;gap:9px}
-  .law .col ul{list-style:none;display:flex;flex-direction:column;gap:10px}
-  .law .col li{font-size:13px;color:var(--dim);display:flex;gap:9px;line-height:1.7}
-  .law .col li::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--ink);margin-top:9px;flex:none}
-  .law .col.no li::before{background:var(--green)}
+/* ── 铁律两栏 ─────────────────────────── */
+.law{display:grid;grid-template-columns:1fr 1fr}
+.law .col{padding:0 48px}
+.law .col:first-child{padding-left:0;border-right:1px solid var(--rule)}
+.law .col:last-child{padding-right:0}
+.law h3{font-family:var(--serif);font-size:17px;font-weight:700;color:var(--ink);margin:0 0 22px}
+.law ol{list-style:none;margin:0;padding:0;counter-reset:l;display:flex;flex-direction:column;gap:16px}
+.law li{counter-increment:l;display:grid;grid-template-columns:26px 1fr;gap:6px;font-size:13.5px;line-height:1.9}
+.law li::before{content:counter(l,decimal-leading-zero);font-family:var(--mono);font-size:9.5px;color:var(--faint);padding-top:5px}
 
-  /* 世界树示意 */
-  .lanes{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:30px 34px;overflow:hidden;
-    display:grid;grid-template-columns:1.02fr .98fr;gap:38px;align-items:center}
-  .lanes .wltree svg{width:100%;height:auto;display:block}
-  .lanes .wlc h3{font-family:"Songti SC",serif;font-size:22px;color:var(--text);margin:0 0 10px;font-weight:600}
-  .lanes .wlc p{font-size:13px;color:var(--dim);line-height:1.85;margin:0 0 18px}
-  .lanes .wlc ul{list-style:none;display:flex;flex-direction:column;gap:10px;margin:0;padding:0}
-  .lanes .wlc li{font-size:12.5px;color:var(--dim);display:flex;gap:9px;align-items:baseline;line-height:1.6}
-  .lanes .wlc .dot{width:8px;height:8px;border-radius:50%;flex:none;transform:translateY(-1px)}
-  .lanes .wlc .note{margin:18px 0 0;font-size:11.5px;color:var(--faint);line-height:1.75}
-  @media (max-width:820px){.lanes{grid-template-columns:1fr;gap:20px;padding:22px}}
+/* ── 世界树 ───────────────────────────── */
+.treegrid{display:grid;grid-template-columns:1.02fr .98fr;gap:60px;align-items:center}
+.treegrid .tree svg{width:100%;height:auto;display:block}
+.treegrid h3{font-family:var(--serif);font-size:21px;font-weight:700;color:var(--ink);margin:0 0 16px}
+.treegrid p{font-size:13.5px;line-height:2;margin:0 0 24px}
+.wllist{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule-soft)}
+.wllist li{display:grid;grid-template-columns:14px 1fr auto;gap:12px;align-items:center;
+  padding:11px 0;border-bottom:1px solid var(--rule-soft);font-size:12.5px}
+.sw{width:8px;height:8px;border-radius:50%}
+.wllist .ch{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.note{font-size:11.5px;line-height:1.9;color:var(--faint);margin:22px 0 0}
 
-  /* 界面预览 */
-  .shots{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  .shot{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
-  .shot .cap{padding:14px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px}
-  .shot .cap b{font-family:"Songti SC",serif;font-size:14px;font-weight:600}
-  .shot .cap span{font-size:11.5px;color:var(--faint)}
-  .shot .viz{height:210px;position:relative;background:var(--panel2);overflow:hidden}
+/* ── 工作台四图 ───────────────────────── */
+.plates{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+.plate{background:var(--paper2);border:1px solid var(--rule);padding:24px 26px 16px}
+.plate svg{width:100%;height:auto;display:block}
+.plate .cap{display:flex;justify-content:space-between;align-items:baseline;gap:16px;
+  margin-top:18px;padding-top:12px;border-top:1px solid var(--rule-soft)}
+.plate .cap b{font-family:var(--serif);font-size:14px;font-weight:700;color:var(--ink)}
+.plate .cap span{font-family:var(--mono);font-size:9.5px;color:var(--faint);text-align:right;line-height:1.7}
 
-  /* 下载 */
-  .dl{background:linear-gradient(180deg,var(--panel),var(--bg));border:1px solid var(--line);border-radius:16px;padding:44px;text-align:center}
-  .dl h2{font-family:"Songti SC",serif;font-size:28px;margin-bottom:12px}
-  .dl p{color:var(--dim);font-size:13.5px;margin-bottom:26px}
-  .dl .row{display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
-  .dl .note{margin-top:22px;font-size:11.5px;color:var(--faint);font-family:ui-monospace,monospace;line-height:1.9}
+/* ── 获取 ─────────────────────────────── */
+.get{display:grid;grid-template-columns:5fr 7fr;gap:60px;align-items:start}
+.get > div{min-width:0}
+.get h2{font-family:var(--serif);font-size:clamp(26px,2.9vw,36px);font-weight:700;
+  color:var(--ink);margin:0 0 18px;letter-spacing:.01em}
+.get p{font-size:13.5px;line-height:2;margin:0 0 14px}
+.get .more{margin-top:20px;font-family:var(--mono);font-size:10px;color:var(--faint);line-height:2.1}
+.get .more b{color:var(--muted);font-weight:400}
+pre{margin:0;border:1px solid var(--rule);background:var(--paper2);padding:22px 24px;
+  font:12px/2 var(--mono);color:var(--ink);overflow-x:auto;min-width:0;max-width:100%}
+pre .c{color:var(--faint)}
+pre .p{color:var(--red);user-select:none}
+.get .under{margin-top:14px;display:flex;gap:26px;font-size:12.5px}
+.get .under a{border-bottom:1px solid var(--rule);padding-bottom:2px}
+.get .under a:hover{color:var(--red);border-color:var(--red)}
 
-  footer{border-top:1px solid var(--line);padding:36px 0 46px;color:var(--faint);font-size:12px}
-  footer .wrap{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
-  footer .sp{flex:1}
-  footer a:hover{color:var(--dim)}
+/* ── 页脚 ─────────────────────────────── */
+footer{margin-top:118px;border-top:1px solid var(--ink);padding:24px 0 46px}
+footer .wrap{display:flex;align-items:center;gap:20px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--muted)}
+footer .mark{width:20px;height:20px;font-size:11px;border-radius:2px}
+footer .sp{flex:1}
+footer a:hover{color:var(--red)}
 
-  @media(max-width:820px){
-    h1{font-size:40px} .grid{grid-template-columns:1fr} .law,.shots{grid-template-columns:1fr}
-    nav .wrap{height:54px} .brand span.full{display:none}
-  }
+@media(max-width:920px){
+  .wrap{padding:0 26px}
+  .hero{padding-top:64px}
+  .hero .cols{grid-template-columns:1fr}
+  .hero .c1{padding-right:0}
+  .hero .c2{padding-left:0;border-left:0;margin-top:36px;padding-top:28px;border-top:1px solid var(--rule)}
+  h1{font-size:clamp(38px,9vw,54px)}
+  .section{padding-top:78px}
+  .sec-head{grid-template-columns:32px 1fr}
+  .sec-head .en{display:none}
+  .irow{grid-template-columns:32px 1fr;gap:10px 14px}
+  .irow p{grid-column:2}
+  .irow .tag{grid-column:2;text-align:left;padding-top:0}
+  .law{grid-template-columns:1fr}
+  .law .col{padding:0}
+  .law .col:first-child{border-right:0;border-bottom:1px solid var(--rule);padding-bottom:34px;margin-bottom:34px}
+  .treegrid{grid-template-columns:1fr;gap:30px}
+  .plate{padding:18px 18px 12px}
+  .plates{grid-template-columns:1fr}
+  .get{grid-template-columns:1fr;gap:28px}
+  .mast nav{display:none}
+  footer .wrap{flex-wrap:wrap}
+}
 </style>
 </head>
 <body>
 
-<nav>
+<header class="mast">
   <div class="wrap">
-    <a class="brand" href="#top"><span class="seal">执</span><span class="full">执笔造物</span></a>
-    <span class="sp"></span>
-    <a class="lnk" href="#world">世界观</a>
-    <a class="lnk" href="#law">铁律</a>
-    <a class="lnk" href="#worldline">世界线</a>
-    <a class="lnk" href="#download">下载</a>
-    <a class="lnk" href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">GitHub</a>
-  </div>
-</nav>
-
-<header id="top">
-  <div class="wrap">
-    <div class="kicker">人执笔 · AI 研墨 · 作者即创世主</div>
-    <h1>写作不是生成，<br>是<span class="ink">造一个世界</span>。</h1>
-    <p class="lead">
-      执笔造物是一个桌面创作工作台：正文永远由你落笔，AI 只做账房与工匠——
-      把设定、伏笔、时间线、人物关系织成一张可交互的图；把每一种「如果」长成一枝世界。
-      它的一切行动可见、可回放、可裁决。
-    </p>
-    <div class="cta">
-      <a class="btn primary" href="#download">下载 macOS 版</a>
-      <a class="btn ghost" href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">查看源码</a>
-    </div>
-    <div class="meta">GPUI · Rust · 内嵌 DSH Agent 运行时 · 项目数据本地 .zhibi 目录</div>
+    <a class="brand" href="#top"><span class="mark">执</span>执笔造物</a>
+    <nav>
+      <a href="#world">世界</a>
+      <a href="#law">分工</a>
+      <a href="#worldline">世界树</a>
+      <a href="#workspace">工作台</a>
+      <a href="#download">获取</a>
+      <a href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank" rel="noopener">GitHub</a>
+    </nav>
   </div>
 </header>
 
-<section id="world">
+<main id="top">
+
+<section class="hero">
   <div class="wrap">
-    <div class="sec-head"><span class="no">01 / WORLD</span><h2>世界不是大纲，是一张网</h2><span class="sub">Canvas</span></div>
-    <div class="grid">
-      <div class="card">
-        <div class="ic">◇</div>
-        <h3>无限画板</h3>
-        <p>故事线、事件、人物、伏笔、设定都是节点。实线是明线，虚线是暗线；拖动、缩放、框选成组，像整理一张真正的世界地图。</p>
-        <span class="tag">七维视图 · 关系/时间/转折</span>
+    <div class="cols">
+      <div class="c1">
+        <p class="kicker">桌面写作台 · macOS</p>
+        <h1>写作不是生成，<br>是你<em>一笔一笔写</em>。</h1>
       </div>
-      <div class="card">
-        <div class="ic">◈</div>
-        <h3>导演台排期</h3>
-        <p>八章窗口的排期板：把事件卡、伏笔卡拖进未来章节，覆盖度、静默逾期、断线预警由确定性规则实时算出——不是印象，是账。</p>
-        <span class="tag">幕带 · 合同预警 · AI 核对</span>
+      <div class="c2">
+        <p class="lead">正文永远是你自己写。AI 在旁边打杂：翻设定、记伏笔、算排期、推演「如果」——
+          做完写成一纸提案，等你点头，或者摇头。</p>
+        <div class="links">
+          <a href="#download">怎么装 →</a>
+          <a href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank" rel="noopener">查看源码 ↗</a>
+        </div>
+        <dl class="facts">
+          <dt>装好即用</dt><dd>Node 和 DSH 已打进 app，另一台 Mac 不必另装</dd>
+          <dt>稿子在哪</dt><dd>~/Documents/执笔/*.zhibi</dd>
+          <dt>开源</dt><dd>MIT，模型接 DeepSeek 或你自己的端点</dd>
+        </dl>
       </div>
-      <div class="card">
-        <div class="ic">◆</div>
+    </div>
+    <div class="bar"></div>
+    <div class="foot">
+      <span>GPUI · RUST</span>
+      <span>人写正文，AI 记账</span>
+      <span>二〇二六</span>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="world">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">01</span>
+      <h2>所有设定，摊在一张桌上</h2>
+      <span class="en">WORLD / BOARD</span>
+    </div>
+    <div class="index">
+      <div class="irow">
+        <span class="n">01</span>
+        <h3>画板</h3>
+        <p>故事线、事件、人物、伏笔、设定都摆在一块板上。实线是明写的，虚线是还没揭的。
+          拖一拖、挪一挪，自己看着顺为止。</p>
+        <span class="tag">七种看法</span>
+      </div>
+      <div class="irow">
+        <span class="n">02</span>
+        <h3>排期</h3>
+        <p>未来八章排在一块板上。卡拖进哪一章、哪条线断了、哪条伏笔放得太久，规则一条条算给你看——
+          不是印象，是账。</p>
+        <span class="tag">断线会提醒</span>
+      </div>
+      <div class="irow">
+        <span class="n">03</span>
         <h3>人物卡</h3>
-        <p>别名归一、事实账、首次出场与关系边自动聚合成卡牌。AI 可以补关系，但每一笔都要你点头才会挂上去。</p>
-        <span class="tag">别名归一 · 关系边 · 事实锚</span>
+        <p>谁有几个名字、第一次出场在哪、跟谁有什么关系，合成一张卡。AI 可以提关系，
+          你点头才挂上去。</p>
+        <span class="tag">同名会合并</span>
       </div>
     </div>
   </div>
 </section>
 
-<section id="law">
+<section class="section" id="law">
   <div class="wrap">
-    <div class="sec-head"><span class="no">02 / LAW</span><h2>AI 只提案，人签收</h2><span class="sub">Iron Law</span></div>
+    <div class="sec-head">
+      <span class="num">02</span>
+      <h2>你写，它记账</h2>
+      <span class="en">WHO DOES WHAT</span>
+    </div>
     <div class="law">
-      <div class="col no">
-        <h3>人类侧</h3>
-        <ul>
-          <li>正文只由作者落笔；AI 不存在任何直接写正文的通道</li>
-          <li>提案收件箱逐条审阅：采纳、拒收（理由回灌给 AI）</li>
-          <li>采纳前自动快照，任何一步都可回滚</li>
-          <li>拖卡改期、拖节点挪位，都是作者亲笔直写台账</li>
-        </ul>
+      <div class="col">
+        <h3>你</h3>
+        <ol>
+          <li>正文只有你能写，AI 手里没有写正文的接口</li>
+          <li>提案来了，一条条看：要，或者不要——不要就说原因</li>
+          <li>采纳前自动存一份，后悔了能退回去</li>
+          <li>拖卡改期、拖节点挪位，都是你亲手改的</li>
+        </ol>
       </div>
       <div class="col">
-        <h3>AI 侧</h3>
-        <ul>
-          <li>所有产出以提案登记：设定、伏笔、骨架、草稿、关系、大纲</li>
-          <li>每条提案附依据：引自哪条既有事实 / 设定 / 伏笔</li>
-          <li>工具调用、参数、产出条数全程显示在轨迹窗，可回放</li>
-          <li>宿主令牌门禁：AI 无法自行调用采纳接口</li>
-        </ul>
+        <h3>它</h3>
+        <ol>
+          <li>产出都先写进提案箱：设定、伏笔、骨架、草稿、关系、大纲</li>
+          <li>每条都写清楚：这是从哪条设定、哪条伏笔推出来的</li>
+          <li>调了什么工具、传了什么参数、出了几条，轨迹里都看得见</li>
+          <li>它拿不到「采纳」那把钥匙，只能提，不能定</li>
+        </ol>
       </div>
     </div>
   </div>
 </section>
 
-<section id="worldline">
+<section class="section" id="worldline">
   <div class="wrap">
-    <div class="sec-head"><span class="no">03 / WORLDLINE</span><h2>每一种「如果」，都长成一枝世界</h2><span class="sub">World Tree · Oracle</span></div>
-    <div class="lanes">
-      <div class="wltree">
-        <svg viewBox="0 0 520 640" role="img" aria-label="世界树：此世主干与分叉出的平行世界">
+    <div class="sec-head">
+      <span class="num">03</span>
+      <h2>「如果当初」可以有很多个</h2>
+      <span class="en">WORLDLINE</span>
+    </div>
+    <div class="treegrid">
+      <div class="tree">        <svg viewBox="0 0 520 640" role="img" aria-label="世界树：此世主干与分叉出的平行世界">
           <defs>
             <linearGradient id="trunk" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0" stop-color="#6f9bc4" stop-opacity=".95"/>
-              <stop offset="1" stop-color="#6f9bc4" stop-opacity=".72"/>
+              <stop offset="0" stop-color="#33424C" stop-opacity="1"/>
+              <stop offset="1" stop-color="#33424C" stop-opacity=".72"/>
             </linearGradient>
-            <radialGradient id="glow" cx=".5" cy=".5" r=".5">
-              <stop offset="0" stop-color="#6f9bc4" stop-opacity=".09"/>
-              <stop offset="1" stop-color="#6f9bc4" stop-opacity="0"/>
-            </radialGradient>
+            
           </defs>
           <circle cx="232.0" cy="320" r="250" fill="url(#glow)"/>
-          <line x1="227" y1="458.7" x2="237" y2="458.7" stroke="#2a2d34" stroke-width="1"/>
-          <line x1="227" y1="381.3" x2="237" y2="381.3" stroke="#2a2d34" stroke-width="1"/>
-          <text x="222" y="384.8" fill="#615e58" font-size="9" text-anchor="end" font-family="ui-monospace,monospace" opacity=".85">10</text>
-          <line x1="227" y1="304" x2="237" y2="304" stroke="#2a2d34" stroke-width="1"/>
-          <line x1="227" y1="226.7" x2="237" y2="226.7" stroke="#2a2d34" stroke-width="1"/>
-          <text x="222" y="230.2" fill="#615e58" font-size="9" text-anchor="end" font-family="ui-monospace,monospace" opacity=".85">20</text>
-          <line x1="227" y1="149.3" x2="237" y2="149.3" stroke="#2a2d34" stroke-width="1"/>
-          <line x1="227" y1="72" x2="237" y2="72" stroke="#2a2d34" stroke-width="1"/>
-          <path d="M 232 536 L 230.6 537.7 L 228.9 540.2 L 226.8 543.5 L 224.4 547.5 L 221.7 552.1 L 218.7 557.2 L 215.5 562.8 L 212 568.6 L 208.3 574.7 L 204.3 581 L 200.2 587.3 L 195.9 593.6 L 191.4 599.8 L 186.8 605.7 L 182.1 611.4 L 177.3 616.6 L 172.3 621.4 L 167.3 625.6 L 162.3 629.2 L 157.2 632" stroke="#6f9bc4" stroke-opacity="0.26" stroke-width="1.1" fill="none"/>
-          <path d="M 232 536 L 231.3 537.7 L 230.4 540.2 L 229.4 543.5 L 228.2 547.5 L 226.9 552.1 L 225.4 557.2 L 223.7 562.8 L 222 568.6 L 220.1 574.7 L 218.2 581 L 216.1 587.3 L 214 593.6 L 211.7 599.8 L 209.4 605.7 L 207.1 611.4 L 204.6 616.6 L 202.2 621.4 L 199.7 625.6 L 197.1 629.2 L 194.6 632" stroke="#6f9bc4" stroke-opacity="0.34" stroke-width="1.1" fill="none"/>
-          <path d="M 232 536 L 232 537.7 L 232 540.2 L 232 543.5 L 232 547.5 L 232 552.1 L 232 557.2 L 232 562.8 L 232 568.6 L 232 574.7 L 232 581 L 232 587.3 L 232 593.6 L 232 599.8 L 232 605.7 L 232 611.4 L 232 616.6 L 232 621.4 L 232 625.6 L 232 629.2 L 232 632" stroke="#6f9bc4" stroke-opacity="0.42" stroke-width="1.1" fill="none"/>
-          <path d="M 232 536 L 232.7 537.7 L 233.6 540.2 L 234.6 543.5 L 235.8 547.5 L 237.1 552.1 L 238.6 557.2 L 240.3 562.8 L 242 568.6 L 243.9 574.7 L 245.8 581 L 247.9 587.3 L 250 593.6 L 252.3 599.8 L 254.6 605.7 L 256.9 611.4 L 259.4 616.6 L 261.8 621.4 L 264.3 625.6 L 266.9 629.2 L 269.4 632" stroke="#6f9bc4" stroke-opacity="0.34" stroke-width="1.1" fill="none"/>
-          <path d="M 232 536 L 233.4 537.7 L 235.1 540.2 L 237.2 543.5 L 239.6 547.5 L 242.3 552.1 L 245.3 557.2 L 248.5 562.8 L 252 568.6 L 255.7 574.7 L 259.7 581 L 263.8 587.3 L 268.1 593.6 L 272.6 599.8 L 277.2 605.7 L 281.9 611.4 L 286.7 616.6 L 291.7 621.4 L 296.7 625.6 L 301.7 629.2 L 306.8 632" stroke="#6f9bc4" stroke-opacity="0.26" stroke-width="1.1" fill="none"/>
-          <line x1="232.0" y1="536" x2="232.0" y2="376" stroke="url(#trunk)" stroke-width="4.2"/>
-          <line x1="232.0" y1="376" x2="232.0" y2="246" stroke="url(#trunk)" stroke-width="3.4"/>
-          <line x1="232.0" y1="246" x2="232.0" y2="156" stroke="url(#trunk)" stroke-width="2.7"/>
-          <line x1="232.0" y1="156" x2="232.0" y2="72" stroke="url(#trunk)" stroke-width="2.2"/>
-          <line x1="237.0" y1="524" x2="237.0" y2="84" stroke="#6f9bc4" stroke-opacity=".16" stroke-width="1"/>
-          <path d="M 232.0 458.7 C 243.9 394.7, 370 347.7, 470 352" stroke="#d9a05b" stroke-width="2.2" fill="none" stroke-linecap="round" opacity="0.94"/>
-          <circle cx="232.0" cy="458.7" r="3.4" fill="#d9a05b"/>
-          <circle cx="265.8" cy="409.7" r="2.3" fill="#d9a05b" fill-opacity=".5"/>
-          <circle cx="445.6" cy="351.9" r="2.3" fill="#d9a05b" fill-opacity=".5"/>
-          <path d="M 292.1 392.2 Q 294.5 376.7 297.4 368.8" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="295.3" cy="362.7" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-108.9 295.3 362.7)"/>
-          <ellipse cx="297.4" cy="360.3" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-90 297.4 360.3)"/>
-          <ellipse cx="300.2" cy="361.3" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-69.4 300.2 361.3)"/>
-          <ellipse cx="301.4" cy="363.7" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-51.6 301.4 363.7)"/>
-          <path d="M 331.9 374.2 Q 341.4 359.6 352.9 352.8" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="354.3" cy="346.4" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-77.2 354.3 346.4)"/>
-          <ellipse cx="357.4" cy="345.5" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-58.3 357.4 345.5)"/>
-          <ellipse cx="359.2" cy="347.9" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-37.7 359.2 347.9)"/>
-          <ellipse cx="359" cy="350.6" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-19.9 359 350.6)"/>
-          <path d="M 376.8 361.1 Q 391.1 352.1 408.6 352.3" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="413" cy="347.5" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-46.9 413 347.5)"/>
-          <ellipse cx="416.1" cy="348.3" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-28 416.1 348.3)"/>
-          <ellipse cx="416.5" cy="351.3" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-7.4 416.5 351.3)"/>
-          <ellipse cx="415" cy="353.5" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(10.4 415 353.5)"/>
-          <path d="M 420.6 353.7 Q 432 352.9 446 362.9" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="452.3" cy="361.6" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-11.6 452.3 361.6)"/>
-          <ellipse cx="454.4" cy="364" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(7.3 454.4 364)"/>
-          <ellipse cx="453" cy="366.7" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(27.9 453 366.7)"/>
-          <ellipse cx="450.5" cy="367.6" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(45.7 450.5 367.6)"/>
-          <path d="M 454.8 351.7 Q 458.5 338.5 462.9 333.5" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="462.1" cy="327" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-97.6 462.1 327)"/>
-          <ellipse cx="464.6" cy="325.1" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-78.6 464.6 325.1)"/>
-          <ellipse cx="467.2" cy="326.7" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-58 467.2 326.7)"/>
-          <ellipse cx="467.9" cy="329.3" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-40.3 467.9 329.3)"/>
-          <ellipse cx="466" cy="345.1" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.34" transform="rotate(-120.3 466 345.1)"/>
-          <ellipse cx="470.2" cy="341" rx="12.3" ry="5.9" fill="#d9a05b" fill-opacity="0.34" transform="rotate(-88.8 470.2 341)"/>
-          <ellipse cx="475.1" cy="344" rx="10.6" ry="5.1" fill="#d9a05b" fill-opacity="0.34" transform="rotate(-57.3 475.1 344)"/>
-          <ellipse cx="476.4" cy="348.1" rx="8.4" ry="4.1" fill="#d9a05b" fill-opacity="0.34" transform="rotate(-31.5 476.4 348.1)"/>
-          <circle cx="247" cy="458.7" r="11" fill="#17181c" stroke="#d9a05b" stroke-width="1.2"/>
-          <text x="247" y="462.7" fill="#d9a05b" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">ε</text>
-          <path d="M 232.0 365.9 C 225.4 292.7, 155.4 239.1, 100 244" stroke="#c96f4a" stroke-width="3" fill="none" stroke-linecap="round" opacity="1"/>
-          <circle cx="232.0" cy="365.9" r="3.4" fill="#c96f4a"/>
-          <circle cx="213.3" cy="309.9" r="2.3" fill="#c96f4a" fill-opacity=".5"/>
-          <circle cx="193.1" cy="284" r="2.3" fill="#c96f4a" fill-opacity=".5"/>
-          <circle cx="168.5" cy="263.7" r="2.3" fill="#c96f4a" fill-opacity=".5"/>
-          <circle cx="141.3" cy="250.1" r="2.3" fill="#c96f4a" fill-opacity=".5"/>
-          <circle cx="113.5" cy="243.9" r="2.3" fill="#c96f4a" fill-opacity=".5"/>
-          <path d="M 198.7 290 Q 187.9 285 174.7 290.1" stroke="#c96f4a" stroke-opacity="0.85" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="169.1" cy="293.5" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-211.8 169.1 293.5)"/>
-          <ellipse cx="166.4" cy="292" rx="9.5" ry="4.6" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-192.9 166.4 292)"/>
-          <ellipse cx="166.7" cy="289" rx="9" ry="4.3" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-172.2 166.7 289)"/>
-          <ellipse cx="168.8" cy="287.3" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-154.5 168.8 287.3)"/>
-          <path d="M 176.6 269.4 Q 163.3 261.8 147.1 263.7" stroke="#c96f4a" stroke-opacity="0.85" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="141" cy="266" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-200.6 141 266)"/>
-          <ellipse cx="138.6" cy="264" rx="9.5" ry="4.6" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-181.7 138.6 264)"/>
-          <ellipse cx="139.5" cy="261.1" rx="9" ry="4.3" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-161.1 139.5 261.1)"/>
-          <ellipse cx="141.9" cy="259.8" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-143.3 141.9 259.8)"/>
-          <path d="M 151.7 254.4 Q 137.9 243.8 121.1 242.1" stroke="#c96f4a" stroke-opacity="0.85" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="114.7" cy="243.2" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-189.7 114.7 243.2)"/>
-          <ellipse cx="112.7" cy="240.8" rx="9.5" ry="4.6" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-170.8 112.7 240.8)"/>
-          <ellipse cx="114.1" cy="238.1" rx="9" ry="4.3" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-150.2 114.1 238.1)"/>
-          <ellipse cx="116.7" cy="237.3" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-132.4 116.7 237.3)"/>
-          <path d="M 127.4 246 Q 117.8 233.6 106.1 229.5" stroke="#c96f4a" stroke-opacity="0.85" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="99.6" cy="228.8" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-173.7 99.6 228.8)"/>
-          <ellipse cx="98.4" cy="225.8" rx="9.5" ry="4.6" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-154.8 98.4 225.8)"/>
-          <ellipse cx="100.5" cy="223.7" rx="9" ry="4.3" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-134.2 100.5 223.7)"/>
-          <ellipse cx="103.2" cy="223.6" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-116.5 103.2 223.6)"/>
-          <path d="M 108.4 243.7 Q 104.7 246.9 100.1 261.9" stroke="#c96f4a" stroke-opacity="0.85" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="100.9" cy="268.4" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-277.1 100.9 268.4)"/>
-          <ellipse cx="98.4" cy="270.2" rx="9.5" ry="4.6" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-258.2 98.4 270.2)"/>
-          <ellipse cx="95.9" cy="268.7" rx="9" ry="4.3" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-237.6 95.9 268.7)"/>
-          <ellipse cx="95.2" cy="266.1" rx="7.3" ry="3.5" fill="#c96f4a" fill-opacity="0.4" transform="rotate(-219.8 95.2 266.1)"/>
-          <ellipse cx="96" cy="237.1" rx="9" ry="4.3" fill="#c96f4a" fill-opacity="0.42" transform="rotate(-120.3 96 237.1)"/>
-          <ellipse cx="100.2" cy="233" rx="12.3" ry="5.9" fill="#c96f4a" fill-opacity="0.42" transform="rotate(-88.8 100.2 233)"/>
-          <ellipse cx="105.1" cy="236" rx="10.6" ry="5.1" fill="#c96f4a" fill-opacity="0.42" transform="rotate(-57.3 105.1 236)"/>
-          <ellipse cx="106.4" cy="240.1" rx="8.4" ry="4.1" fill="#c96f4a" fill-opacity="0.42" transform="rotate(-31.5 106.4 240.1)"/>
-          <circle cx="217" cy="365.9" r="11" fill="#17181c" stroke="#c96f4a" stroke-width="1.2"/>
-          <text x="217" y="369.9" fill="#c96f4a" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">β</text>
-          <path d="M 232.0 257.6 C 242.8 193, 357.3 145.7, 448 150" stroke="#d9a05b" stroke-width="2.2" fill="none" stroke-linecap="round" opacity="0.94"/>
-          <circle cx="232.0" cy="257.6" r="3.4" fill="#d9a05b"/>
-          <circle cx="262.7" cy="208.2" r="2.3" fill="#d9a05b" fill-opacity=".5"/>
-          <circle cx="308.4" cy="178.8" r="2.3" fill="#d9a05b" fill-opacity=".5"/>
-          <circle cx="365.2" cy="158.7" r="2.3" fill="#d9a05b" fill-opacity=".5"/>
-          <circle cx="425.8" cy="149.9" r="2.3" fill="#d9a05b" fill-opacity=".5"/>
-          <path d="M 286.6 190.6 Q 288.4 175 290.7 167" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="288.3" cy="160.9" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-111.5 288.3 160.9)"/>
-          <ellipse cx="290.3" cy="158.5" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-92.6 290.3 158.5)"/>
-          <ellipse cx="293.2" cy="159.3" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-72 293.2 159.3)"/>
-          <ellipse cx="294.5" cy="161.7" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-54.2 294.5 161.7)"/>
-          <path d="M 322.7 172.4 Q 331.8 157.4 342.9 150.2" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="344.1" cy="143.9" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-79.2 344.1 143.9)"/>
-          <ellipse cx="347.1" cy="142.9" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-60.3 347.1 142.9)"/>
-          <ellipse cx="349.1" cy="145.1" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-39.7 349.1 145.1)"/>
-          <ellipse cx="348.9" cy="147.8" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-21.9 348.9 147.8)"/>
-          <path d="M 363.4 159.1 Q 377.6 149.9 395 149.6" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="399.3" cy="144.8" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-48.3 399.3 144.8)"/>
-          <ellipse cx="402.4" cy="145.5" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-29.4 402.4 145.5)"/>
-          <ellipse cx="402.9" cy="148.4" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-8.7 402.9 148.4)"/>
-          <ellipse cx="401.4" cy="150.6" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(9 401.4 150.6)"/>
-          <path d="M 403.2 151.8 Q 414.6 150.8 428.6 160.7" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="435" cy="159.3" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-12.3 435 159.3)"/>
-          <ellipse cx="437.1" cy="161.6" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(6.6 437.1 161.6)"/>
-          <ellipse cx="435.8" cy="164.3" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(27.3 435.8 164.3)"/>
-          <ellipse cx="433.2" cy="165.3" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(45 433.2 165.3)"/>
-          <path d="M 434.2 149.7 Q 437.9 136.5 442.3 131.5" stroke="#d9a05b" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="441.5" cy="125" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-97.6 441.5 125)"/>
-          <ellipse cx="444" cy="123.1" rx="9.5" ry="4.6" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-78.7 444 123.1)"/>
-          <ellipse cx="446.6" cy="124.7" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-58 446.6 124.7)"/>
-          <ellipse cx="447.3" cy="127.3" rx="7.3" ry="3.5" fill="#d9a05b" fill-opacity="0.32" transform="rotate(-40.3 447.3 127.3)"/>
-          <ellipse cx="444" cy="143.1" rx="9" ry="4.3" fill="#d9a05b" fill-opacity="0.34" transform="rotate(-120.3 444 143.1)"/>
-          <ellipse cx="448.2" cy="139" rx="12.3" ry="5.9" fill="#d9a05b" fill-opacity="0.34" transform="rotate(-88.8 448.2 139)"/>
-          <ellipse cx="453.1" cy="142" rx="10.6" ry="5.1" fill="#d9a05b" fill-opacity="0.34" transform="rotate(-57.3 453.1 142)"/>
-          <ellipse cx="454.4" cy="146.1" rx="8.4" ry="4.1" fill="#d9a05b" fill-opacity="0.34" transform="rotate(-31.5 454.4 146.1)"/>
-          <circle cx="247" cy="257.6" r="11" fill="#17181c" stroke="#d9a05b" stroke-width="1.2"/>
-          <text x="247" y="261.6" fill="#d9a05b" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">δ</text>
-          <path d="M 232.0 164.8 C 240 118.7, 324.8 84.9, 392 88" stroke="#7fae72" stroke-width="2.2" fill="none" stroke-linecap="round" opacity="0.94"/>
-          <circle cx="232.0" cy="164.8" r="3.4" fill="#7fae72"/>
-          <circle cx="254.7" cy="129.5" r="2.3" fill="#7fae72" fill-opacity=".5"/>
-          <circle cx="279.1" cy="113.2" r="2.3" fill="#7fae72" fill-opacity=".5"/>
-          <circle cx="309" cy="100.4" r="2.3" fill="#7fae72" fill-opacity=".5"/>
-          <circle cx="341.9" cy="91.8" r="2.3" fill="#7fae72" fill-opacity=".5"/>
-          <circle cx="375.6" cy="88" r="2.3" fill="#7fae72" fill-opacity=".5"/>
-          <path d="M 272.4 117 Q 274.5 101.4 277 93.4" stroke="#7fae72" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="274.7" cy="87.3" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(-110.6 274.7 87.3)"/>
-          <ellipse cx="276.7" cy="84.9" rx="9.5" ry="4.6" fill="#7fae72" fill-opacity="0.32" transform="rotate(-91.7 276.7 84.9)"/>
-          <ellipse cx="279.6" cy="85.8" rx="9" ry="4.3" fill="#7fae72" fill-opacity="0.32" transform="rotate(-71.1 279.6 85.8)"/>
-          <ellipse cx="280.8" cy="88.2" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(-53.3 280.8 88.2)"/>
-          <path d="M 299.2 104 Q 308.4 89.1 319.7 82.1" stroke="#7fae72" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="321" cy="75.7" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(-78.5 321 75.7)"/>
-          <ellipse cx="324" cy="74.7" rx="9.5" ry="4.6" fill="#7fae72" fill-opacity="0.32" transform="rotate(-59.6 324 74.7)"/>
-          <ellipse cx="325.9" cy="77.1" rx="9" ry="4.3" fill="#7fae72" fill-opacity="0.32" transform="rotate(-38.9 325.9 77.1)"/>
-          <ellipse cx="325.7" cy="79.7" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(-21.2 325.7 79.7)"/>
-          <path d="M 329.3 94.5 Q 343.6 85.4 361 85.3" stroke="#7fae72" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="365.4" cy="80.5" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(-47.8 365.4 80.5)"/>
-          <ellipse cx="368.4" cy="81.2" rx="9.5" ry="4.6" fill="#7fae72" fill-opacity="0.32" transform="rotate(-28.9 368.4 81.2)"/>
-          <ellipse cx="368.9" cy="84.1" rx="9" ry="4.3" fill="#7fae72" fill-opacity="0.32" transform="rotate(-8.3 368.9 84.1)"/>
-          <ellipse cx="367.4" cy="86.4" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(9.5 367.4 86.4)"/>
-          <path d="M 358.8 89.3 Q 370.2 88.3 384.2 98.3" stroke="#7fae72" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="390.6" cy="96.9" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(-12 390.6 96.9)"/>
-          <ellipse cx="392.7" cy="99.3" rx="9.5" ry="4.6" fill="#7fae72" fill-opacity="0.32" transform="rotate(6.9 392.7 99.3)"/>
-          <ellipse cx="391.3" cy="102" rx="9" ry="4.3" fill="#7fae72" fill-opacity="0.32" transform="rotate(27.5 391.3 102)"/>
-          <ellipse cx="388.8" cy="102.9" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(45.3 388.8 102.9)"/>
-          <path d="M 381.8 87.8 Q 385.5 74.6 389.9 69.5" stroke="#7fae72" stroke-opacity="0.72" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-          <ellipse cx="389.1" cy="63.1" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(-97.6 389.1 63.1)"/>
-          <ellipse cx="391.6" cy="61.2" rx="9.5" ry="4.6" fill="#7fae72" fill-opacity="0.32" transform="rotate(-78.7 391.6 61.2)"/>
-          <ellipse cx="394.2" cy="62.7" rx="9" ry="4.3" fill="#7fae72" fill-opacity="0.32" transform="rotate(-58 394.2 62.7)"/>
-          <ellipse cx="394.9" cy="65.3" rx="7.3" ry="3.5" fill="#7fae72" fill-opacity="0.32" transform="rotate(-40.3 394.9 65.3)"/>
-          <ellipse cx="388" cy="81.1" rx="9" ry="4.3" fill="#7fae72" fill-opacity="0.34" transform="rotate(-120.3 388 81.1)"/>
-          <ellipse cx="392.2" cy="77" rx="12.3" ry="5.9" fill="#7fae72" fill-opacity="0.34" transform="rotate(-88.8 392.2 77)"/>
-          <ellipse cx="397.1" cy="80" rx="10.6" ry="5.1" fill="#7fae72" fill-opacity="0.34" transform="rotate(-57.3 397.1 80)"/>
-          <ellipse cx="398.4" cy="84.1" rx="8.4" ry="4.1" fill="#7fae72" fill-opacity="0.34" transform="rotate(-31.5 398.4 84.1)"/>
-          <circle cx="247" cy="164.8" r="11" fill="#17181c" stroke="#7fae72" stroke-width="1.2"/>
-          <text x="247" y="168.8" fill="#7fae72" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">γ</text>
-          <circle cx="232.0" cy="72.0" r="3.6" fill="#6f9bc4"/>
-          <ellipse cx="222.4" cy="69.1" rx="11.2" ry="5.2" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-163.3 222.4 69.1)"/>
-          <ellipse cx="221.2" cy="64.8" rx="14.6" ry="6.8" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-146.1 221.2 64.8)"/>
-          <ellipse cx="222.6" cy="60.3" rx="16.8" ry="7.8" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-128.9 222.6 60.3)"/>
-          <ellipse cx="227.2" cy="59.9" rx="14.6" ry="6.8" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-111.7 227.2 59.9)"/>
-          <ellipse cx="231.1" cy="61" rx="12.3" ry="5.7" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-94.5 231.1 61)"/>
-          <ellipse cx="234.2" cy="62.2" rx="11.2" ry="5.2" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-77.3 234.2 62.2)"/>
-          <ellipse cx="238" cy="61.6" rx="13.4" ry="6.2" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-60.2 238 61.6)"/>
-          <ellipse cx="239" cy="65.5" rx="10.6" ry="4.9" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-43 239 65.5)"/>
-          <ellipse cx="239.2" cy="68.5" rx="9" ry="4.2" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-25.8 239.2 68.5)"/>
-          <ellipse cx="238.4" cy="71" rx="7.3" ry="3.4" fill="#6f9bc4" fill-opacity=".34" transform="rotate(-8.6 238.4 71)"/>
-          <text x="232.0" y="42" fill="#6f9bc4" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">现在 · 第 30 章</text>
-          <text x="218.0" y="554" fill="#6f9bc4" font-size="10.5" text-anchor="end" font-family="ui-monospace,monospace">第 1 章</text>
-        </svg>
-      </div>
+          <line x1="227" y1="458.7" x2="237" y2="458.7" stroke="#D8D1C2" stroke-width="1"/>
+          <line x1="227" y1="381.3" x2="237" y2="381.3" stroke="#D8D1C2" stroke-width="1"/>
+          <text x="222" y="384.8" fill="#8A8578" font-size="9" text-anchor="end" font-family="ui-monospace,monospace" opacity=".85">10</text>
+          <line x1="227" y1="304" x2="237" y2="304" stroke="#D8D1C2" stroke-width="1"/>
+          <line x1="227" y1="226.7" x2="237" y2="226.7" stroke="#D8D1C2" stroke-width="1"/>
+          <text x="222" y="230.2" fill="#8A8578" font-size="9" text-anchor="end" font-family="ui-monospace,monospace" opacity=".85">20</text>
+          <line x1="227" y1="149.3" x2="237" y2="149.3" stroke="#D8D1C2" stroke-width="1"/>
+          <line x1="227" y1="72" x2="237" y2="72" stroke="#D8D1C2" stroke-width="1"/>
+          <path d="M 232 536 L 230.6 537.7 L 228.9 540.2 L 226.8 543.5 L 224.4 547.5 L 221.7 552.1 L 218.7 557.2 L 215.5 562.8 L 212 568.6 L 208.3 574.7 L 204.3 581 L 200.2 587.3 L 195.9 593.6 L 191.4 599.8 L 186.8 605.7 L 182.1 611.4 L 177.3 616.6 L 172.3 621.4 L 167.3 625.6 L 162.3 629.2 L 157.2 632" stroke="#33424C" stroke-opacity="0.26" stroke-width="1.1" fill="none"/>
+          <path d="M 232 536 L 231.3 537.7 L 230.4 540.2 L 229.4 543.5 L 228.2 547.5 L 226.9 552.1 L 225.4 557.2 L 223.7 562.8 L 222 568.6 L 220.1 574.7 L 218.2 581 L 216.1 587.3 L 214 593.6 L 211.7 599.8 L 209.4 605.7 L 207.1 611.4 L 204.6 616.6 L 202.2 621.4 L 199.7 625.6 L 197.1 629.2 L 194.6 632" stroke="#33424C" stroke-opacity="0.34" stroke-width="1.1" fill="none"/>
+          <path d="M 232 536 L 232 537.7 L 232 540.2 L 232 543.5 L 232 547.5 L 232 552.1 L 232 557.2 L 232 562.8 L 232 568.6 L 232 574.7 L 232 581 L 232 587.3 L 232 593.6 L 232 599.8 L 232 605.7 L 232 611.4 L 232 616.6 L 232 621.4 L 232 625.6 L 232 629.2 L 232 632" stroke="#33424C" stroke-opacity="0.42" stroke-width="1.1" fill="none"/>
+          <path d="M 232 536 L 232.7 537.7 L 233.6 540.2 L 234.6 543.5 L 235.8 547.5 L 237.1 552.1 L 238.6 557.2 L 240.3 562.8 L 242 568.6 L 243.9 574.7 L 245.8 581 L 247.9 587.3 L 250 593.6 L 252.3 599.8 L 254.6 605.7 L 256.9 611.4 L 259.4 616.6 L 261.8 621.4 L 264.3 625.6 L 266.9 629.2 L 269.4 632" stroke="#33424C" stroke-opacity="0.34" stroke-width="1.1" fill="none"/>
+          <path d="M 232 536 L 233.4 537.7 L 235.1 540.2 L 237.2 543.5 L 239.6 547.5 L 242.3 552.1 L 245.3 557.2 L 248.5 562.8 L 252 568.6 L 255.7 574.7 L 259.7 581 L 263.8 587.3 L 268.1 593.6 L 272.6 599.8 L 277.2 605.7 L 281.9 611.4 L 286.7 616.6 L 291.7 621.4 L 296.7 625.6 L 301.7 629.2 L 306.8 632" stroke="#33424C" stroke-opacity="0.26" stroke-width="1.1" fill="none"/>
+          <line x1="232.0" y1="536" x2="232.0" y2="376" stroke="url(#trunk)" stroke-width="3.0"/>
+          <line x1="232.0" y1="376" x2="232.0" y2="246" stroke="url(#trunk)" stroke-width="2.5"/>
+          <line x1="232.0" y1="246" x2="232.0" y2="156" stroke="url(#trunk)" stroke-width="2.0"/>
+          <line x1="232.0" y1="156" x2="232.0" y2="72" stroke="url(#trunk)" stroke-width="1.6"/>
+          <line x1="237.0" y1="524" x2="237.0" y2="84" stroke="#33424C" stroke-opacity=".16" stroke-width="1"/>
+          <path d="M 232.0 458.7 C 243.9 394.7, 370 347.7, 470 352" stroke="#9A6A37" stroke-width="1.9" fill="none" stroke-linecap="round" opacity="0.94"/>
+          <circle cx="232.0" cy="458.7" r="3.4" fill="#9A6A37"/>
+          <circle cx="265.8" cy="409.7" r="2.3" fill="#9A6A37" fill-opacity=".5"/>
+          <circle cx="445.6" cy="351.9" r="2.3" fill="#9A6A37" fill-opacity=".5"/>
+          <path d="M 292.1 392.2 Q 294.5 376.7 297.4 368.8" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="295.3" cy="362.7" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-108.9 295.3 362.7)"/>
+          <ellipse cx="297.4" cy="360.3" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-90 297.4 360.3)"/>
+          <ellipse cx="300.2" cy="361.3" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-69.4 300.2 361.3)"/>
+          <ellipse cx="301.4" cy="363.7" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-51.6 301.4 363.7)"/>
+          <path d="M 331.9 374.2 Q 341.4 359.6 352.9 352.8" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="354.3" cy="346.4" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-77.2 354.3 346.4)"/>
+          <ellipse cx="357.4" cy="345.5" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-58.3 357.4 345.5)"/>
+          <ellipse cx="359.2" cy="347.9" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-37.7 359.2 347.9)"/>
+          <ellipse cx="359" cy="350.6" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-19.9 359 350.6)"/>
+          <path d="M 376.8 361.1 Q 391.1 352.1 408.6 352.3" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="413" cy="347.5" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-46.9 413 347.5)"/>
+          <ellipse cx="416.1" cy="348.3" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-28 416.1 348.3)"/>
+          <ellipse cx="416.5" cy="351.3" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-7.4 416.5 351.3)"/>
+          <ellipse cx="415" cy="353.5" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(10.4 415 353.5)"/>
+          <path d="M 420.6 353.7 Q 432 352.9 446 362.9" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="452.3" cy="361.6" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-11.6 452.3 361.6)"/>
+          <ellipse cx="454.4" cy="364" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(7.3 454.4 364)"/>
+          <ellipse cx="453" cy="366.7" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(27.9 453 366.7)"/>
+          <ellipse cx="450.5" cy="367.6" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(45.7 450.5 367.6)"/>
+          <path d="M 454.8 351.7 Q 458.5 338.5 462.9 333.5" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="462.1" cy="327" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-97.6 462.1 327)"/>
+          <ellipse cx="464.6" cy="325.1" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-78.6 464.6 325.1)"/>
+          <ellipse cx="467.2" cy="326.7" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-58 467.2 326.7)"/>
+          <ellipse cx="467.9" cy="329.3" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-40.3 467.9 329.3)"/>
+          <ellipse cx="466" cy="345.1" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.29" transform="rotate(-120.3 466 345.1)"/>
+          <ellipse cx="470.2" cy="341" rx="12.3" ry="5.9" fill="#9A6A37" fill-opacity="0.29" transform="rotate(-88.8 470.2 341)"/>
+          <ellipse cx="475.1" cy="344" rx="10.6" ry="5.1" fill="#9A6A37" fill-opacity="0.29" transform="rotate(-57.3 475.1 344)"/>
+          <ellipse cx="476.4" cy="348.1" rx="8.4" ry="4.1" fill="#9A6A37" fill-opacity="0.29" transform="rotate(-31.5 476.4 348.1)"/>
+          <circle cx="247" cy="458.7" r="11" fill="#FAF7EE" stroke="#9A6A37" stroke-width="1.2"/>
+          <text x="247" y="462.7" fill="#9A6A37" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">ε</text>
+          <path d="M 232.0 365.9 C 225.4 292.7, 155.4 239.1, 100 244" stroke="#9E3A27" stroke-width="2.6" fill="none" stroke-linecap="round" opacity="1"/>
+          <circle cx="232.0" cy="365.9" r="3.4" fill="#9E3A27"/>
+          <circle cx="213.3" cy="309.9" r="2.3" fill="#9E3A27" fill-opacity=".5"/>
+          <circle cx="193.1" cy="284" r="2.3" fill="#9E3A27" fill-opacity=".5"/>
+          <circle cx="168.5" cy="263.7" r="2.3" fill="#9E3A27" fill-opacity=".5"/>
+          <circle cx="141.3" cy="250.1" r="2.3" fill="#9E3A27" fill-opacity=".5"/>
+          <circle cx="113.5" cy="243.9" r="2.3" fill="#9E3A27" fill-opacity=".5"/>
+          <path d="M 198.7 290 Q 187.9 285 174.7 290.1" stroke="#9E3A27" stroke-opacity="0.8" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="169.1" cy="293.5" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-211.8 169.1 293.5)"/>
+          <ellipse cx="166.4" cy="292" rx="9.5" ry="4.6" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-192.9 166.4 292)"/>
+          <ellipse cx="166.7" cy="289" rx="9" ry="4.3" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-172.2 166.7 289)"/>
+          <ellipse cx="168.8" cy="287.3" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-154.5 168.8 287.3)"/>
+          <path d="M 176.6 269.4 Q 163.3 261.8 147.1 263.7" stroke="#9E3A27" stroke-opacity="0.8" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="141" cy="266" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-200.6 141 266)"/>
+          <ellipse cx="138.6" cy="264" rx="9.5" ry="4.6" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-181.7 138.6 264)"/>
+          <ellipse cx="139.5" cy="261.1" rx="9" ry="4.3" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-161.1 139.5 261.1)"/>
+          <ellipse cx="141.9" cy="259.8" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-143.3 141.9 259.8)"/>
+          <path d="M 151.7 254.4 Q 137.9 243.8 121.1 242.1" stroke="#9E3A27" stroke-opacity="0.8" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="114.7" cy="243.2" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-189.7 114.7 243.2)"/>
+          <ellipse cx="112.7" cy="240.8" rx="9.5" ry="4.6" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-170.8 112.7 240.8)"/>
+          <ellipse cx="114.1" cy="238.1" rx="9" ry="4.3" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-150.2 114.1 238.1)"/>
+          <ellipse cx="116.7" cy="237.3" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-132.4 116.7 237.3)"/>
+          <path d="M 127.4 246 Q 117.8 233.6 106.1 229.5" stroke="#9E3A27" stroke-opacity="0.8" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="99.6" cy="228.8" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-173.7 99.6 228.8)"/>
+          <ellipse cx="98.4" cy="225.8" rx="9.5" ry="4.6" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-154.8 98.4 225.8)"/>
+          <ellipse cx="100.5" cy="223.7" rx="9" ry="4.3" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-134.2 100.5 223.7)"/>
+          <ellipse cx="103.2" cy="223.6" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-116.5 103.2 223.6)"/>
+          <path d="M 108.4 243.7 Q 104.7 246.9 100.1 261.9" stroke="#9E3A27" stroke-opacity="0.8" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="100.9" cy="268.4" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-277.1 100.9 268.4)"/>
+          <ellipse cx="98.4" cy="270.2" rx="9.5" ry="4.6" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-258.2 98.4 270.2)"/>
+          <ellipse cx="95.9" cy="268.7" rx="9" ry="4.3" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-237.6 95.9 268.7)"/>
+          <ellipse cx="95.2" cy="266.1" rx="7.3" ry="3.5" fill="#9E3A27" fill-opacity="0.34" transform="rotate(-219.8 95.2 266.1)"/>
+          <ellipse cx="96" cy="237.1" rx="9" ry="4.3" fill="#9E3A27" fill-opacity="0.36" transform="rotate(-120.3 96 237.1)"/>
+          <ellipse cx="100.2" cy="233" rx="12.3" ry="5.9" fill="#9E3A27" fill-opacity="0.36" transform="rotate(-88.8 100.2 233)"/>
+          <ellipse cx="105.1" cy="236" rx="10.6" ry="5.1" fill="#9E3A27" fill-opacity="0.36" transform="rotate(-57.3 105.1 236)"/>
+          <ellipse cx="106.4" cy="240.1" rx="8.4" ry="4.1" fill="#9E3A27" fill-opacity="0.36" transform="rotate(-31.5 106.4 240.1)"/>
+          <circle cx="217" cy="365.9" r="11" fill="#FAF7EE" stroke="#9E3A27" stroke-width="1.2"/>
+          <text x="217" y="369.9" fill="#9E3A27" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">β</text>
+          <path d="M 232.0 257.6 C 242.8 193, 357.3 145.7, 448 150" stroke="#9A6A37" stroke-width="1.9" fill="none" stroke-linecap="round" opacity="0.94"/>
+          <circle cx="232.0" cy="257.6" r="3.4" fill="#9A6A37"/>
+          <circle cx="262.7" cy="208.2" r="2.3" fill="#9A6A37" fill-opacity=".5"/>
+          <circle cx="308.4" cy="178.8" r="2.3" fill="#9A6A37" fill-opacity=".5"/>
+          <circle cx="365.2" cy="158.7" r="2.3" fill="#9A6A37" fill-opacity=".5"/>
+          <circle cx="425.8" cy="149.9" r="2.3" fill="#9A6A37" fill-opacity=".5"/>
+          <path d="M 286.6 190.6 Q 288.4 175 290.7 167" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="288.3" cy="160.9" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-111.5 288.3 160.9)"/>
+          <ellipse cx="290.3" cy="158.5" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-92.6 290.3 158.5)"/>
+          <ellipse cx="293.2" cy="159.3" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-72 293.2 159.3)"/>
+          <ellipse cx="294.5" cy="161.7" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-54.2 294.5 161.7)"/>
+          <path d="M 322.7 172.4 Q 331.8 157.4 342.9 150.2" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="344.1" cy="143.9" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-79.2 344.1 143.9)"/>
+          <ellipse cx="347.1" cy="142.9" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-60.3 347.1 142.9)"/>
+          <ellipse cx="349.1" cy="145.1" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-39.7 349.1 145.1)"/>
+          <ellipse cx="348.9" cy="147.8" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-21.9 348.9 147.8)"/>
+          <path d="M 363.4 159.1 Q 377.6 149.9 395 149.6" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="399.3" cy="144.8" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-48.3 399.3 144.8)"/>
+          <ellipse cx="402.4" cy="145.5" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-29.4 402.4 145.5)"/>
+          <ellipse cx="402.9" cy="148.4" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-8.7 402.9 148.4)"/>
+          <ellipse cx="401.4" cy="150.6" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(9 401.4 150.6)"/>
+          <path d="M 403.2 151.8 Q 414.6 150.8 428.6 160.7" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="435" cy="159.3" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-12.3 435 159.3)"/>
+          <ellipse cx="437.1" cy="161.6" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(6.6 437.1 161.6)"/>
+          <ellipse cx="435.8" cy="164.3" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(27.3 435.8 164.3)"/>
+          <ellipse cx="433.2" cy="165.3" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(45 433.2 165.3)"/>
+          <path d="M 434.2 149.7 Q 437.9 136.5 442.3 131.5" stroke="#9A6A37" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="441.5" cy="125" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-97.6 441.5 125)"/>
+          <ellipse cx="444" cy="123.1" rx="9.5" ry="4.6" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-78.7 444 123.1)"/>
+          <ellipse cx="446.6" cy="124.7" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-58 446.6 124.7)"/>
+          <ellipse cx="447.3" cy="127.3" rx="7.3" ry="3.5" fill="#9A6A37" fill-opacity="0.27" transform="rotate(-40.3 447.3 127.3)"/>
+          <ellipse cx="444" cy="143.1" rx="9" ry="4.3" fill="#9A6A37" fill-opacity="0.29" transform="rotate(-120.3 444 143.1)"/>
+          <ellipse cx="448.2" cy="139" rx="12.3" ry="5.9" fill="#9A6A37" fill-opacity="0.29" transform="rotate(-88.8 448.2 139)"/>
+          <ellipse cx="453.1" cy="142" rx="10.6" ry="5.1" fill="#9A6A37" fill-opacity="0.29" transform="rotate(-57.3 453.1 142)"/>
+          <ellipse cx="454.4" cy="146.1" rx="8.4" ry="4.1" fill="#9A6A37" fill-opacity="0.29" transform="rotate(-31.5 454.4 146.1)"/>
+          <circle cx="247" cy="257.6" r="11" fill="#FAF7EE" stroke="#9A6A37" stroke-width="1.2"/>
+          <text x="247" y="261.6" fill="#9A6A37" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">δ</text>
+          <path d="M 232.0 164.8 C 240 118.7, 324.8 84.9, 392 88" stroke="#5F6E4A" stroke-width="1.9" fill="none" stroke-linecap="round" opacity="0.94"/>
+          <circle cx="232.0" cy="164.8" r="3.4" fill="#5F6E4A"/>
+          <circle cx="254.7" cy="129.5" r="2.3" fill="#5F6E4A" fill-opacity=".5"/>
+          <circle cx="279.1" cy="113.2" r="2.3" fill="#5F6E4A" fill-opacity=".5"/>
+          <circle cx="309" cy="100.4" r="2.3" fill="#5F6E4A" fill-opacity=".5"/>
+          <circle cx="341.9" cy="91.8" r="2.3" fill="#5F6E4A" fill-opacity=".5"/>
+          <circle cx="375.6" cy="88" r="2.3" fill="#5F6E4A" fill-opacity=".5"/>
+          <path d="M 272.4 117 Q 274.5 101.4 277 93.4" stroke="#5F6E4A" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="274.7" cy="87.3" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-110.6 274.7 87.3)"/>
+          <ellipse cx="276.7" cy="84.9" rx="9.5" ry="4.6" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-91.7 276.7 84.9)"/>
+          <ellipse cx="279.6" cy="85.8" rx="9" ry="4.3" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-71.1 279.6 85.8)"/>
+          <ellipse cx="280.8" cy="88.2" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-53.3 280.8 88.2)"/>
+          <path d="M 299.2 104 Q 308.4 89.1 319.7 82.1" stroke="#5F6E4A" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="321" cy="75.7" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-78.5 321 75.7)"/>
+          <ellipse cx="324" cy="74.7" rx="9.5" ry="4.6" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-59.6 324 74.7)"/>
+          <ellipse cx="325.9" cy="77.1" rx="9" ry="4.3" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-38.9 325.9 77.1)"/>
+          <ellipse cx="325.7" cy="79.7" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-21.2 325.7 79.7)"/>
+          <path d="M 329.3 94.5 Q 343.6 85.4 361 85.3" stroke="#5F6E4A" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="365.4" cy="80.5" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-47.8 365.4 80.5)"/>
+          <ellipse cx="368.4" cy="81.2" rx="9.5" ry="4.6" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-28.9 368.4 81.2)"/>
+          <ellipse cx="368.9" cy="84.1" rx="9" ry="4.3" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-8.3 368.9 84.1)"/>
+          <ellipse cx="367.4" cy="86.4" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(9.5 367.4 86.4)"/>
+          <path d="M 358.8 89.3 Q 370.2 88.3 384.2 98.3" stroke="#5F6E4A" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="390.6" cy="96.9" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-12 390.6 96.9)"/>
+          <ellipse cx="392.7" cy="99.3" rx="9.5" ry="4.6" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(6.9 392.7 99.3)"/>
+          <ellipse cx="391.3" cy="102" rx="9" ry="4.3" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(27.5 391.3 102)"/>
+          <ellipse cx="388.8" cy="102.9" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(45.3 388.8 102.9)"/>
+          <path d="M 381.8 87.8 Q 385.5 74.6 389.9 69.5" stroke="#5F6E4A" stroke-opacity="0.65" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+          <ellipse cx="389.1" cy="63.1" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-97.6 389.1 63.1)"/>
+          <ellipse cx="391.6" cy="61.2" rx="9.5" ry="4.6" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-78.7 391.6 61.2)"/>
+          <ellipse cx="394.2" cy="62.7" rx="9" ry="4.3" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-58 394.2 62.7)"/>
+          <ellipse cx="394.9" cy="65.3" rx="7.3" ry="3.5" fill="#5F6E4A" fill-opacity="0.27" transform="rotate(-40.3 394.9 65.3)"/>
+          <ellipse cx="388" cy="81.1" rx="9" ry="4.3" fill="#5F6E4A" fill-opacity="0.29" transform="rotate(-120.3 388 81.1)"/>
+          <ellipse cx="392.2" cy="77" rx="12.3" ry="5.9" fill="#5F6E4A" fill-opacity="0.29" transform="rotate(-88.8 392.2 77)"/>
+          <ellipse cx="397.1" cy="80" rx="10.6" ry="5.1" fill="#5F6E4A" fill-opacity="0.29" transform="rotate(-57.3 397.1 80)"/>
+          <ellipse cx="398.4" cy="84.1" rx="8.4" ry="4.1" fill="#5F6E4A" fill-opacity="0.29" transform="rotate(-31.5 398.4 84.1)"/>
+          <circle cx="247" cy="164.8" r="11" fill="#FAF7EE" stroke="#5F6E4A" stroke-width="1.2"/>
+          <text x="247" y="168.8" fill="#5F6E4A" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">γ</text>
+          <circle cx="232.0" cy="72.0" r="3.6" fill="#33424C"/>
+          <ellipse cx="222.4" cy="69.1" rx="11.2" ry="5.2" fill="#33424C" fill-opacity=".24" transform="rotate(-163.3 222.4 69.1)"/>
+          <ellipse cx="221.2" cy="64.8" rx="14.6" ry="6.8" fill="#33424C" fill-opacity=".24" transform="rotate(-146.1 221.2 64.8)"/>
+          <ellipse cx="222.6" cy="60.3" rx="16.8" ry="7.8" fill="#33424C" fill-opacity=".24" transform="rotate(-128.9 222.6 60.3)"/>
+          <ellipse cx="227.2" cy="59.9" rx="14.6" ry="6.8" fill="#33424C" fill-opacity=".24" transform="rotate(-111.7 227.2 59.9)"/>
+          <ellipse cx="231.1" cy="61" rx="12.3" ry="5.7" fill="#33424C" fill-opacity=".24" transform="rotate(-94.5 231.1 61)"/>
+          <ellipse cx="234.2" cy="62.2" rx="11.2" ry="5.2" fill="#33424C" fill-opacity=".24" transform="rotate(-77.3 234.2 62.2)"/>
+          <ellipse cx="238" cy="61.6" rx="13.4" ry="6.2" fill="#33424C" fill-opacity=".24" transform="rotate(-60.2 238 61.6)"/>
+          <ellipse cx="239" cy="65.5" rx="10.6" ry="4.9" fill="#33424C" fill-opacity=".24" transform="rotate(-43 239 65.5)"/>
+          <ellipse cx="239.2" cy="68.5" rx="9" ry="4.2" fill="#33424C" fill-opacity=".24" transform="rotate(-25.8 239.2 68.5)"/>
+          <ellipse cx="238.4" cy="71" rx="7.3" ry="3.4" fill="#33424C" fill-opacity=".24" transform="rotate(-8.6 238.4 71)"/>
+          <text x="232.0" y="42" fill="#33424C" font-size="11" text-anchor="middle" font-family="ui-monospace,monospace">现在 · 第 30 章</text>
+          <text x="218.0" y="554" fill="#33424C" font-size="10.5" text-anchor="end" font-family="ui-monospace,monospace">第 1 章</text>
+        </svg></div>
       <div class="wlc">
         <h3>世界树</h3>
-        <p>干是此世：从第 1 章长到现在，每一章都是一圈年轮。每一次「如果」都在某一章分出一枝，各自结出自己的叶与果。</p>
-        <ul>
-          <li><span class="dot" style="background:#6f9bc4"></span>α · 正典：已固化，只读</li>
-          <li><span class="dot" style="background:#c96f4a"></span>β · 假设（第 11 章分叉）：如果那一箭没挡下</li>
-          <li><span class="dot" style="background:#7fae72"></span>γ · 预测（第 24 章）：按大纲/成稿向前推演</li>
-          <li><span class="dot" style="background:#d9a05b"></span>δ · 假设（第 18 章）：如果旧账没翻到</li>
+        <p>主干从第 1 章长到现在，像一棵树的干。你在某一章问一句「如果当初……」，就从那里分出一枝：
+          枝上结的果，是那个世界已经推演过的事；叶子是还没写的可能。</p>
+        <ul class="wllist">
+          <li><span class="sw" style="background:#33424C"></span>α · 主线，已经写成<span class="ch">只读</span></li>
+          <li><span class="sw" style="background:#A63F2B"></span>β · 如果那一箭没挡下<span class="ch">第 11 章</span></li>
+          <li><span class="sw" style="background:#6F7C55"></span>γ · 照着大纲往下推<span class="ch">第 24 章</span></li>
+          <li><span class="sw" style="background:#A97843"></span>δ · 如果旧账没翻到<span class="ch">第 18 章</span></li>
         </ul>
-        <p class="note">叶与果是该世界已推演的节点；枯枝（虚线）是归档的世界。同一份世界线，两种看法——并轨图看「平行」，世界树看「生长」。</p>
+        <p class="note">同一份世界线能看两遍：并轨图是平行线，世界树是一棵树。归档的世界留成枯枝。
+          演示稿《断刀记》，三十章，四条线。</p>
       </div>
     </div>
   </div>
 </section>
 
-<section>
+<section class="section" id="workspace">
   <div class="wrap">
-    <div class="sec-head"><span class="no">04 / WORKSPACE</span><h2>一张桌子，四个视角</h2><span class="sub">Workspace</span></div>
-    <div class="shots">
-      <div class="shot">
-        <div class="viz" id="viz-editor"></div>
-        <div class="cap"><b>稿纸</b><span>字数目标 · 对白占比 · 速记 · 选区创作浮条</span></div>
+    <div class="sec-head">
+      <span class="num">04</span>
+      <h2>平时就看这四块</h2>
+      <span class="en">THE DESK</span>
+    </div>
+    <div class="plates">
+      <div class="plate">
+        <svg viewBox="0 0 420 230" role="img" aria-label="稿纸示意图">
+          <rect x="1" y="1" width="418" height="228" fill="none" stroke="#E4DDCD"/>
+          <line x1="46" y1="1" x2="46" y2="229" stroke="#A63F2B" stroke-opacity=".28"/>
+          <g fill="#CFC7B6">
+            <rect x="66" y="34" width="250" height="3"/><rect x="66" y="50" width="300" height="3"/>
+            <rect x="66" y="66" width="286" height="3"/><rect x="66" y="82" width="312" height="3"/>
+            <rect x="66" y="98" width="240" height="3"/>
+          </g>
+          <rect x="66" y="112" width="196" height="3" fill="#A63F2B" fill-opacity=".55"/>
+          <g fill="#CFC7B6">
+            <rect x="66" y="128" width="304" height="3"/><rect x="66" y="144" width="270" height="3"/>
+            <rect x="66" y="160" width="288" height="3"/><rect x="66" y="176" width="180" height="3"/>
+          </g>
+          <rect x="274" y="106" width="112" height="18" fill="#FAF7EE" stroke="#C9C1B0"/>
+          <g fill="#A63F2B" fill-opacity=".7">
+            <circle cx="284" cy="115" r="2"/><circle cx="296" cy="115" r="2"/><circle cx="308" cy="115" r="2"/>
+          </g>
+          <text x="380" y="216" font-family="ui-monospace,monospace" font-size="8" fill="#8A8578" text-anchor="end">1,842 / 3,000</text>
+          <circle cx="392" cy="34" r="15" fill="none" stroke="#D8D1C2"/>
+          <path d="M392 19 A15 15 0 0 1 405 40" fill="none" stroke="#A63F2B" stroke-width="2"/>
+        </svg>
+        <div class="cap"><b>稿纸</b><span>字数目标 · 对白占比 · 选区浮条</span></div>
       </div>
-      <div class="shot">
-        <div class="viz" id="viz-canvas"></div>
-        <div class="cap"><b>画板</b><span>节点/边 · 暗线虚线 · 影响半径</span></div>
+      <div class="plate">
+        <svg viewBox="0 0 420 230" role="img" aria-label="画板示意图">
+          <rect x="1" y="1" width="418" height="228" fill="none" stroke="#E4DDCD"/>
+          <path d="M96 74 C150 74 150 132 208 132" fill="none" stroke="#B9B2A2"/>
+          <path d="M208 132 C266 132 266 74 322 74" fill="none" stroke="#B9B2A2"/>
+          <path d="M208 132 C250 150 262 168 300 174" fill="none" stroke="#B9B2A2" stroke-dasharray="4 4"/>
+          <rect x="46" y="54" width="100" height="40" fill="#FAF7EE" stroke="#A63F2B"/>
+          <text x="58" y="79" font-family="Songti SC,serif" font-size="11" fill="#1C1B18">故事线</text>
+          <rect x="158" y="112" width="100" height="40" fill="#FAF7EE" stroke="#CFC7B6"/>
+          <text x="170" y="137" font-family="Songti SC,serif" font-size="11" fill="#1C1B18">事件</text>
+          <rect x="272" y="54" width="100" height="40" fill="#FAF7EE" stroke="#CFC7B6"/>
+          <text x="284" y="79" font-family="Songti SC,serif" font-size="11" fill="#1C1B18">人物</text>
+          <rect x="250" y="154" width="100" height="40" fill="#FAF7EE" stroke="#CFC7B6" stroke-dasharray="4 4"/>
+          <text x="262" y="179" font-family="Songti SC,serif" font-size="11" fill="#6B675E">未揭示</text>
+          <g fill="#D8D1C2"><circle cx="96" cy="74" r="2.5"/><circle cx="208" cy="132" r="2.5"/><circle cx="322" cy="74" r="2.5"/></g>
+        </svg>
+        <div class="cap"><b>画板</b><span>节点与边 · 暗线虚线 · 影响半径</span></div>
       </div>
-      <div class="shot">
-        <div class="viz" id="viz-traj"></div>
-        <div class="cap"><b>轨迹</b><span>工具调用与产出条数全程可见</span></div>
+      <div class="plate">
+        <svg viewBox="0 0 420 230" role="img" aria-label="轨迹示意图">
+          <rect x="1" y="1" width="418" height="228" fill="none" stroke="#E4DDCD"/>
+          <line x1="52" y1="34" x2="52" y2="196" stroke="#D8D1C2"/>
+          <g>
+            <circle cx="52" cy="52" r="3.5" fill="#A63F2B"/>
+            <rect x="72" y="45" width="128" height="3" fill="#CFC7B6"/>
+            <text x="380" y="56" font-family="ui-monospace,monospace" font-size="9" fill="#8A8578" text-anchor="end">propose_canon</text>
+            <circle cx="52" cy="94" r="3" fill="#8A8578"/>
+            <rect x="72" y="87" width="196" height="3" fill="#CFC7B6"/>
+            <text x="380" y="98" font-family="ui-monospace,monospace" font-size="9" fill="#8A8578" text-anchor="end">3 条</text>
+            <circle cx="52" cy="136" r="3" fill="#8A8578"/>
+            <rect x="72" y="129" width="96" height="3" fill="#CFC7B6"/>
+            <text x="380" y="140" font-family="ui-monospace,monospace" font-size="9" fill="#8A8578" text-anchor="end">read_canon</text>
+            <circle cx="52" cy="178" r="3" fill="#8A8578"/>
+            <rect x="72" y="171" width="164" height="3" fill="#CFC7B6"/>
+            <text x="380" y="182" font-family="ui-monospace,monospace" font-size="9" fill="#8A8578" text-anchor="end">提案已入箱</text>
+          </g>
+        </svg>
+        <div class="cap"><b>轨迹</b><span>工具调用、参数与产出条数，可回放</span></div>
       </div>
-      <div class="shot">
-        <div class="viz" id="viz-cards"></div>
-        <div class="cap"><b>人物卡</b><span>别名归一 · 事实账 · 关系</span></div>
+      <div class="plate">
+        <svg viewBox="0 0 420 230" role="img" aria-label="人物卡示意图">
+          <rect x="1" y="1" width="418" height="228" fill="none" stroke="#E4DDCD"/>
+          <rect x="84" y="30" width="116" height="160" fill="#FAF7EE" stroke="#CFC7B6"/>
+          <rect x="84" y="30" width="116" height="54" fill="#A63F2B" fill-opacity=".10"/>
+          <text x="142" y="72" font-family="Songti SC,serif" font-size="34" fill="#1C1B18" text-anchor="middle">沈</text>
+          <text x="96" y="106" font-family="Songti SC,serif" font-size="13" fill="#1C1B18">沈砚</text>
+          <g fill="#CFC7B6"><rect x="96" y="120" width="88" height="2.5"/><rect x="96" y="132" width="72" height="2.5"/><rect x="96" y="144" width="80" height="2.5"/></g>
+          <rect x="96" y="166" width="26" height="12" fill="none" stroke="#D8D1C2"/>
+          <text x="109" y="175" font-family="Songti SC,serif" font-size="7" fill="#8A8578" text-anchor="middle">执</text>
+          <g>
+            <rect x="222" y="52" width="128" height="34" fill="#FAF7EE" stroke="#E4DDCD"/>
+            <text x="234" y="73" font-family="Songti SC,serif" font-size="10" fill="#4A4740">人物 · 沈芜</text>
+            <rect x="222" y="94" width="150" height="34" fill="#FAF7EE" stroke="#E4DDCD"/>
+            <text x="234" y="115" font-family="Songti SC,serif" font-size="10" fill="#4A4740">人物 · 老周</text>
+            <rect x="222" y="136" width="112" height="34" fill="#FAF7EE" stroke="#E4DDCD" stroke-dasharray="4 4"/>
+            <text x="234" y="157" font-family="Songti SC,serif" font-size="10" fill="#8A8578">关系提案</text>
+          </g>
+        </svg>
+        <div class="cap"><b>人物卡</b><span>卡面 · 事实账 · 关系边</span></div>
       </div>
     </div>
   </div>
 </section>
 
-<section id="download">
+<section class="section" id="download">
   <div class="wrap">
-    <div class="dl">
-      <h2>获取执笔造物</h2>
-      <p>当前以源码分发：一条命令打包出自带运行时的 macOS 应用，目标机器无需安装 Node / npm。</p>
-      <div class="row">
-        <a class="btn primary" href="https://github.com/asdshuaishuai/zhibi-zaowu#构建与运行" target="_blank">构建指南</a>
-        <a class="btn ghost" href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">查看源码</a>
+    <div class="sec-head">
+      <span class="num">05</span>
+      <h2>获取</h2>
+      <span class="en">GET / SOURCE</span>
+    </div>
+    <div class="get">
+      <div>
+        <h2>现在只发源码。</h2>
+        <p>克隆下来跑两个脚本，得到自带运行时的 .app。换一台 Mac 打开就能写，
+          不用装 Node，也不用 npm。</p>
+        <div class="more">
+          <b>稿子</b> 在 ~/Documents/执笔/*.zhibi，旧版执笔的书直接能开<br>
+          <b>密钥</b> 只放在本机，不上云；模型可指向局域网里的端点<br>
+          <b>系统</b> 目前是 macOS，Linux / Windows 要在那台机器上自己编
+        </div>
+        <div class="under">
+          <a href="https://github.com/asdshuaishuai/zhibi-zaowu#构建与运行" target="_blank" rel="noopener">怎么编 ↗</a>
+          <a href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank" rel="noopener">仓库 ↗</a>
+        </div>
       </div>
-      <div class="note">
-        <code>scripts/vendor_runtime.sh</code> 一次性内置 Node + DSH → <code>scripts/build_app.sh</code> 产出 执笔造物.app<br>
-        项目数据存放在 ~/Documents/执笔/*.zhibi（与旧版执笔双向兼容）· 密钥只在本机 · 不联云<br>
-        模型接入：DeepSeek 官方 API 或任意 OpenAI 兼容端点（局域网亦可）
+      <div>
+        <pre><span class="p">$</span> git clone https://github.com/asdshuaishuai/zhibi-zaowu
+<span class="p">$</span> cd zhibi-zaowu
+<span class="p">$</span> scripts/vendor_runtime.sh   <span class="c"># 一次性内置 Node + DSH（约 875 MB）</span>
+<span class="p">$</span> scripts/build_app.sh        <span class="c"># → target/release/执笔造物.app</span>
+<span class="p">$</span> open "target/release/执笔造物.app"</pre>
       </div>
     </div>
   </div>
 </section>
+
+</main>
 
 <footer>
   <div class="wrap">
-    <span class="seal" style="width:20px;height:20px;font-size:11px;border-radius:5px">执</span>
-    <span>执笔造物 · 人写正文，AI 理账</span>
+    <span class="mark">执</span>
+    <span>执笔造物 · 人写正文，AI 记账</span>
     <span class="sp"></span>
-    <a href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank">GitHub</a>
-    <span>MIT</span>
+    <span>宋体 / 系统无衬线 / 等宽</span>
+    <span>GPUI · Rust · MIT</span>
     <span>© 2026</span>
+    <a href="https://github.com/asdshuaishuai/zhibi-zaowu" target="_blank" rel="noopener">GitHub ↗</a>
   </div>
 </footer>
 
-<script>
-(function(){
-  // 四张示意小图：纯 CSS/SVG 画，不引外部图
-  function svg(w,h,inner){return '<svg viewBox="0 0 '+w+' '+h+'" style="width:100%;height:100%">'+inner+'</svg>'}
-  var d=document;
-  // 稿纸：纸面 + 几行字 + 选区浮条
-  d.getElementById('viz-editor').innerHTML = svg(420,210,
-    '<rect x="40" y="14" width="340" height="182" rx="10" fill="#1b1d22" stroke="#2a2d34"/>'+
-    '<g fill="#3b3e46"><rect x="66" y="38" width="288" height="6" rx="3"/><rect x="66" y="54" width="270" height="6" rx="3"/><rect x="66" y="70" width="292" height="6" rx="3"/><rect x="66" y="86" width="180" height="6" rx="3"/><rect x="66" y="110" width="286" height="6" rx="3"/><rect x="66" y="126" width="240" height="6" rx="3"/></g>'+
-    '<rect x="66" y="102" width="240" height="20" rx="4" fill="rgba(201,111,74,.14)" stroke="rgba(201,111,74,.42)"/>'+
-    '<g opacity=".9"><rect x="70" y="150" width="52" height="18" rx="5" fill="rgba(201,111,74,.16)" stroke="rgba(201,111,74,.45)"/><rect x="128" y="150" width="40" height="18" rx="5" fill="#24262d" stroke="#2e3138"/><rect x="174" y="150" width="40" height="18" rx="5" fill="#24262d" stroke="#2e3138"/></g>'+
-    '<text x="77" y="163" fill="#c96f4a" font-size="9" font-family="ui-monospace,monospace">拉深</text>'
-  );
-  // 画板：节点 + 曲线
-  d.getElementById('viz-canvas').innerHTML = svg(420,210,
-    '<g stroke="#4a4d55" fill="none" stroke-width="1.2"><path d="M120 60 C 180 60 180 100 240 100"/><path d="M120 150 C 180 150 180 110 240 110"/><path d="M240 100 C 290 100 290 60 340 60" stroke-dasharray="4 4"/></g>'+
-    '<g><rect x="50" y="44" width="72" height="32" rx="7" fill="#1e2026" stroke="#c96f4a"/><rect x="50" y="134" width="72" height="32" rx="7" fill="#1e2026" stroke="#2e3138"/>'+
-    '<rect x="204" y="84" width="72" height="32" rx="7" fill="#1e2026" stroke="#6f9bc4"/><rect x="304" y="44" width="72" height="32" rx="7" fill="#1e2026" stroke="#2e3138" stroke-dasharray="4 4"/></g>'+
-    '<g fill="#8e8b85" font-size="8" font-family="ui-monospace,monospace"><text x="58" y="64">L01 主线</text><text x="58" y="154">L02 副线</text><text x="212" y="104">E07 事件</text><text x="312" y="64">F08 伏笔</text></g>'
-  );
-  // 轨迹：气泡
-  d.getElementById('viz-traj').innerHTML = svg(420,210,
-    '<g font-size="8.5" font-family="ui-monospace,monospace">'+
-    '<rect x="40" y="30" width="150" height="38" rx="8" fill="rgba(201,111,74,.14)" stroke="rgba(201,111,74,.42)"/><text x="52" y="46" fill="#ded9d0">get_world_state</text><text x="52" y="58" fill="#615e58">24 节点 · 30 事件</text>'+
-    '<rect x="60" y="80" width="170" height="38" rx="8" fill="rgba(127,174,114,.12)" stroke="rgba(127,174,114,.4)"/><text x="72" y="96" fill="#7fae72">propose_relations</text><text x="72" y="108" fill="#615e58">4 条 · 待裁决</text>'+
-    '<rect x="40" y="130" width="140" height="38" rx="8" fill="#1e2026" stroke="#2e3138"/><text x="52" y="146" fill="#ded9d0">simulate_worldline</text><text x="52" y="158" fill="#615e58">5 节点 · 3 影响</text>'+
-    '</g>'
-  );
-  // 人物卡
-  d.getElementById('viz-cards').innerHTML = svg(420,210,
-    '<g><rect x="46" y="30" width="96" height="140" rx="9" fill="#1b1d22" stroke="#2e3138"/><rect x="46" y="30" width="96" height="66" rx="9" fill="rgba(201,111,74,.16)"/><text x="82" y="76" fill="#e8ddca" font-size="26" font-family="Songti SC,serif">沈</text><text x="58" y="116" fill="#ded9d0" font-size="9">沈砚</text><text x="58" y="130" fill="#615e58" font-size="7.5">小砚 · 砚哥</text><rect x="52" y="140" width="40" height="14" rx="4" fill="#22252b" stroke="#2e3138"/><text x="57" y="150" fill="#8e8b85" font-size="7">8 事实</text></g>'+
-    '<g><rect x="158" y="30" width="96" height="140" rx="9" fill="#1b1d22" stroke="#2e3138"/><rect x="158" y="30" width="96" height="66" rx="9" fill="rgba(111,155,196,.16)"/><text x="194" y="76" fill="#e8ddca" font-size="26" font-family="Songti SC,serif">老</text><text x="170" y="116" fill="#ded9d0" font-size="9">老周</text><text x="170" y="130" fill="#615e58" font-size="7.5">周慎 · 周叔</text><rect x="164" y="140" width="40" height="14" rx="4" fill="#22252b" stroke="#2e3138"/><text x="169" y="150" fill="#8e8b85" font-size="7">11 事实</text></g>'+
-    '<g><rect x="270" y="30" width="96" height="140" rx="9" fill="#1b1d22" stroke="#2e3138"/><rect x="270" y="30" width="96" height="66" rx="9" fill="rgba(127,174,114,.16)"/><text x="306" y="76" fill="#e8ddca" font-size="26" font-family="Songti SC,serif">沈</text><text x="282" y="116" fill="#ded9d0" font-size="9">沈芜</text><text x="282" y="130" fill="#615e58" font-size="7.5">人影 · 观灯人</text><rect x="276" y="140" width="40" height="14" rx="4" fill="#22252b" stroke="#2e3138"/><text x="281" y="150" fill="#8e8b85" font-size="7">6 事实</text></g>'
-  );
-})();
-</script>
 </body>
 </html>
