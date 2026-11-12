@@ -74,12 +74,27 @@ pub fn tree(lines: &[Line]) -> Tree {
     // 只画有血缘的：正典为根，其余按 parentId 挂上去。
     // 父不存在（被删/手改坏了）就当根，不至于整条线消失。
     let ids: std::collections::BTreeSet<&str> = lines.iter().map(|l| l.id.as_str()).collect();
+    // 正典 id（世界树的主干）。没有血缘的线一律挂在它下面——
+    // 一条世界线即便没写 parentId，逻辑上也是从正典某个点分出来的，
+    // 不是凭空独立的一棵树。旧实现把它们都当根，画出来是五根互不相连的柱子。
+    let base_id: Option<&str> = lines
+        .iter()
+        .find(|l| l.is_base())
+        .map(|l| l.id.as_str());
     let mut children: std::collections::BTreeMap<&str, Vec<&Line>> = Default::default();
     let mut roots: Vec<&Line> = Vec::new();
     for l in lines {
         let p = l.parent_id.as_str();
-        if p.is_empty() || !ids.contains(p) || p == l.id {
+        if l.is_base() {
             roots.push(l);
+            continue;
+        }
+        if p.is_empty() || !ids.contains(p) || p == l.id {
+            // 没写父指针：挂到正典上（正典不存在时才当独立根）
+            match base_id {
+                Some(b) => children.entry(b).or_default().push(l),
+                None => roots.push(l),
+            }
         } else {
             children.entry(p).or_default().push(l);
         }
@@ -185,7 +200,16 @@ pub fn tree(lines: &[Line]) -> Tree {
                 // 父节点的槽区间要覆盖子树：把父自己往前走
                 let line = top.line;
                 let fork_chapter = if line.is_base() { 1 } else { line.fork_chapter().max(1) };
-                let end_chapter = line.last_chapter().max(fork_chapter);
+                // 线的末端：走到它自己的最后一章。如果一个已排章的节点都没有
+                //（AI 推演出来还没落章很常见），至少给它一段可见的枝梢——
+                // 否则整棵树的所有枝都是零长度，看起来像"没有树"。
+                let last = line.last_chapter();
+                let end_chapter = if last > fork_chapter {
+                    last
+                } else {
+                    // 3 章或全书的 1/10，取大者：短书里也看得见，长书里不夸张
+                    fork_chapter + 3.max(1)
+                };
                 max_chapter = max_chapter.max(end_chapter).max(fork_chapter);
                 out.push(TreeNode {
                     id: line.id.clone(),
@@ -900,6 +924,17 @@ mod tests {
     }
 
     #[test]
+    fn a_line_with_no_scheduled_nodes_still_has_a_visible_branch() {
+        // AI 推演出的节点常常没排章（chapter=0）。如果末端就等于分叉章，
+        // 整棵树的所有枝都是零长度——界面上就是"没有树"。
+        let mut l = line("β", "α", 7, Kind::WhatIf, false);
+        l.nodes.push(crate::worldline::Node::new("n1", "event", "某件事"));
+        let t = tree(&[l]);
+        let n = t.nodes.iter().find(|n| n.id == "β").unwrap();
+        assert!(n.end_chapter > n.fork_chapter, "枝梢必须比枝根高：{:?}", (n.fork_chapter, n.end_chapter));
+    }
+
+    #[test]
     fn zoom_keeps_the_centre_and_the_span() {
         // 全览 120 章 → 放大到约 1/1.8
         let (a, b) = zoom_window(None, 1. / 1.8, 120);
@@ -971,3 +1006,4 @@ mod tests {
         assert!(a <= 115);
     }
 }
+

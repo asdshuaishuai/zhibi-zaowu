@@ -108,8 +108,12 @@ impl Mode {
             "journal" | "改动记录" => Mode::Journal,
             "import" | "导入" => Mode::Import,
             "graph" | "图谱" => Mode::Graph,
-            "canvas" | "画板" => Mode::Canvas,
-            "director" | "世界线" => Mode::Director,
+            "canvas" | "画板" | "剧情画板" => Mode::Canvas,
+            // 中文"世界线"以前映射到排期板（Director）——那是错的：
+            // 排期板是工作排期，与世界线无关。这条歧义直接把"世界线"这个词
+            // 借给了另一个页面，是四页职责混淆的源头之一。
+            "director" | "排期" | "章节排期" => Mode::Director,
+            "worldline" | "世界线" => Mode::Worldline,
             "oracle" | "预言书" | "预言" => Mode::Oracle,
             "bookinfo" | "书目" => Mode::BookInfo,
             _ => return None,

@@ -154,7 +154,11 @@ impl WorldlinePanel {
             collapsed: Default::default(),
             picked: None,
             message: None,
-            view: WlTab::Timeline,
+            view: match std::env::var("ZHIBI_WL_TAB").as_deref() {
+                Ok("tree") => WlTab::Tree,
+                Ok("compare") => WlTab::Compare,
+                _ => WlTab::Timeline,
+            },
             compare_with: None,
             drill: None,
         }
@@ -417,11 +421,53 @@ impl Render for WorldlinePanel {
         // 命中区要用另一份：paint 闭包 move 走了 nodes_c / tr_c
         let hits_nodes = nodes_by_track.clone();
         let hits_tr = tr.clone();
+        let labels_tr = tr.clone();
         let picked_c = self.picked.clone();
         let sel = self.selected.clone();
-        let row_h = 30.;
         let head_h = 48.;
-        let canvas_h = head_h + tr_c.len().max(1) as f32 * row_h + 12.;
+        // —— 扇形布局 ——
+        //
+        // 时间轴要表达的是"前面是一条线，后面是无数种可能"：
+        // 正典是一根横贯的主干，每条 if 从它的分叉章弯出去，然后各自平走。
+        // 旧实现把每条线摆成一行平行的车道——那看着像五条并列的线，
+        // 表达不出"从一条线上长出来的"这层关系。
+        let fan_step = 44.;
+        let mut branches: Vec<&Track> = tr_c
+            .iter()
+            .filter(|t| !(t.kind == Kind::Base || t.id == "α"))
+            .collect();
+        branches.sort_by(|a, b| {
+            a.fork_chapter
+                .cmp(&b.fork_chapter)
+                .then(a.id.cmp(&b.id))
+        });
+        // 先只算"往上几层/往下几层"，再定主干高度。
+        // 顺序反了的话向上分支会落到负 y（画布外），只剩一段斜线露出画面下沿——
+        // 看起来像"线歪了"，实际是坐标越界。
+        let mut slots: Vec<(String, f32)> = Vec::new();
+        let mut up = 0.0f32;
+        let mut down = 0.0f32;
+        for (i, t) in branches.iter().enumerate() {
+            let off = if i % 2 == 0 {
+                up += 1.;
+                -up
+            } else {
+                down += 1.;
+                down
+            };
+            slots.push((t.id.clone(), off));
+        }
+        // 主干以下所有分支从它往下排，主干上方的留出空间
+        let trunk_y = head_h + 24. + up * fan_step;
+        let mut fan: BTreeMap<String, f32> = BTreeMap::new();
+        for (id, off) in slots {
+            fan.insert(id, trunk_y + off * fan_step);
+        }
+        for t in tr_c.iter().filter(|t| t.kind == Kind::Base || t.id == "α") {
+            fan.insert(t.id.clone(), trunk_y);
+        }
+        let canvas_h = trunk_y + down * fan_step + 26.;
+        let fan_c = fan.clone();
 
         let mut timeline = div()
             .relative()
@@ -443,7 +489,12 @@ impl Render for WorldlinePanel {
                             let rel = (ch.saturating_sub(from_ch)) as f32 / span as f32;
                             rel.clamp(0., 1.) * track_w
                         };
-                        let y_of = |i: usize| head_h + row_h * i as f32;
+                        // 每条轨道在扇形上的纵坐标（主干恒为 trunk_y）
+                        let y_of = |ti: usize| {
+                            tr_c.get(ti)
+                                .and_then(|t| fan_c.get(&t.id).copied())
+                                .unwrap_or(trunk_y)
+                        };
                         let purple = theme::PURPLE();
 
                         // 幕带
@@ -490,58 +541,59 @@ impl Render for WorldlinePanel {
                             }
                         }
 
-                        // 各轨道的段
-                        for (si, seg) in segs_c.iter().enumerate() {
+                        // 各轨道的段。
+                        //
+                        // 主干（正典）水平横贯；分支的第一段先从主干**弯出来**，
+                        // 之后才沿着自己的高度平走。弯出去的那一小段就是
+                        // "它是从这条线上分出来的"的视觉证据——没有它，
+                        // 五条线只是五条平行的线。
+                        for seg in segs_c.iter() {
                             let Some(ti) = tr_c.iter().position(|t| t.id == seg.track) else {
                                 continue;
                             };
+                            let t = &tr_c[ti];
                             let y = y_of(ti);
                             let x0 = x_of(seg.from);
                             let x1 = x_of(seg.to);
                             if x1 <= x0 {
                                 continue;
                             }
-                            let color = track_color(&tr_c[ti]);
+                            let color = track_color(t);
                             let on = sel.as_deref() == Some(seg.track.as_str());
                             let mut line_p = PathBuilder::stroke(px(if on {
-                                2.4
+                                2.6
                             } else if seg.fixed {
-                                2.0
+                                2.2
                             } else {
-                                1.4
+                                1.5
                             }));
                             if !seg.fixed {
                                 line_p = line_p.dash_array(&[px(5.), px(4.)]);
                             }
-                            line_p.move_to(p(x0, y));
-                            line_p.line_to(p(x1, y));
+                            let is_branch = !(t.kind == Kind::Base || t.id == "α");
+                            let fork_ch = t.fork_chapter.max(1);
+                            if is_branch && seg.from == fork_ch {
+                                // 从主干的分叉点（或父线的高度）接到自己这一层。
+                                //
+                                // 用两段直线画"肘"，不用贝塞尔：曲线在这个尺度上
+                                // （横向 26px、纵向 44px）只会糊成一段斜线，
+                                // 反而看不出"从哪分出来的"。直角肘更清楚。
+                                let fx = x_of(fork_ch);
+                                let from_y = parent_y(&t.parent_id, &tr_c, &fan_c).unwrap_or(trunk_y);
+                                let join = fx + 18.;
+                                line_p.move_to(p(fx, from_y));
+                                line_p.line_to(p(join, y));
+                                if x1 > join {
+                                    line_p.line_to(p(x1, y));
+                                }
+                            } else {
+                                line_p.move_to(p(x0, y));
+                                line_p.line_to(p(x1, y));
+                            }
                             if let Ok(path) = line_p.build() {
                                 // 固化段实、开放段淡：一眼分出"已定"与"未定"
-                                let op = if seg.fixed { 1.0 } else { 0.55 };
+                                let op = if seg.fixed { 1.0 } else { 0.6 };
                                 window.paint_path(path, hsla(color).opacity(op));
-                            }
-                            let _ = si;
-                        }
-
-                        // if 线的分叉曲线：从父轨道的分叉点弯到自己的轨道
-                        for (ti, t) in tr_c.iter().enumerate() {
-                            if t.parent_id.is_empty() || t.fork_chapter == 0 {
-                                continue;
-                            }
-                            let Some(pi) = tr_c.iter().position(|x| x.id == t.parent_id) else {
-                                continue;
-                            };
-                            let x = x_of(t.fork_chapter);
-                            let color = track_color(t);
-                            let mut c = PathBuilder::stroke(px(1.5));
-                            c.move_to(p(x, y_of(pi)));
-                            c.cubic_bezier_to(
-                                p(x + 8., y_of(pi)),
-                                p(x + 8., y_of(ti)),
-                                p(x + 18., y_of(ti)),
-                            );
-                            if let Ok(path) = c.build() {
-                                window.paint_path(path, hsla(color).opacity(0.9));
                             }
                         }
 
@@ -665,6 +717,41 @@ impl Render for WorldlinePanel {
                         "第 {from_ch}–{to_ch} 章 · 实线=已固化 虚线=开放的 if · ● 已写 ○ 计划"
                     ))),
             )
+            // 分支线号：贴在每根分支的右端。
+            // 没有它就是"五条不知道是谁的线"——左列表虽然有序号，但图上一一对应
+            // 起来要来回扫视。
+            .children(labels_tr.iter().filter_map(|t| {
+                if t.kind == Kind::Base || t.id == "α" {
+                    return None;
+                }
+                let y = fan.get(&t.id).copied()?;
+                let id = t.id.clone();
+                let color = track_color(t);
+                let on = self.selected.as_deref() == Some(t.id.as_str());
+                let pick = t.id.clone();
+                Some(
+                    div()
+                        .id(SharedString::from(format!("wllbl-{}", t.id)))
+                        .absolute()
+                        .right(px(16.))
+                        .top(px(y - 7.))
+                        .cursor_pointer()
+                        .px(px(3.))
+                        .rounded(px(3.))
+                        .bg(theme::BG())
+                        .font_family(theme::FAMILY_MONO)
+                        .text_size(px(9.))
+                        .text_color(if on { theme::ACCENT() } else { color })
+                        .child(SharedString::from(id))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.selected = Some(pick.clone());
+                            cx.emit(WorldlineEvent::Select(pick.clone()));
+                            this.fill_meta(window, cx);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                )
+            }))
             // 节点的命中区。
             //
             // canvas 画出来的圆是路径，没有元素身份，收不到点击。所以在同样的位置
@@ -680,7 +767,7 @@ impl Render for WorldlinePanel {
                     .bottom_0()
                     .children({
                         let mut hits: Vec<gpui_kit::AnyElement> = Vec::new();
-                        for (ti, t) in hits_tr.iter().enumerate() {
+                        for t in hits_tr.iter() {
                             let Some(ns) = hits_nodes.get(&t.id) else { continue };
                             for (ch, nid, label, _state) in ns {
                                 if *ch < from_ch || *ch > to_ch {
@@ -695,7 +782,7 @@ impl Render for WorldlinePanel {
                                         .id(hid)
                                         .absolute()
                                         .left(relative(ratio))
-                                        .top(px(head_h + row_h * ti as f32 - 7.))
+                                        .top(px(fan.get(&t.id).copied().unwrap_or(trunk_y) - 7.))
                                         .w(px(14.))
                                         .h(px(14.))
                                         .cursor_pointer()
@@ -1449,30 +1536,29 @@ impl Render for WorldlinePanel {
             let drill = self.drill.clone();
             let sel_t = self.selected.clone();
             let pickable = lines.clone();
-            let tw = 640.0f32;
-            let th = 520.0f32;
-            let pad = 30.0f32;
             let max_ch = laid.max_chapter.max(1);
-            let y_of = move |ch: u32| {
-                // 纵轴：第 1 章在底部，越往后越高（时间向上流）
-                let rel = ch.min(max_ch) as f32 / max_ch as f32;
-                th - pad - rel * (th - pad * 2.)
-            };
+            // 纵轴比例：第 1 章在底部（0），最新章在顶部（1）。
+            // 标签用百分比定位，聚焦用同一个比例——两边算的必须是同一个数，
+            // 否则名字和枝梢会错开（固定 640x520 时代是 px 定位，窗口一大就散）。
+            let y_rel = move |ch: u32| ch.min(max_ch) as f32 / max_ch as f32;
             let nodes_c = laid.nodes.clone();
             let slots = laid.slots.max(1.);
             let tree_canvas = div()
                 .relative()
-                .w(px(tw))
-                .h(px(th))
-                .flex_shrink_0()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .child(
                     canvas(
                         |_, _, _| {},
                         move |bounds, _, window, _| {
                             let ox = bounds.origin.x.as_f32();
                             let oy = bounds.origin.y.as_f32();
+                            let w = bounds.size.width.as_f32();
+                            let h = bounds.size.height.as_f32();
                             let p = |x: f32, y: f32| point(px(ox + x), px(oy + y));
-                            let x_of = |nx: f32| pad + nx.clamp(0., 1.) * (tw - pad * 2.);
+                            let x_of = |nx: f32| nx.clamp(0., 1.) * w;
+                            let y_of = |ch: u32| h - y_rel(ch) * h;
                             let blue = theme::BLUE();
                             let green = theme::GREEN();
                             let amber = theme::AMBER();
@@ -1485,8 +1571,8 @@ impl Render for WorldlinePanel {
                             while ch <= max_ch {
                                 let y = y_of(ch);
                                 let mut t = PathBuilder::stroke(px(1.));
-                                t.move_to(p(pad * 0.4, y));
-                                t.line_to(p(tw - pad * 0.4, y));
+                                t.move_to(p(4., y));
+                                t.line_to(p(w - 4., y));
                                 if let Ok(path) = t.build() {
                                     window.paint_path(path, hsla(line_c).opacity(0.35));
                                 }
@@ -1587,16 +1673,17 @@ impl Render for WorldlinePanel {
                 )
                 // 枝梢标签（可点：选中 / 双击钻取）
                 .children(laid.nodes.iter().map(|n| {
-                    let x = pad + (n.depth as f32 * 0.10 + n.x * 0.80).clamp(0., 1.) * (tw - pad * 2.);
-                    let y = y_of(n.end_chapter);
+                    let nx = (n.depth as f32 * 0.10 + n.x * 0.80).clamp(0., 1.);
                     let id = n.id.clone();
                     let id2 = n.id.clone();
                     let on = self.selected.as_deref() == Some(n.id.as_str());
                     div()
                         .id(SharedString::from(format!("tree-node-{}", n.id)))
                         .absolute()
-                        .left(px(x - 26.))
-                        .top(px(y - 14.))
+                        .left(relative(nx))
+                        .top(relative(1. - y_rel(n.end_chapter)))
+                        .ml(px(-26.))
+                        .mt(px(-14.))
                         .w(px(52.))
                         .text_center()
                         .cursor_pointer()
@@ -1676,13 +1763,10 @@ impl Render for WorldlinePanel {
                                 }))
                         })),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .child(div().flex_1().min_w_0().overflow_hidden().child(tree_canvas)),
-                )
+                // 树直接挂在 col 下并用 flex_1 撑满——不要中间的包装层：
+                // 多一层 flex 容器时高度会被内容（全是绝对定位，高 0）压扁，
+                // 树就成了一条 1px 的线。
+                .child(tree_canvas)
                 .child(
                     div()
                         .text_size(theme::FONT_MICRO)
@@ -2179,6 +2263,18 @@ fn field(label: &str, state: &Entity<gpui_kit::component::input::InputState>) ->
         )
         .child(gpui_kit::component::input::Input::new(state))
         .into_any_element()
+}
+
+/// 父线在扇形上的高度（用于把分叉曲线接到父线那一层而不是永远接主干）。
+fn parent_y(parent: &str, tracks: &[Track], fan: &BTreeMap<String, f32>) -> Option<f32> {
+    if parent.is_empty() {
+        return None;
+    }
+    tracks
+        .iter()
+        .any(|t| t.id == parent)
+        .then(|| fan.get(parent).copied())
+        .flatten()
 }
 
 fn track_color(t: &Track) -> gpui_kit::Rgba {

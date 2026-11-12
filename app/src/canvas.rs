@@ -109,6 +109,16 @@ enum Drag {
 const NODE_W: f32 = 150.;
 const NODE_H: f32 = 76.;
 
+/// 基因图每层的径向间距（与 `graph_layout::RING_GAP` 必须一致，
+/// 否则同心圆画在两组节点之间，看着像错位）。
+const RING_R: f32 = 210.;
+
+/// 画布布局的版本号。
+///
+/// 换布局算法时 +1：`canvas.json` 里存着每个节点上次被拖到的位置，
+/// 算法一变这些坐标就成了"新图上的旧点"，必须整体作废一次。
+const CANVAS_LAYOUT_VERSION: u64 = 2;
+
 /// 侧板宽度（关系演变的时间轴要按这个宽度换算像素，所以只能有一个真值）。
 const SIDE_W: f32 = 250.;
 const SIDE_PAD: f32 = 12.;
@@ -141,6 +151,21 @@ pub struct CanvasPanel {
     last_chapter: u32,
     /// 展开了详情的关系 id（一次只展开一条：侧板窄，展开两条就看不到别的了）
     evo_open: Option<String>,
+    /// 基因图：主角节点下标与孤儿节点下标。
+    ///
+    /// 画布要知道"哪些节点还没接上主线"，才能在图下方画那块孤儿区。
+    /// 这两个值由 `refresh()` 的布局算出，不落盘——它们是布局结果，不是数据。
+    graph_center: Option<usize>,
+    graph_orphans: Vec<usize>,
+    /// 基因图的包围盒（布局算出来的，用于"适应窗口"）
+    graph_size: (f32, f32),
+    /// 每个节点离主角几跳（None = 孤儿）；画同心圆与分环着色用
+    graph_rings: Vec<Option<u32>>,
+    /// 舞台的像素尺寸（prepaint 每帧写回）。
+    ///
+    /// 为什么需要它：适应窗口要同时知道"图多大"和"窗口多大"，
+    /// 后者只有在实际布局之后才知道。GPUI 里能拿到它的地方只有 paint 回调。
+    stage_size: Rc<RefCell<Option<(f32, f32)>>>,
     /// 关系编辑表单：对方人名 / 关系标签 / 起始章（终点留空=至今）
     rel_to: Entity<InputState>,
     rel_label: Entity<InputState>,
@@ -184,6 +209,11 @@ impl CanvasPanel {
             chapter: 1,
             last_chapter: 1,
             evo_open: None,
+            graph_center: None,
+            graph_orphans: Vec::new(),
+            graph_size: (0., 0.),
+            graph_rings: Vec::new(),
+            stage_size: Rc::new(RefCell::new(None)),
             rel_to,
             rel_label,
             rel_from,
@@ -589,8 +619,62 @@ impl CanvasPanel {
             }
         }
 
-        // 恢复持久化坐标（dim:id 键）
-        if let Some(pos) = state.get("pos").and_then(|p| p.as_object()) {
+        // 基因图布局（总览/人物/事件/设定/转折）。
+        //
+        // 关系维有自己的一套（按章节区间的位置关系），时间维是顺序链，
+        // 都不走基因图——它们表达的根本不是"离主角多远"。
+        if !matches!(self.dim, Dim::Relations | Dim::Timeline) {
+            let roster = crate::characters::Roster::new(&self.handle.root);
+            let people = roster.all();
+            let meta: Vec<crate::graph_layout::Meta> = nodes
+                .iter()
+                .map(|n| {
+                    let role = if n.kind == "character" {
+                        people
+                            .iter()
+                            .find(|c| c.matches(&n.label))
+                            .map(|c| c.role.as_str())
+                            .unwrap_or("")
+                    } else {
+                        ""
+                    };
+                    crate::graph_layout::Meta { kind: n.kind, label: &n.label, role }
+                })
+                .collect();
+            let pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
+            let laid = crate::graph_layout::gene_map(&meta, &pairs);
+            for (i, p) in laid.pos.iter().enumerate() {
+                if let Some((x, y)) = p {
+                    nodes[i].x = *x;
+                    nodes[i].y = *y;
+                }
+            }
+            self.graph_center = laid.center;
+            self.graph_orphans = laid.orphans.clone();
+            self.graph_size = laid.size;
+            self.graph_rings = laid.ring.clone();
+            if std::env::var("ZHIBI_DEBUG_LAYOUT").is_ok() {
+                eprintln!(
+                    "gene_map: n={} center={:?} orphans={} size={:?} first3={:?}",
+                    nodes.len(),
+                    laid.center,
+                    laid.orphans.len(),
+                    laid.size,
+                    nodes.iter().take(3).map(|n| (n.id.clone(), n.x, n.y)).collect::<Vec<_>>()
+                );
+            }
+        }
+
+        // 恢复持久化坐标（dim:id 键）。
+        //
+        // 布局算法换代时旧坐标必须作废：`layoutVersion` 变了就整体丢弃一次，
+        // 否则作者看到的是旧算法的位置叠在新算法的边上（比不对齐还糟）。
+        let layout_version = state
+            .get("layoutVersion")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let keep_saved = layout_version >= CANVAS_LAYOUT_VERSION;
+        if let Some(pos) = state.get("pos").and_then(|p| p.as_object()).filter(|_| keep_saved) {
             let dk = dimkey();
             for n in nodes.iter_mut() {
                 let key = format!("{dk}:{}", n.id);
@@ -607,6 +691,11 @@ impl CanvasPanel {
         self.edges = edges;
         self.sel.clear();
         self.marquee = None;
+        // 布局换代（或第一次看这一维）时，把整张图收进视野。
+        // 判断依据是"存的坐标是否可用"：不可用说明刚重排过，旧视角没有意义。
+        if !keep_saved && !matches!(self.dim, Dim::Relations | Dim::Timeline) {
+            self.fit_to_content();
+        }
     }
 
     fn save_state(&self) {
@@ -639,6 +728,7 @@ impl CanvasPanel {
             "view": { "x": self.view.0, "y": self.view.1, "k": self.view.2 },
             "pos": pos,
             "reader": self.reader,
+            "layoutVersion": CANVAS_LAYOUT_VERSION,
         });
         let _ = self.handle.save_canvas_state(&v);
     }
@@ -707,6 +797,33 @@ impl CanvasPanel {
     pub fn focus_worldline(&mut self, id: String) {
         self.oracle_line = Some(id);
         self.refresh();
+    }
+
+    /// 让整张图落进视野（"适应窗口"）。
+    ///
+    /// 基因图在长书里能到 3000×4000（几十个节点、好几环），默认视图只显示左上角，
+    /// 打开就像空的。所以布局一变（新书、切维、换算法）就自动适应一次；
+    /// 作者手动缩放/平移之后不再打扰他。
+    fn fit_to_content(&mut self) {
+        let (gw, gh) = self.graph_size;
+        if gw <= 1. || gh <= 1. {
+            return;
+        }
+        // 窗口尺寸：优先用上一次 paint 量到的真实值；还没画过就按常见窗口估
+        let (vw, vh) = self
+            .stage_size
+            .borrow()
+            .map(|(w, h)| (w - 40., h - 40.))
+            .filter(|(w, h)| *w > 120. && *h > 120.)
+            .unwrap_or((1180., 900.));
+        // 缩放上下限：太小看不清卡片，太大等于没适应
+        // 下限 0.5：再小卡片上的名字就只剩一两个字，等于看不见。
+        // 图大于窗口时宁可只看一部分，也不要缩成一团糊。
+        let k = (vw / gw).min(vh / gh).clamp(0.5, 1.0);
+        // 居中：图的中心对到窗口中心
+        let x = (vw - gw * k) / 2.;
+        let y = (vh - gh * k) / 2.;
+        self.view = (x, y, k);
     }
 
     /// 切换画布维度：先存当前维位置再重建（pos 键按维隔离；view 是全局视图，跨维保留——
@@ -985,15 +1102,56 @@ impl Render for CanvasPanel {
             let a = &self.nodes[e.from];
             let b = &self.nodes[e.to];
             let alpha = match focus {
+                // 选中某点：与它相连的亮起来，其余压到几乎看不见——
+                // 这正是一阶影响半径该有的样子，也让密集图能读。
                 Some(f) if e.from == f || e.to == f => 0.95,
-                Some(_) => 0.28,
-                None => 0.55,
+                Some(_) => 0.08,
+                // 没选中：整体压淡。63 个节点近两百条边，0.55 就是一张毛线团；
+                // 压到 0.22 之后节点卡与层次重新成为主体，边退成背景纹理。
+                None => 0.22,
             };
             segs.push((self.sx(a), self.sy(a), self.sx(b), self.sy(b), e.kind, e.hidden, alpha));
         }
 
         let marquee_now = self.marquee;
         let origin_cell = self.stage_origin.clone();
+        let size_cell = self.stage_size.clone();
+        // 孤儿区与主角：基因图的两块"额外语义"，paint 里要画出来
+        let orphan_zone: Option<(f32, f32, f32, f32)> = if self.graph_orphans.is_empty() {
+            None
+        } else {
+            let mut x0 = f32::MAX;
+            let mut y0 = f32::MAX;
+            let mut x1 = f32::MIN;
+            let mut y1 = f32::MIN;
+            for &i in &self.graph_orphans {
+                if let Some(n) = self.nodes.get(i) {
+                    x0 = x0.min(n.x);
+                    y0 = y0.min(n.y);
+                    x1 = x1.max(n.x + NODE_W);
+                    y1 = y1.max(n.y + NODE_H);
+                }
+            }
+            (x0 != f32::MAX).then_some((x0, y0, x1, y1))
+        };
+        let center_i = self.graph_center;
+        // 主角中心与最大环数：画同心圆用（圆以节点中心为心）
+        let ring_center: Option<(f32, f32)> = center_i
+            .and_then(|i| self.nodes.get(i))
+            .map(|n| (n.x + NODE_W / 2., n.y + NODE_H / 2.));
+        let ring_count = self
+            .graph_rings
+            .iter()
+            .filter_map(|r| *r)
+            .max()
+            .unwrap_or(0)
+            .min(6);
+        // 基因图用直线画边：径向布局里"水平控制点的贝塞尔"会绕出一堆回环，
+        // 几十条叠起来就是一团乱麻。直线至少让人看清"谁连着谁"。
+        // 时间维是顺序链，直线也一样更好读。
+        let view_x = self.view.0;
+        let view_y = self.view.1;
+        let view_k = self.view.2;
         let mut stage = div()
             .id("canvas-stage")
             .size_full()
@@ -1004,6 +1162,10 @@ impl Render for CanvasPanel {
                 canvas(
                     move |bounds, _, _| {
                         *origin_cell.borrow_mut() = Some((bounds.origin.x.as_f32(), bounds.origin.y.as_f32()));
+                        *size_cell.borrow_mut() = Some((
+                            bounds.size.width.as_f32(),
+                            bounds.size.height.as_f32(),
+                        ));
                     },
                     move |bounds, _, window, _| {
                         if let Some(((ax, ay), (bx, by))) = marquee_now {
@@ -1016,6 +1178,71 @@ impl Render for CanvasPanel {
                             r.line_to(point(px(ax), px(ay)));
                             if let Ok(path) = r.build() {
                                 window.paint_path(path, hsla(theme::ACCENT()));
+                            }
+                        }
+                        // 基因图的层环：以主角为心的几道同心圆。
+                        // 没有它就是一盘散点——作者看不出"这层是直接相关的人、
+                        // 那层是隔一层的"。环是虚线，退在节点与边之后。
+                        if let Some((cx, cy)) = ring_center {
+                            let k = view_k;
+                            let bo = bounds.origin;
+                            let c = point(
+                                px(bo.x.as_f32() + (cx + view_x) * k),
+                                px(bo.y.as_f32() + (cy + view_y) * k),
+                            );
+                            // 四段贝塞尔近似圆，0.5523 是四分之一圆的经典系数
+                            for r in 1..=ring_count {
+                                let rr = r as f32 * RING_R * k;
+                                let kk = rr * 0.5523;
+                                let mut circ = PathBuilder::stroke(px(1.));
+                                circ = circ.dash_array(&[px(2.), px(7.)]);
+                                circ.move_to(point(c.x + px(rr), c.y));
+                                circ.cubic_bezier_to(
+                                    point(c.x + px(rr), c.y + px(kk)),
+                                    point(c.x + px(kk), c.y + px(rr)),
+                                    point(c.x, c.y + px(rr)),
+                                );
+                                circ.cubic_bezier_to(
+                                    point(c.x - px(kk), c.y + px(rr)),
+                                    point(c.x - px(rr), c.y + px(kk)),
+                                    point(c.x - px(rr), c.y),
+                                );
+                                circ.cubic_bezier_to(
+                                    point(c.x - px(rr), c.y - px(kk)),
+                                    point(c.x - px(kk), c.y - px(rr)),
+                                    point(c.x, c.y - px(rr)),
+                                );
+                                circ.cubic_bezier_to(
+                                    point(c.x + px(kk), c.y - px(rr)),
+                                    point(c.x + px(rr), c.y - px(kk)),
+                                    point(c.x + px(rr), c.y),
+                                );
+                                if let Ok(path) = circ.build() {
+                                    window.paint_path(path, hsla(theme::LINE()).opacity(0.55));
+                                }
+                            }
+                        }
+                        // 孤儿区：主图下方的一块虚线围栏 + 标题。
+                        // 画在最底层（边之前），免得盖住连线。
+                        if let Some((x0, y0, x1, y1)) = orphan_zone {
+                            let pad = 26.;
+                            let k = view_k;
+                            let bo = bounds.origin;
+                            let r = |x: f32, y: f32| {
+                                point(
+                                    px(bo.x.as_f32() + (x + view_x) * k),
+                                    px(bo.y.as_f32() + (y + view_y) * k),
+                                )
+                            };
+                            let mut box_p = PathBuilder::stroke(px(1.));
+                            box_p = box_p.dash_array(&[px(6.), px(6.)]);
+                            box_p.move_to(r(x0 - pad, y0 - pad));
+                            box_p.line_to(r(x1 + pad, y0 - pad));
+                            box_p.line_to(r(x1 + pad, y1 + pad));
+                            box_p.line_to(r(x0 - pad, y1 + pad));
+                            box_p.close();
+                            if let Ok(path) = box_p.build() {
+                                window.paint_path(path, hsla(theme::LINE()).opacity(0.9));
                             }
                         }
                         for (x1, y1, x2, y2, kind, hidden, alpha) in &segs {
@@ -1035,12 +1262,7 @@ impl Render for CanvasPanel {
                             let start = point(bounds.origin.x + px(*x1), bounds.origin.y + px(*y1));
                             let end = point(bounds.origin.x + px(*x2), bounds.origin.y + px(*y2));
                             b.move_to(start);
-                            let mx = (x1 + x2) * 0.5;
-                            b.cubic_bezier_to(
-                                point(bounds.origin.x + px(mx), bounds.origin.y + px(*y1)),
-                                point(bounds.origin.x + px(mx), bounds.origin.y + px(*y2)),
-                                end,
-                            );
+                            b.line_to(end);
                             if let Ok(path) = b.build() {
                                 window.paint_path(path, hsla(color).opacity(*alpha));
                             }
@@ -1077,6 +1299,9 @@ impl Render for CanvasPanel {
                 .border_1()
                 .border_color(if sel {
                     theme::ACCENT_BORDER()
+                } else if center_i == Some(i) {
+                    // 主角：整张图的原点，边框要和别的不一样，否则"为什么它在中"看不出来
+                    theme::AMBER()
                 } else if n.planned {
                     theme::AMBER()
                 } else {
@@ -1116,6 +1341,15 @@ impl Render for CanvasPanel {
                         .flex()
                         .items_center()
                         .gap(theme::GAP_XS)
+                        .when(center_i == Some(i), |d| {
+                            // 主角标记：作者一眼能看出"这是圆心"
+                            d.child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_color(theme::AMBER())
+                                    .child("◎"),
+                            )
+                        })
                         .child(div().text_size(theme::FONT_TAG).text_color(dot).child("●"))
                         .child(
                             div()
@@ -1483,6 +1717,19 @@ impl Render for CanvasPanel {
                             ),
                     )
             })
+            .when(!self.graph_orphans.is_empty(), |d| {
+                // 孤儿区说明：告诉作者这块是什么、为什么在这儿
+                d.child(
+                    div()
+                        .pt(theme::GAP_SM)
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::FAINT())
+                        .child(SharedString::from(format!(
+                            "虚线框里是 {} 个还没接上主角的节点（孤儿区）",
+                            self.graph_orphans.len()
+                        ))),
+                )
+            })
             .child(div().pt(theme::GAP_MD).when(rows.is_empty(), |d| {
                 d.child(
                     div()
@@ -1535,7 +1782,8 @@ impl Render for CanvasPanel {
             .child(
                 Button::new("zoom-fit").xsmall().label("⊡")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.view = (0., 0., 1.);
+                        // ⊡ = 适应窗口（不是"回到原点"）：作者要的是"让我看全"
+                        this.fit_to_content();
                         this.save_state();
                         cx.notify();
                     })),

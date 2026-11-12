@@ -736,7 +736,7 @@ impl BasePanel for DirectorPanel {
 
 impl ComponentPanel for DirectorPanel {
     fn tab_name(&self, _: &App) -> Option<SharedString> {
-        Some("世界线".into())
+        Some("章节排期".into())
     }
 
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

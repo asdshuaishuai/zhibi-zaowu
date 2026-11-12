@@ -16,6 +16,7 @@ mod director;
 mod dsh;
 mod editor;
 mod inbox;
+mod graph_layout;
 mod journal;
 mod plugins;
 mod prompts;
