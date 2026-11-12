@@ -54,6 +54,8 @@ pub struct EditorPanel {
     /// 选区状态（kit 无 SelectionChanged 事件 → 220ms 轮询 selected_text 回填）
     has_sel: bool,
     sel_chars: usize,
+    /// AI 参与过的段落（正文偏移）。只画左缘墨点，不改正文一个字节。
+    pub ai_marks: Vec<crate::journal::AiMark>,
 }
 
 impl EditorPanel {
@@ -73,7 +75,7 @@ impl EditorPanel {
         let notes = cx.new(|cx| InputState::new(window, cx).placeholder("速记：埋了什么、要改什么、下一步想写什么…（「让AI记一笔」会带上）"));
         // 发话框一变就重渲染：发送按钮的空文本置灰态需要跟着实时刷新
         cx.subscribe(&prompt, |_, _, _: &InputEvent, cx| cx.notify()).detach();
-        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, notes, last_saved: String::new(), branches: Vec::new(), has_sel: false, sel_chars: 0 };
+        let panel = Self { focus_handle: cx.focus_handle(), prose: prose.clone(), prompt, word_target, title, notes, last_saved: String::new(), branches: Vec::new(), has_sel: false, sel_chars: 0, ai_marks: Vec::new() };
         // 正文一变就重渲染（字数/进度实时）
         cx.subscribe(&prose, |_, _, _: &InputEvent, cx| cx.notify()).detach();
         // 选区轮询：库无 SelectionChanged 事件，但 selected_text 可读——
@@ -115,6 +117,12 @@ impl EditorPanel {
 impl EditorPanel {
     pub fn set_branches(&mut self, branches: Vec<String>, cx: &mut Context<Self>) {
         self.branches = branches;
+        cx.notify();
+    }
+
+    /// 刷新 AI 参与标记（切章/撤销后调用）。
+    pub fn set_ai_marks(&mut self, marks: Vec<crate::journal::AiMark>, cx: &mut Context<Self>) {
+        self.ai_marks = marks;
         cx.notify();
     }
 }
@@ -430,14 +438,50 @@ impl Render for EditorPanel {
                             .border_color(theme::LINE())
                             .px(theme::PAD_XL)
                             .py(theme::PAD_LG)
+                            .flex()
                             .child(
-                                Textarea::new(&prose)
-                                    .bordered(false)
-                                    .appearance(false)
-                                    .text_size(theme::FONT_PROSE)
-                                    .line_height(relative(theme::LINE_HEIGHT_PROSE))
-                                    .font_family(theme::FAMILY_SERIF)
-                                    .text_color(theme::TEXT()),
+                                // 左缘墨点：这一版里 AI 参与过的段落。只标记，不改一个字。
+                                // 段数通常是个位数，直接按行高比例画短竖条即可，
+                                // 不必做真正的行测量。
+                                if self.ai_marks.is_empty() {
+                                    div().into_any_element()
+                                } else {
+                                    let total = prose.read(cx).value().chars().count().max(1);
+                                    let mut gutter = div()
+                                        .w(px(10.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.));
+                                    for m in self.ai_marks.iter().take(24) {
+                                        // 用“第几成”近似位置：够点到对应段落，不追求像素级
+                                        let frac = (m.start as f32 / total as f32).clamp(0., 1.);
+                                        gutter = gutter.child(
+                                            div()
+                                                .h(px(10.))
+                                                .w(px(3.))
+                                                .rounded(px(2.))
+                                                .bg(if m.mode == "ghostwrite" {
+                                                    theme::AMBER()
+                                                } else {
+                                                    theme::ACCENT()
+                                                })
+                                                .opacity(0.55 + 0.45 * (1.0 - frac)),
+                                        );
+                                    }
+                                    gutter.into_any_element()
+                                },
+                            )
+                            .child(
+                                div().flex_1().min_w_0().child(
+                                    Textarea::new(&prose)
+                                        .bordered(false)
+                                        .appearance(false)
+                                        .text_size(theme::FONT_PROSE)
+                                        .line_height(relative(theme::LINE_HEIGHT_PROSE))
+                                        .font_family(theme::FAMILY_SERIF)
+                                        .text_color(theme::TEXT()),
+                                ),
                             ),
                     ),
             );

@@ -509,11 +509,15 @@ impl DshClient {
             }
             None => Command::new(&bin),
         };
+        // 写作档位交给 novel-pack：沙箱只能分“能写/不能写”，分不出
+        // “台账可写但正文不可写”，这条线由领域层按档位判断。
+        let write_mode = crate::store::load_settings().writing_mode().to_string();
         let mut child = cmd
             .args(&args)
             .current_dir(root)
             .env("DSH_HOME", &home)
             .env("ZHIBI_ROOT", root)
+            .env("ZHIBI_WRITE_MODE", write_mode)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

@@ -1900,3 +1900,240 @@ impl ComponentPanel for GraphPanel {
             .child("记忆图谱")
     }
 }
+
+/* ───────────────────────── 改动记录（谁改了什么，能不能退回去） ───────────────────────── */
+
+#[derive(Debug, Clone)]
+pub enum JournalEvent {
+    /// 撤销一条改动
+    Undo(String),
+    /// 撤销一整批（一个回合 / 一次采纳）
+    UndoBatch(String),
+    /// 重新读日志
+    Refresh,
+}
+
+pub struct JournalPanel {
+    focus_handle: FocusHandle,
+    handle: std::rc::Rc<crate::store::ProjectHandle>,
+    /// 日志按批次分组展示：一个回合一组，比平铺几十条更容易看懂
+    groups: Vec<(String, Vec<crate::journal::Change>)>,
+    /// 最近一次操作的结果，显示在顶部
+    message: Option<(String, Tone)>,
+}
+
+impl JournalPanel {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>, handle: std::rc::Rc<crate::store::ProjectHandle>) -> Self {
+        let mut panel = Self {
+            focus_handle: cx.focus_handle(),
+            handle,
+            groups: Vec::new(),
+            message: None,
+        };
+        panel.reload(cx);
+        panel
+    }
+
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        let journal = crate::journal::Journal::new(&self.handle.root);
+        // 批次号是毫秒时间戳，字符串排序即时间序；BTreeMap 反向取最近的
+        let groups: Vec<(String, Vec<crate::journal::Change>)> = journal
+            .groups(40)
+            .into_iter()
+            .rev()
+            .map(|(k, v)| (k, v))
+            .collect();
+        self.groups = groups;
+        cx.notify();
+    }
+
+    /// `tone` 用语义等级而不是内部枚举：调用方在别的模块里，不该依赖视图的颜色类型。
+    /// 0 = 正常（绿）/ 1 = 需要注意（琥珀）/ 2 = 失败（红）
+    pub fn set_message(&mut self, text: String, tone: u8, cx: &mut Context<Self>) {
+        let tone = match tone {
+            0 => Tone::Green,
+            1 => Tone::Amber,
+            _ => Tone::Red,
+        };
+        self.message = Some((text, tone));
+        self.reload(cx);
+    }
+
+    /// 批次号 → 人话时间（本地时区的时分）。
+    fn batch_label(batch: &str) -> String {
+        let ms: u64 = batch.trim_start_matches('b').parse().unwrap_or(0);
+        if ms == 0 {
+            return batch.to_string();
+        }
+        let secs = (ms / 1000) as i64;
+        // 只显示时分秒，日期由分组顺序体现
+        format!(
+            "{:02}:{:02}",
+            (secs / 3600) % 24,
+            (secs / 60) % 60
+        )
+    }
+
+    fn change_row(&self, c: &crate::journal::Change, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let id = c.id.clone();
+        // AI 改的用琥珀色标出来：这是作者最需要警觉的一类
+        let (tone, who) = match &c.actor {
+            crate::journal::Actor::Author => (Tone::Neutral, "作者".to_string()),
+            other => (Tone::Amber, other.label()),
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .py(px(3.))
+            .child(div().w(px(56.)).flex_shrink_0().child(chip(SharedString::from(who), tone)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(theme::FONT_MICRO)
+                    .text_color(theme::TEXT())
+                    .text_ellipsis()
+                    .child(SharedString::from(c.path.clone())),
+            )
+            .when_true(!c.note.is_empty(), |d| {
+                d.child(
+                    div()
+                        .max_w(px(200.))
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::FAINT())
+                        .text_ellipsis()
+                        .child(SharedString::from(c.note.clone())),
+                )
+            })
+            .child(
+                cap_btn("journal-undo", "撤销", cx).on_click(cx.listener(move |this, _, _, cx| {
+                    cx.emit(JournalEvent::Undo(id.clone()));
+                    let _ = this;
+                })),
+            )
+            .into_any_element()
+    }
+}
+
+impl EventEmitter<PanelEvent> for JournalPanel {}
+impl EventEmitter<JournalEvent> for JournalPanel {}
+
+impl Focusable for JournalPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for JournalPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut body: Vec<gpui_kit::AnyElement> = Vec::new();
+
+        if let Some((msg, tone)) = &self.message {
+            body.push(chip(SharedString::from(msg.clone()), *tone));
+        }
+
+        if self.groups.is_empty() {
+            body.push(
+                div()
+                    .text_size(theme::FONT_LABEL)
+                    .text_color(theme::FAINT())
+                    .child("还没有改动记录。作者保存、AI 写入、采纳提案都会在这里留痕。")
+                    .into_any_element(),
+            );
+        }
+
+        for (batch, changes) in &self.groups {
+            let batch_id = batch.clone();
+            let has_ai = changes
+                .iter()
+                .any(|c| !matches!(c.actor, crate::journal::Actor::Author));
+            let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
+            for c in changes {
+                rows.push(self.change_row(c, cx));
+            }
+            body.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .p(theme::PAD_MD)
+                    .bg(theme::PANEL())
+                    .border_1()
+                    .border_color(if has_ai {
+                        theme::AMBER_SOFT()
+                    } else {
+                        theme::LINE()
+                    })
+                    .rounded(theme::RADIUS_CARD)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_MD)
+                            .child(chip(
+                                SharedString::from(Self::batch_label(batch)),
+                                Tone::Blue,
+                            ))
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::FAINT())
+                                    .child(SharedString::from(format!(
+                                        "{} 处改动{}",
+                                        changes.len(),
+                                        if has_ai { " · 含 AI 写入" } else { "" }
+                                    ))),
+                            )
+                            .child(div().ml_auto().child(
+                                cap_btn("journal-undo-batch", "撤销整批", cx).on_click(
+                                    cx.listener(move |_, _, _, cx: &mut Context<JournalPanel>| {
+                                        cx.emit(JournalEvent::UndoBatch(batch_id.clone()));
+                                    }),
+                                ),
+                            )),
+                    )
+                    .children(rows)
+                    .into_any_element(),
+            );
+        }
+
+        panel_root("journal-scroll").child(
+            panel_col()
+                .child(sec_title("改动记录"))
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                        .text_color(theme::FAINT())
+                        .child("每一处落盘都留了前像。撤销 = 写回那一刻的原内容；如果之后又被改过，会提示冲突而不是覆盖。"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(theme::GAP_MD)
+                        .child(cap_btn("journal-refresh", "刷新", cx).on_click(
+                            cx.listener(|_, _, _, cx: &mut Context<JournalPanel>| {
+                                cx.emit(JournalEvent::Refresh)
+                            }),
+                        )),
+                )
+                .children(body),
+        )
+    }
+}
+
+impl BasePanel for JournalPanel {
+    fn panel_name(&self) -> &'static str {
+        "journal-view"
+    }
+}
+impl ComponentPanel for JournalPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("改动记录")
+    }
+}

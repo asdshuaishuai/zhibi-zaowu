@@ -79,3 +79,16 @@
 | 24 | 前端文本猜意图 | **已清除**：`【A】` 解析、`pending_sel` 全部删除；改写采纳改为校验原文仍在 |
 
 sdk 协议没有 `session/abort`，所以「停止」= 杀进程 + 下次发送时 resume（已实现并实测可行）。
+
+## M3 实机验证（作者主权底座）
+
+| # | 项 | 结果 |
+|---|---|---|
+| 25 | 辅助档调 `write_ledger` | **被拒**，提示改用 propose_* |
+| 26 | 共写档调 `write_ledger` | **成功**，clues.json 真实落盘 |
+| 27 | 共写档调 `write_prose` | **被拒**，提示用 offer_rewrite |
+| 28 | 代笔档 + 授权第 2 章 → 写第 2 章 | **成功**，`chapters/ch-002/prose.md` 落盘 |
+| 29 | 代笔档 → 写第 3 章（未授权） | **被拒**，理由列出已授权章节 |
+| 30 | 切档位是否要重启运行时 | **不需要**：档位写 `zhibi-auth.json`，novel-pack 每次调用重读 |
+
+工具数 27 → 30（+get_write_mode / write_ledger / write_prose）。

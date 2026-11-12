@@ -32,7 +32,8 @@ use crate::store::{self, ProjectHandle};
 use crate::theme;
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
 use crate::views::{
-    CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel, MemoryPanel,
+    CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel,
+    JournalEvent, JournalPanel, MemoryPanel,
     OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent,
 };
 
@@ -80,6 +81,7 @@ pub enum Mode {
     Characters,
     Settings,
     Snapshots,
+    Journal,
     Import,
     Graph,
     Canvas,
@@ -102,6 +104,7 @@ impl Mode {
             "characters" | "人物" => Mode::Characters,
             "settings" | "设置" => Mode::Settings,
             "snapshots" | "快照" => Mode::Snapshots,
+            "journal" | "改动记录" => Mode::Journal,
             "import" | "导入" => Mode::Import,
             "graph" | "图谱" => Mode::Graph,
             "canvas" | "画板" => Mode::Canvas,
@@ -123,6 +126,7 @@ impl Mode {
             Mode::Characters => "人物卡",
             Mode::Settings => "设置",
             Mode::Snapshots => "快照",
+            Mode::Journal => "改动记录",
             Mode::Import => "导入旧稿",
             Mode::Graph => "记忆图谱",
             Mode::Canvas => "剧情画板",
@@ -144,6 +148,8 @@ impl Mode {
             Mode::Characters => IconName::Users,
             Mode::Settings => IconName::Settings,
             Mode::Snapshots => IconName::Camera,
+            // 没有历史/撤销图标时用 Camera 的语义邻居：这里借用 ListTree 表示“流水”
+            Mode::Journal => IconName::ListTree,
             Mode::Import => IconName::FolderInput,
             Mode::Graph => IconName::Network,
             Mode::Canvas => IconName::Waypoints,
@@ -293,6 +299,7 @@ pub struct Workspace {
     characters_view: Entity<CharactersPanel>,
     settings_view: Entity<SettingsPanel>,
     snapshots_view: Entity<SnapshotsPanel>,
+    journal_view: Entity<JournalPanel>,
     import_view: Entity<ImportPanel>,
     graph_view: Entity<GraphPanel>,
     canvas_view: Entity<CanvasPanel>,
@@ -324,6 +331,8 @@ pub struct Workspace {
     selected_original: Option<String>,
     /// 主 Agent 形态（托管 / 极简 / 创造）。切模式 = 换 patch 重启本书的 DSH 进程。
     agent_mode: dsh::AgentMode,
+    /// 写作档位（辅助/共写/代笔）+ 代笔授权章节。写进书目录，novel-pack 立即读到。
+    book_auth: crate::journal::BookAuth,
     /// 待应答的审批（GUI 渲染成卡片，必须回；不回则 DSH 按拒绝处理）
     pending_approval: Option<ApprovalRequest>,
     /// 待应答的提问（`ask_user_question`）
@@ -352,6 +361,7 @@ impl Workspace {
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "main".into())
         );
+        let book_auth = crate::journal::BookAuth::load(&root);
         let mut chapters = handle.chapters();
         // 默认落到最近一章（有正文的最后一章），没有则建第 1 章
         let chapter = chapters
@@ -415,6 +425,7 @@ impl Workspace {
         let characters_view = cx.new(|cx| CharactersPanel::new(cx, handle.clone()));
         let settings_view = cx.new(|cx| SettingsPanel::new(window, cx));
         let snapshots_view = cx.new(|cx| SnapshotsPanel::new(cx, handle.clone(), chapter));
+        let journal_view = cx.new(|cx| JournalPanel::new(window, cx, handle.clone()));
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
         let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
         let canvas_view = cx.new(|cx| CanvasPanel::new(cx, handle.clone()));
@@ -679,6 +690,65 @@ impl Workspace {
         )
         .detach();
 
+// 改动记录：撤销要把结果如实说出来——尤其“冲突”不能当成功
+        cx.subscribe_in(
+            &journal_view,
+            window,
+            |this, _, ev: &JournalEvent, window, cx| {
+                let journal = crate::journal::Journal::new(&this.handle.root);
+                match ev {
+                    JournalEvent::Refresh => {
+                        this.journal_view.update(cx, |panel, cx| panel.reload(cx));
+                    }
+                    JournalEvent::Undo(id) => {
+                        let outcome = journal.undo(&this.handle.root, id);
+                        let (text, tone): (String, u8) = match outcome {
+                            Ok(crate::journal::UndoOutcome::Restored) => {
+                                ("已撤销：文件写回改动前的内容".to_string(), 0)
+                            }
+                            Ok(crate::journal::UndoOutcome::Removed) => {
+                                ("已撤销：那是新建的文件，已删除".to_string(), 0)
+                            }
+                            Ok(crate::journal::UndoOutcome::Conflict { .. }) => (
+                                "撤销被拒：这个文件在那之后又被改过，避免覆盖新内容".to_string(),
+                                1,
+                            ),
+                            Err(e) => (format!("撤销失败：{e}"), 2),
+                        };
+                        // 正文可能被撤销改回：重载编辑器缓冲，避免自动保存把旧内容写回去
+                        this.reload_prose_from_disk(window, cx);
+                        this.refresh_ai_marks(cx);
+                        this.journal_view
+                            .update(cx, |panel, cx| panel.set_message(text, tone, cx));
+                    }
+                    JournalEvent::UndoBatch(batch) => {
+                        let results = journal.undo_batch(&this.handle.root, &batch);
+                        let ok = results
+                            .iter()
+                            .filter(|(_, r)| {
+                                matches!(r, Ok(crate::journal::UndoOutcome::Restored | crate::journal::UndoOutcome::Removed))
+                            })
+                            .count();
+                        let conflicts = results
+                            .iter()
+                            .filter(|(_, r)| matches!(r, Ok(crate::journal::UndoOutcome::Conflict { .. })))
+                            .count();
+                        let text = if conflicts == 0 {
+                            format!("整批撤销完成：{ok} 个文件已还原")
+                        } else {
+                            format!("整批撤销：{ok} 个已还原，{conflicts} 个因之后被改过而跳过")
+                        };
+                        let tone = if conflicts == 0 { 0u8 } else { 1u8 };
+                        this.reload_prose_from_disk(window, cx);
+                        this.refresh_ai_marks(cx);
+                        this.journal_view
+                            .update(cx, |panel, cx| panel.set_message(text, tone, cx));
+                    }
+                }
+            },
+        )
+        .detach();
+
 // 世界线（排期板）：AI 核对走 DSH 会话（轨迹窗可见），拖卡改期是作者亲笔直写
         cx.subscribe(
             &director_view,
@@ -857,6 +927,7 @@ impl Workspace {
             characters_view,
             settings_view,
             snapshots_view,
+            journal_view,
             import_view,
             graph_view,
             canvas_view,
@@ -876,6 +947,7 @@ impl Workspace {
             initialized: false,
             selected_original: None,
             agent_mode: dsh::AgentMode::Managed,
+            book_auth,
             session_id,
             session_attached: false,
             pending_approval: None,
@@ -1000,6 +1072,13 @@ impl Workspace {
         }
     }
 
+    /// 重新读当前章的 AI 参与标记（撤销后正文变回作者原文，墨点应随之消失）。
+    fn refresh_ai_marks(&mut self, cx: &mut Context<Self>) {
+        let marks =
+            crate::journal::Journal::new(&self.handle.root).marks(&self.handle.root, self.chapter);
+        self.editor.update(cx, |panel, cx| panel.set_ai_marks(marks, cx));
+    }
+
     fn reject_proposal(&mut self, id: &str, reason: &str, cx: &mut Context<Self>) {
         match self.handle.reject_proposal(id, reason) {
             Ok(()) => {
@@ -1046,6 +1125,10 @@ impl Workspace {
                 self.snapshots_view
                     .update(cx, |panel, cx| panel.reload(self.chapter, cx));
                 panel_handle(self.snapshots_view.clone())
+            }
+            Mode::Journal => {
+                self.journal_view.update(cx, |panel, cx| panel.reload(cx));
+                panel_handle(self.journal_view.clone())
             }
             Mode::Import => panel_handle(self.import_view.clone()),
             Mode::Graph => panel_handle(self.graph_view.clone()),
@@ -1127,6 +1210,8 @@ impl Workspace {
         self.prose.update(cx, |state, cx| {
             state.set_value(prose_text.as_str(), window, cx);
         });
+        let marks = crate::journal::Journal::new(&self.handle.root).marks(&self.handle.root, n);
+        self.editor.update(cx, |panel, cx| panel.set_ai_marks(marks, cx));
         let notes = self.handle.chapter_notes(n);
         self.editor.update(cx, |panel, cx| {
             panel.title.update(cx, |state, cx| {
@@ -1987,6 +2072,7 @@ impl Render for Workspace {
                                             .text_color(theme::DIM())
                                             .child(SharedString::from(format!("{words} 字"))),
                                     )
+                                    .child(self.writing_chip(cx))
                                     .child(self.mode_chip(cx))
                                     .child(if dsh_running {
                                         live_chip("DSH 运行中")
@@ -2132,6 +2218,129 @@ impl Render for Workspace {
 }
 
 impl Workspace {
+    /// 写作档位切换器（辅助 / 共写 / 代笔）。
+    ///
+    /// 切档位只写书目录的 zhibi-auth.json，不重启运行时——novel-pack 每次工具调用
+    /// 重读它，所以立刻生效。代笔档还需要作者勾选具体章节。
+    fn writing_chip(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::journal::WritingMode;
+        let cur = self.book_auth.mode();
+        let mk = |label: &'static str, key: &'static str, mode: WritingMode| {
+            let on = cur == mode;
+            div()
+                .id(key)
+                .px(px(9.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(if on {
+                    match mode {
+                        WritingMode::Assist => theme::LINE(),
+                        WritingMode::Cowrite => theme::ACCENT_BORDER(),
+                        WritingMode::Ghostwrite => theme::AMBER(),
+                    }
+                } else {
+                    theme::LINE()
+                })
+                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                .cursor_pointer()
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                        .child(label),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_writing_mode(mode, cx);
+                }))
+        };
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .child(mk("辅助", "wm-assist", WritingMode::Assist))
+            .child(mk("共写", "wm-cowrite", WritingMode::Cowrite))
+            .child(mk("代笔", "wm-ghost", WritingMode::Ghostwrite));
+
+        // 代笔档要有明确的“哪一章被授权”，否则是个隐形的危险开关
+        if cur == WritingMode::Ghostwrite {
+            let ch = self.chapter;
+            let authorized = self.book_auth.ghostwrite_chapters.contains(&ch);
+            row = row.child(
+                div()
+                    .id("wm-authorize")
+                    .ml(px(6.))
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(5.))
+                    .border_1()
+                    .border_color(if authorized { theme::GREEN() } else { theme::LINE() })
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(if authorized { theme::GREEN() } else { theme::DIM() })
+                            .child(if authorized {
+                                format!("第{ch}章已授权")
+                            } else {
+                                format!("授权第{ch}章")
+                            }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_ghostwrite_chapter(cx);
+                    })),
+            );
+        }
+        row.into_any_element()
+    }
+
+    fn set_writing_mode(&mut self, mode: crate::journal::WritingMode, cx: &mut Context<Self>) {
+        self.book_auth.set_mode(mode);
+        match self.book_auth.save(&self.handle.root) {
+            Ok(()) => {
+                let extra = if mode == crate::journal::WritingMode::Ghostwrite {
+                    "（还需勾选具体章节，AI 才能写那一章正文）"
+                } else {
+                    ""
+                };
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(
+                        TrajKind::Info(format!("写作档位 → {}{extra}", mode.label())),
+                        cx,
+                    );
+                });
+            }
+            Err(e) => {
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Fail(format!("切档位失败：{e}")), cx);
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    fn toggle_ghostwrite_chapter(&mut self, cx: &mut Context<Self>) {
+        let ch = self.chapter;
+        self.book_auth.toggle_chapter(ch);
+        let on = self.book_auth.ghostwrite_chapters.contains(&ch);
+        if let Err(e) = self.book_auth.save(&self.handle.root) {
+            self.trajectory.update(cx, |panel, cx| {
+                panel.push(TrajKind::Fail(format!("保存授权失败：{e}")), cx);
+            });
+        } else {
+            self.trajectory.update(cx, |panel, cx| {
+                panel.push(
+                    TrajKind::Info(format!(
+                        "第{ch}章代笔授权：{}",
+                        if on { "已开启" } else { "已取消" }
+                    )),
+                    cx,
+                );
+            });
+        }
+        cx.notify();
+    }
+
     /// 主 Agent 形态的三段切换器（托管 / 极简 / 创造）。
     ///
     /// 切换要重启本书的 DSH 进程（执行器与 preset 是进程级组合），所以点之前

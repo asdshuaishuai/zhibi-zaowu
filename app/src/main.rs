@@ -10,6 +10,7 @@ mod director;
 mod dsh;
 mod editor;
 mod inbox;
+mod journal;
 mod prompts;
 mod shelf;
 mod store;

@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./guard": "./src/guard.ts",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./write-policy": "./src/write-policy.ts"
   },
   "engines": {
     "node": ">=24.9.0"

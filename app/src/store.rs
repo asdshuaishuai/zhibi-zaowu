@@ -345,11 +345,44 @@ impl ProjectHandle {
     }
 
     pub fn save_prose(&self, n: u32, text: &str) -> Result<(), String> {
+        self.save_prose_as(n, text, &crate::journal::Actor::Author, "作者保存")
+    }
+
+    /// 带来源的正文保存：AI 在共写/代笔档直接写正文时用这个，改动会进日志。
+    ///
+    /// 作者保存与 AI 写入走同一条路径，只差 actor/note——这样“谁改的”不会因为
+    /// 调用入口不同而漏记。
+    pub fn save_prose_as(
+        &self,
+        n: u32,
+        text: &str,
+        actor: &crate::journal::Actor,
+        note: &str,
+    ) -> Result<(), String> {
         let dir = self.root.join("chapters").join(chapter_dir_name(n));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let old_words = chinese_count(&self.prose(n));
+        let old_text = self.prose(n);
+        let old_words = chinese_count(&old_text);
         let new_words = chinese_count(text);
         atomic_write(&self.prose_path(n), text)?;
+        // 落盘成功才记日志：写失败还留一条“已改动”的记录会误导撤销
+        if old_text != text {
+            let rel = format!("chapters/{}/prose.md", chapter_dir_name(n));
+            let batch = format!("b{}", crate::journal::now_millis());
+            // 日志失败不阻断保存——正文已经安全落盘，丢的是可追溯性而不是内容
+            if let Err(e) = crate::journal::Journal::new(&self.root).record(
+                &self.root,
+                &rel,
+                &old_text,
+                text,
+                actor,
+                "save",
+                &batch,
+                note,
+            ) {
+                eprintln!("记录正文改动失败：{e}");
+            }
+        }
         // 今日净增：每次落盘按「新字数 - 旧字数」记账（书架/统计页的唯一写入方）。
         // 记账失败不影响正文保存（正文已经安全落盘）。
         if new_words != old_words {

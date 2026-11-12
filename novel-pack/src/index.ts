@@ -10,6 +10,7 @@
 import { writeFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { NovelStore, safeFileName, type Proposal } from './store.ts'
+import { canWriteLedger, canWriteProse, currentMode, ghostwriteChapters } from './write-policy.ts'
 
 export const name = 'zhibi-novel-pack'
 
@@ -923,6 +924,114 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
           const text = String(args.text ?? '')
           if (!text.trim()) return '续写为空，未展示。'
           return `已给出续写（${text.length} 字），等作者采纳。`
+        }),
+    ),
+    // —— 直写工具：仅共写/代笔档可用，且每次调用都重新判断档位 ——
+    //
+    // 为什么不是“所有写入都走提案”：作者要的“AI 介入完整流程”意味着在某些档位下
+    // AI 必须能真的落库，否则只能反复点采纳。闸门放在这里，而不是放开 DSH 的写工具，
+    // 因为只有领域层知道“台账能写、正文不能写”。
+
+    textTool(
+      'get_write_mode',
+      '读取当前写作档位与代笔授权范围。在决定“直接改”还是“提提案”之前先查一次。',
+      {},
+      () =>
+        guard(async () => {
+          const mode = currentMode(store.root)
+          const allowed = ghostwriteChapters(store.root)
+          const canLedger = canWriteLedger(store.root).allowed
+          return [
+            `档位：${mode}`,
+            `可直接改台账：${canLedger ? '是' : '否'}`,
+            `代笔授权章节：${allowed.length ? allowed.join('、') : '无'}`,
+          ].join('\n')
+        }),
+    ),
+
+    textTool(
+      'write_ledger',
+      '直接写入一个台账类 JSON 文件（仅共写/代笔档）。file 只能是白名单内的文件名；content 是完整的新数组内容，不是增量。辅助档会被拒绝——那种情况请用 propose_* 提提案。',
+      {
+        file: {
+          type: 'string',
+          description:
+            '文件名：storylines.json / events.json / stages.json / clues.json / characters.json / relations.json / dossiers.json / worldlines.json',
+          required: true,
+        },
+        content: str('完整的新内容（JSON 字符串，数组形式）'),
+        note: str('一句话说明这次改了什么，会写进改动日志', false),
+      },
+      (args) =>
+        guard(async () => {
+          const perm = canWriteLedger(store.root)
+          if (!perm.allowed) throw new Error(perm.reason)
+          const allowedFiles = [
+            'storylines.json',
+            'events.json',
+            'stages.json',
+            'clues.json',
+            'characters.json',
+            'relations.json',
+            'dossiers.json',
+            'worldlines.json',
+          ]
+          const file = String(args.file ?? '')
+          if (!allowedFiles.includes(file)) {
+            throw new Error(
+              `只能直接写这几类台账：${allowedFiles.join('、')}；收到「${file}」。` +
+                '正文（chapters/*/prose.md）与设定稿（canon/*.md）不走这个工具。',
+            )
+          }
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(String(args.content ?? ''))
+          } catch (e) {
+            throw new Error(`content 不是合法 JSON：${e instanceof Error ? e.message : String(e)}`)
+          }
+          if (!Array.isArray(parsed)) {
+            throw new Error('content 必须是 JSON 数组（整份替换该台账）。')
+          }
+          // 读旧内容只为日志前像：坏文件当空，避免因旧文件损坏而完全无法写
+          const before = (await store.readText(file)) ?? ''
+          await store.writeJSON(file, parsed)
+          return `已直接写入 ${file}（${(parsed as unknown[]).length} 项）。${
+            args.note ? `说明：${args.note}` : ''
+          }改动已可追溯。`
+        }),
+    ),
+
+    textTool(
+      'write_prose',
+      '直接写入某章正文（仅代笔档 + 作者授权的章节）。text 是完整的新正文，不是增量。共写/辅助档会被拒绝，那种情况请用 offer_rewrite 给建议。',
+      {
+        chapter: num('章节号'),
+        text: str('完整的新正文'),
+        note: str('一句话说明这次改了什么', false),
+      },
+      (args) =>
+        guard(async () => {
+          const chapter = Number(args.chapter)
+          const perm = canWriteProse(store.root, chapter)
+          if (!perm.allowed) throw new Error(perm.reason)
+          const text = String(args.text ?? '')
+          if (text.trim().length < 20) {
+            // 太短的“正文”几乎都是误触或半成品，不落盘
+            throw new Error('正文太短（少于 20 字），疑似半成品，未写入。')
+          }
+          const before = (await store.chapterProse(chapter)) ?? ''
+          await store.writeText(
+            process.getBuiltinModule('node:path').join(
+              'chapters',
+              `ch-${String(chapter).padStart(3, '0')}`,
+              'prose.md',
+            ),
+            text,
+          )
+          const delta = text.length - before.length
+          return `已直接写入第${chapter}章正文（${text.length} 字，${delta >= 0 ? '+' : ''}${delta}）。${
+            args.note ? `说明：${args.note}` : ''
+          }改动已可追溯，作者可一键撤销。`
         }),
     ),
   ]
