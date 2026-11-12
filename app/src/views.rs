@@ -2111,6 +2111,12 @@ pub struct SettingsPanel {
     /// 允许联网 / 允许子 agent
     web_enabled: bool,
     subagent_enabled: bool,
+    /// 闲置多少分钟回收本书的 DSH 进程（0 = 不回收）
+    ed_idle: Entity<gpui_kit::component::input::InputState>,
+    /// 同时活着的 DSH 进程上限
+    ed_max_procs: Entity<gpui_kit::component::input::InputState>,
+    /// 内置插件开关的界面镜像（保存时整体写回 settings）
+    plugin_overrides: std::collections::BTreeMap<String, bool>,
     /// 账号快照（余额、登录状态）；None = 还没查过
     account: Option<crate::account::AccountSnapshot>,
     /// 余额正在查
@@ -2173,6 +2179,16 @@ impl SettingsPanel {
         });
         let web_enabled = cfg.web_enabled;
         let subagent_enabled = cfg.subagent_enabled;
+        let ed_idle = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("30")
+                .default_value(cfg.idle_recycle_min.to_string())
+        });
+        let ed_max_procs = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("2")
+                .default_value(cfg.max_runtime_procs.to_string())
+        });
         Self {
             focus_handle: cx.focus_handle(),
             base_url,
@@ -2183,6 +2199,9 @@ impl SettingsPanel {
             daily_goal,
             web_enabled,
             subagent_enabled,
+            ed_idle,
+            ed_max_procs,
+            plugin_overrides: cfg.plugin_overrides.clone(),
             account: None,
             account_busy: false,
             status: String::new(),
@@ -2230,6 +2249,87 @@ impl SettingsPanel {
         cx.notify();
     }
 
+    /// 内置插件清单：按组列出，每行说明"它是干什么的"和"关掉会失去什么"。
+    ///
+    /// 单独一个方法而不是内联在 render 里：这段有嵌套循环 + 两种行形态
+    /// （必需项是锁定标签，可选项是开关），写在 render 的链式调用中间会
+    /// 完全读不出来。
+    fn plugin_rows(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        let mut out = Vec::new();
+        for (g, items) in crate::plugins::grouped() {
+            out.push(
+                div()
+                    .pt(theme::GAP_SM)
+                    .text_size(theme::FONT_MICRO)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::FAINT())
+                    .child(g.label())
+                    .into_any_element(),
+            );
+            for p in items {
+                let row = p.row;
+                let on = crate::plugins::enabled(&self.plugin_overrides, row);
+                let right = if p.required {
+                    div()
+                        .flex_shrink_0()
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded(theme::RADIUS_TAG)
+                        .bg(theme::CHIP_NEUTRAL())
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::FAINT())
+                        .child("必需")
+                        .into_any_element()
+                } else {
+                    switch_row(SharedString::from(format!("plugin-{row}")), on, cx, move |this, cx| {
+                        let cur = crate::plugins::enabled(&this.plugin_overrides, row);
+                        this.plugin_overrides.insert(row.to_string(), !cur);
+                        cx.notify();
+                    })
+                };
+                out.push(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(theme::GAP_MD)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_LABEL)
+                                        .text_color(if p.required { theme::DIM() } else { theme::TEXT() })
+                                        .child(SharedString::from(p.label)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_MICRO)
+                                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                                        .text_color(theme::FAINT())
+                                        .child(SharedString::from(p.what)),
+                                )
+                                // 关掉的代价：这段比"它是干什么的"更重要
+                                .when_true(!on, |d| {
+                                    d.child(
+                                        div()
+                                            .text_size(theme::FONT_MICRO)
+                                            .line_height(relative(theme::LINE_HEIGHT_BODY))
+                                            .text_color(theme::AMBER())
+                                            .child(SharedString::from(format!("已关闭 · {}", p.without))),
+                                    )
+                                }),
+                        )
+                        .child(right)
+                        .into_any_element(),
+                );
+            }
+        }
+        out
+    }
+
     /// 保存时把手上的全部设置一起交给宿主。
     fn snapshot_values(&self, cx: &App) -> crate::store::AppSettings {
         let mut cfg = crate::store::load_settings();
@@ -2247,6 +2347,15 @@ impl SettingsPanel {
             .unwrap_or(0);
         cfg.web_enabled = self.web_enabled;
         cfg.subagent_enabled = self.subagent_enabled;
+        // 空串 = 保留原值：作者清空输入框不该把功能悄悄变成"不回收 / 上限 0"
+        let parse_u32 = |s: &str, cur: u32| s.trim().parse::<u32>().unwrap_or(cur);
+        let cur = crate::store::load_settings();
+        cfg.idle_recycle_min =
+            parse_u32(&self.ed_idle.read(cx).value(), cur.idle_recycle_min);
+        // 上限至少 1：0 会让开书本身失败
+        cfg.max_runtime_procs = parse_u32(&self.ed_max_procs.read(cx).value(), cur.max_runtime_procs)
+            .max(1);
+        cfg.plugin_overrides = self.plugin_overrides.clone();
         cfg
     }
 }
@@ -2262,6 +2371,51 @@ impl Focusable for SettingsPanel {
 
 /// 开关行：点击整行切换。用文字「开 / 关」而不是画一个假的 switch，
 /// 因为库里没有现成的 switch 组件，画一个像但不能拖的控件比文字更误导。
+/// 只有开关、没有标签的行（用于标签已经写在左边的场景）。
+///
+/// `toggle_row` 把"开/关 + 标签"绑成一个整体点击区；插件页每一行左边是
+/// 名字 + 说明 + 代价，右边只要一个开关，所以不能复用。
+fn switch_row<F>(
+    id: SharedString,
+    on: bool,
+    cx: &mut Context<SettingsPanel>,
+    toggle: F,
+) -> gpui_kit::AnyElement
+where
+    F: Fn(&mut SettingsPanel, &mut Context<SettingsPanel>) + 'static,
+{
+    let toggle = std::rc::Rc::new(toggle);
+    let _ = cx;
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .w(px(34.))
+        .py(px(2.))
+        .rounded(theme::RADIUS_TAG)
+        .border_1()
+        .border_color(if on {
+            theme::GREEN_BORDER()
+        } else {
+            theme::LINE()
+        })
+        .bg(if on {
+            theme::GREEN_SOFT()
+        } else {
+            theme::CHIP_NEUTRAL()
+        })
+        .flex()
+        .justify_center()
+        .cursor_pointer()
+        .text_size(theme::FONT_MICRO)
+        .text_color(if on { theme::GREEN() } else { theme::FAINT() })
+        .child(if on { "开" } else { "关" })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            toggle(this, cx);
+            cx.notify();
+        }))
+        .into_any_element()
+}
+
 fn toggle_row<F>(
     id: &'static str,
     label: &'static str,
@@ -2530,7 +2684,23 @@ impl Render for SettingsPanel {
                                 this.subagent_enabled = !this.subagent_enabled;
                                 cx.notify();
                             },
-                        )),
+                        ))
+                        // 进程额度：每本书一个 DSH 进程，切书时旧的可能还没释放。
+                        // 这两个数字直接决定内存，所以要露出来而不是写死在代码里。
+                        .child(field("闲置回收", &self.ed_idle))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("闲置多少分钟后关掉本书的 AI 进程（0 = 一直留着；默认 30）"),
+                        )
+                        .child(field("进程上限", &self.ed_max_procs))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("同时活着的 AI 进程最多几个（默认 2：当前这本 + 刚切走那本）"),
+                        ),
                 )
                 .child(sec_title("Agent 模式与插件"))
                 .child(
@@ -2554,6 +2724,120 @@ impl Render for SettingsPanel {
                                 .text_color(theme::FAINT())
                                 .child("模式切换在标题栏右侧。切换会重启本书的 AI 运行时，会话历史保留。"),
                         ),
+                )
+                // —— 内置插件配置 ——
+                //
+                // 计划里的"五类能力"之四。它不是包管理器的复刻：
+                // 这里只列**作者可以安全关掉**的行，每一条都写清代价。
+                // 关掉写进 settings.json 的 pluginOverrides，由 mode_patch
+                // 翻译成 `- id: X / disabled: true`，下次启动运行时生效。
+                .child(sec_title("内置插件"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_SM)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                                .text_color(theme::FAINT())
+                                .child("关掉任何一项都会改变 AI 能做什么。这里的开关下次启动 AI 运行时生效。"),
+                        )
+                        .children(self.plugin_rows(cx)),
+                )
+                // —— Agent 预设 ——
+                //
+                // 计划里"五类能力"之五。这里列的不是"可对话的角色"，而是
+                // **能力清单**：每个 Agent 负责哪类活、页面上的哪个按钮会叫它、
+                // 选中什么对象时能对它做什么。作者看完这张表就知道
+                // "我想干这件事该点哪儿"，不用猜。
+                .child(sec_title("Agent 预设"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_SM)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                                .text_color(theme::FAINT())
+                                .child("专属 Agent 是能力，不是聊天窗口：它们在各自模块页被按钮唤起，                                        也可以由主 Agent 自己判断该派给谁。"),
+                        )
+                        .children(crate::capabilities::AGENTS.iter().map(|a| {
+                            let bulk: Vec<String> = a.bulk.iter().map(|c| c.label.to_string()).collect();
+                            let targeted: Vec<String> = a
+                                .targeted
+                                .iter()
+                                .map(|op| format!("{}（{}）", op.label, op.target_kind.label()))
+                                .collect();
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(1.))
+                                .pt(theme::GAP_SM)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_baseline()
+                                        .gap(theme::GAP_SM)
+                                        .child(
+                                            div()
+                                                .text_size(theme::FONT_LABEL)
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(theme::TEXT())
+                                                .child(SharedString::from(a.label)),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(theme::FAMILY_MONO)
+                                                .text_size(theme::FONT_MICRO)
+                                                .text_color(theme::ACCENT())
+                                                .child(SharedString::from(a.id)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_MICRO)
+                                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                                        .text_color(theme::DIM())
+                                        .child(SharedString::from(a.duty)),
+                                )
+                                .when_true(!bulk.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(theme::FAINT())
+                                            .child(SharedString::from(format!(
+                                                "模块一键：{}",
+                                                bulk.join(" / ")
+                                            ))),
+                                    )
+                                })
+                                .when_true(!targeted.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(theme::FAINT())
+                                            .child(SharedString::from(format!(
+                                                "选定对象：{}",
+                                                targeted.join(" / ")
+                                            ))),
+                                    )
+                                })
+                                .into_any_element()
+                        })),
                 )
                 // —— 本书专属 Agent ——
                 //

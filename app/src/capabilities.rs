@@ -52,6 +52,19 @@ pub struct TargetedOp {
     pub target_kind: TargetKind,
 }
 
+impl TargetKind {
+    /// 中文说法（设置页的 Agent 预设清单里用）。
+    pub fn label(self) -> &'static str {
+        match self {
+            TargetKind::Character => "人物",
+            TargetKind::Chapter => "某一章",
+            TargetKind::Line => "某条世界线",
+            TargetKind::LineNode => "世界线节点",
+            TargetKind::Ledger => "台账条目",
+        }
+    }
+}
+
 /// 操作对象是什么。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetKind {
@@ -354,6 +367,21 @@ mod tests {
             assert!(hint.contains(a.duty), "路由说明漏了 {} 的职责", a.id);
         }
         assert!(hint.contains("自己硬做") || hint.contains("不要硬做"));
+    }
+
+    #[test]
+    fn target_kinds_have_labels_for_the_settings_page() {
+        // 设置页的 Agent 预设清单直接显示这些中文名；空串会让作者看到
+        // 「补全这张卡（）」这种残句，只能靠测试兜。
+        for k in [
+            TargetKind::Character,
+            TargetKind::Chapter,
+            TargetKind::Line,
+            TargetKind::LineNode,
+            TargetKind::Ledger,
+        ] {
+            assert!(!k.label().is_empty());
+        }
     }
 
     #[test]

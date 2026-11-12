@@ -94,6 +94,12 @@ pub enum NodeState {
     Written,
     /// 只在这个分支里存在（正典里没有）
     BranchOnly,
+    /// 作者已采纳进正典，但正文还没写到那一章。
+    ///
+    /// 和 `Planned` 的区别是作者意图：`Planned` 是"这条 if 线里假设会这样"，
+    /// `Adopted` 是"我决定了，这就是正典后续"。正文一旦写到那一章就转 `Written`。
+    /// 没有这个状态的话，逐节点采纳之后界面上看不出到底承认了没有。
+    Adopted,
 }
 
 impl NodeState {
@@ -102,6 +108,7 @@ impl NodeState {
             NodeState::Planned => "planned",
             NodeState::Written => "written",
             NodeState::BranchOnly => "branch-only",
+            NodeState::Adopted => "adopted",
         }
     }
 
@@ -109,6 +116,7 @@ impl NodeState {
         match s {
             "written" => NodeState::Written,
             "branch-only" => NodeState::BranchOnly,
+            "adopted" => NodeState::Adopted,
             _ => NodeState::Planned,
         }
     }
@@ -118,7 +126,13 @@ impl NodeState {
             NodeState::Planned => "计划",
             NodeState::Written => "已写",
             NodeState::BranchOnly => "仅此分支",
+            NodeState::Adopted => "已采纳",
         }
+    }
+
+    /// 这个节点算不算已定的正典内容（扶正边界、固化段显示都按它判断）。
+    pub fn is_canon(self) -> bool {
+        matches!(self, NodeState::Written | NodeState::Adopted)
     }
 }
 
@@ -205,7 +219,7 @@ impl Node {
 }
 
 /// 从任意字符串里认出 `ch-012` / `第12章` 两种写法。
-fn guess_chapter(s: &str) -> Option<u32> {
+pub(crate) fn guess_chapter(s: &str) -> Option<u32> {
     if let Some(rest) = s.split("ch-").nth(1) {
         let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(n) = digits.parse::<u32>() {

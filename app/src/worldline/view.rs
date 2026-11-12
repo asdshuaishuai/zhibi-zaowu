@@ -67,6 +67,8 @@ pub enum WorldlineEvent {
     },
     /// 删一个节点
     NodeRemove { line: String, node: String },
+    /// 逐节点采纳：把这个节点定为正典后续（产出提案，落库仍过收件箱）
+    NodeAdopt { line: String, node: String },
     /// 派活给某个专属 Agent（能力表驱动）
     Delegate {
         agent: &'static str,
@@ -320,19 +322,15 @@ impl Render for WorldlinePanel {
         let segs_c = segs.clone();
         let bands_c = band_list.clone();
         let tr_c = tr.clone();
-        let nodes_by_track: BTreeMap<String, Vec<(u32, String, bool)>> = lines
+        // 节点带上完整状态：时间轴上要区分「已写」（绿实心）、「已采纳但正文还没写到」
+        // （蓝实心）、「仅计划」（空心）。只传一个 bool 会把前两者混成一样。
+        let nodes_by_track: BTreeMap<String, Vec<(u32, String, crate::worldline::NodeState)>> = lines
             .iter()
             .map(|l| {
-                let mut ns: Vec<(u32, String, bool)> = l
+                let mut ns: Vec<(u32, String, crate::worldline::NodeState)> = l
                     .nodes
                     .iter()
-                    .map(|n| {
-                        (
-                            n.chapter_or_guess(),
-                            n.label.clone(),
-                            n.state == crate::worldline::NodeState::Written,
-                        )
-                    })
+                    .map(|n| (n.chapter_or_guess(), n.label.clone(), n.state))
                     .filter(|(ch, _, _)| *ch > 0)
                     .collect();
                 ns.sort_by_key(|(ch, _, _)| *ch);
@@ -467,18 +465,23 @@ impl Render for WorldlinePanel {
                             }
                         }
 
-                        // 节点：实心 = 已写进正文，空心 = 仅计划/推演
+                        // 节点：绿实心 = 已写进正文，蓝实心 = 已采纳待写，空心 = 仅计划/推演
                         for (ti, t) in tr_c.iter().enumerate() {
                             let y = y_of(ti);
                             let Some(ns) = nodes_c.get(&t.id) else { continue };
-                            for (ch, _, written) in ns {
+                            for (ch, _, state) in ns {
                                 if *ch < from_ch || *ch > to_ch {
                                     continue;
                                 }
                                 let x = x_of(*ch);
                                 let r = 3.2;
                                 let k = 0.5523 * r;
-                                if *written {
+                                if state.is_canon() {
+                                    let fill = if *state == crate::worldline::NodeState::Written {
+                                        theme::GREEN()
+                                    } else {
+                                        theme::BLUE()
+                                    };
                                     let mut d = PathBuilder::fill();
                                     d.move_to(p(x + r, y));
                                     d.cubic_bezier_to(p(x + r, y + k), p(x + k, y + r), p(x, y + r));
@@ -486,7 +489,7 @@ impl Render for WorldlinePanel {
                                     d.cubic_bezier_to(p(x - r, y - k), p(x - k, y - r), p(x, y - r));
                                     d.cubic_bezier_to(p(x + k, y - r), p(x + r, y - k), p(x + r, y));
                                     if let Ok(path) = d.build() {
-                                        window.paint_path(path, hsla(theme::GREEN()));
+                                        window.paint_path(path, hsla(fill));
                                     }
                                 } else {
                                     let mut d = PathBuilder::stroke(px(1.1));
@@ -815,18 +818,39 @@ impl Render for WorldlinePanel {
                                             .child(SharedString::from(n.label.clone())),
                                     )
                                     .child(
-                                        // 已写进正文 / 仅计划：这个区别决定它算不算"已定剧情"
+                                        // 已写进正文 / 已采纳 / 仅计划：这个区别决定它算不算
+                                        // "已定剧情"。计划态点一下 = 逐节点采纳（产出提案），
+                                        // 已经定下来的就不再可点，免得误删既成事实。
                                         div()
+                                            .id(SharedString::from(format!("wn-adopt-{lid}-{nid}")))
                                             .flex_shrink_0()
-                                            .text_size(px(9.))
-                                            .text_color(if n.state
-                                                == crate::worldline::NodeState::Written
-                                            {
-                                                theme::GREEN()
-                                            } else {
-                                                theme::FAINT()
+                                            .px(px(2.))
+                                            .when(!n.state.is_canon(), |d| {
+                                                d.cursor_pointer().text_color(theme::ACCENT())
                                             })
-                                            .child(n.state.label()),
+                                            .when(n.state == crate::worldline::NodeState::Written, |d| {
+                                                d.text_color(theme::GREEN())
+                                            })
+                                            .when(
+                                                n.state == crate::worldline::NodeState::Adopted,
+                                                |d| d.text_color(theme::BLUE()),
+                                            )
+                                            .text_size(px(9.))
+                                            .child(SharedString::from(if n.state.is_canon() {
+                                                n.state.label().to_string()
+                                            } else {
+                                                format!("{}·采纳", n.state.label())
+                                            }))
+                                            .on_click(cx.listener({
+                                                let l4 = lid.clone();
+                                                let n4 = nid.clone();
+                                                move |_t, _, _, cx| {
+                                                    cx.emit(WorldlineEvent::NodeAdopt {
+                                                        line: l4.clone(),
+                                                        node: n4.clone(),
+                                                    });
+                                                }
+                                            })),
                                     )
                                     .child(
                                         // 双向弱引用：把这个时间轴关节挂到画布上的某个节点，

@@ -31,6 +31,29 @@ fn hsla(c: gpui_kit::Rgba) -> gpui_kit::Hsla {
     c.into()
 }
 
+/// 关系维的 Agent 按钮。
+///
+/// 用 Button（不是自绘 div）：这一排是**动作**，不是数据，得有点击反馈、
+/// 有禁用态。侧板里其他自绘的 chip 都是状态显示，不能混。
+fn agent_btn(id: SharedString, label: &'static str) -> Button {
+    Button::new(id).xsmall().label(label)
+}
+
+/// 关系粗分类 → 时间轴条色。
+///
+/// 与画布边的配色同一套语义（红=敌对、蓝=师承、绿=利益……），
+/// 作者在画布上认熟一套颜色之后，侧板不该换一套。
+fn rel_color(kind: &str) -> gpui_kit::Rgba {
+    match kind {
+        "敌对" => theme::RED(),
+        "亲缘" => theme::AMBER(),
+        "师承" => theme::BLUE(),
+        "情爱" => theme::ACCENT(),
+        "利益" => theme::GREEN(),
+        _ => theme::DIM(),
+    }
+}
+
 // ═══════════════════════════ 剧情画板 ═══════════════════════════
 
 #[derive(Clone)]
@@ -85,6 +108,14 @@ enum Drag {
 
 const NODE_W: f32 = 150.;
 const NODE_H: f32 = 76.;
+
+/// 侧板宽度（关系演变的时间轴要按这个宽度换算像素，所以只能有一个真值）。
+const SIDE_W: f32 = 250.;
+const SIDE_PAD: f32 = 12.;
+/// 关系演变条的轨道宽度 = 侧板宽度减去左右内边距。
+const EVO_TRACK_W: f32 = SIDE_W - 2. * SIDE_PAD;
+/// 演变条整体高度：6px 色条 + 1px 空 + 10px 标签行。
+const EVO_TRACK_H: f32 = 17.;
 
 pub struct CanvasPanel {
     focus_handle: FocusHandle,
@@ -692,9 +723,174 @@ impl CanvasPanel {
         self.save_state();
         cx.notify();
     }
+
+    /// 一行关系演变：名字 + 一条按章节定位的轨道。
+    ///
+    /// 为什么画轨道而不是列文字：作者要看的是"这段关系在整条时间轴上占哪一段、
+    /// 中间断没断"。`师徒 5-10；仇敌 20-今` 读起来像两句话，看不出第 10-20 章
+    /// 之间那 10 章是空白——而在轨道上，那是个显眼的缺口。
+    fn evolution_row(
+        &self,
+        me: &str,
+        row: &crate::relations::EvolutionRow,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let horizon = self.last_chapter.max(1) as f32;
+        // 章号 → 轨道内的像素左偏移。第 1 章贴左边，末章贴右边。
+        let at = |ch: u32| -> f32 {
+            let c = if ch == 0 { 1 } else { ch };
+            ((c.saturating_sub(1) as f32 / horizon).clamp(0.0, 1.0)) * EVO_TRACK_W
+        };
+        let color = rel_color(&row.kind);
+
+        // 轨道容器要比色条高：标签画在色条下方，容器不够高的话
+        // 下一行会盖上来（GPUI 不做自动撑高）。
+        let mut track = div()
+            .relative()
+            .h(px(EVO_TRACK_H))
+            .w(px(EVO_TRACK_W))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.))
+                    .top(px(0.))
+                    .h(px(6.))
+                    .w(px(EVO_TRACK_W))
+                    .rounded(px(3.))
+                    .bg(theme::BAR_TRACK()),
+            );
+        for (from, to, label, public) in &row.spans {
+            let x0 = at(*from);
+            // to=0 表示至今：画到轨道右端（末章），而不是画成零宽
+            let x1 = if *to == 0 { EVO_TRACK_W } else { at(*to) };
+            let w = (x1 - x0).max(2.);
+            let mut seg = div()
+                .absolute()
+                .left(px(x0))
+                .top(px(0.))
+                .h(px(6.))
+                .w(px(w))
+                .rounded(px(3.))
+                .bg(hsla(color).opacity(if *public { 0.95 } else { 0.42 }));
+            // 暗线（读者此刻还不知道）：描个虚边，和画布上的紫虚线同一套语义
+            if !*public {
+                seg = seg.border_1().border_color(hsla(theme::PURPLE()).opacity(0.9));
+            }
+            track = track.child(seg).child(
+                div()
+                    .absolute()
+                    .left(px(x0))
+                    .top(px(7.))
+                    .text_size(px(8.5))
+                    .text_color(theme::FAINT())
+                    .child(SharedString::from(label.clone())),
+            );
+        }
+        // "现在"的竖线：滑块所在章。它在时间轴上的位置就是判断"此刻关系"的依据。
+        let now_x = at(self.chapter);
+        track = track.child(
+            div()
+                .absolute()
+                .left(px(now_x))
+                .top(px(-1.))
+                .w(px(1.))
+                .h(px(8.))
+                .bg(hsla(theme::ACCENT()).opacity(0.8)),
+        );
+
+        let rid = row.rid.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .py(px(2.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::DIM())
+                            .text_ellipsis()
+                            .child(SharedString::from(format!(
+                                "{}{}{}",
+                                row.other,
+                                if row.has_gap { " · 有断档" } else { "" },
+                                if row.kind.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("（{}）", row.kind)
+                                }
+                            ))),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("rel-del-{rid}")))
+                            .cursor_pointer()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::FAINT())
+                            .child("×")
+                            .on_click(cx.listener({
+                                let rid = rid.clone();
+                                let me = me.to_string();
+                                move |this, _, _, cx| {
+                                    let web = crate::relations::Web::new(&this.handle.root);
+                                    // 先留前像再删：撤销要能逐字写回原来的关系表
+                                    let before = std::fs::read_to_string(
+                                        this.handle.root.join("relations.json"),
+                                    )
+                                    .unwrap_or_default();
+                                    match web.remove(&rid) {
+                                        Ok(()) => {
+                                            let after = std::fs::read_to_string(
+                                                this.handle.root.join("relations.json"),
+                                            )
+                                            .unwrap_or_default();
+                                            let _ = crate::journal::Journal::new(&this.handle.root)
+                                                .record(
+                                                    &this.handle.root,
+                                                    "relations.json",
+                                                    &before,
+                                                    &after,
+                                                    &crate::journal::Actor::Author,
+                                                    "remove",
+                                                    &format!("b{}", crate::journal::now_millis()),
+                                                    &format!("删除关系（{me}）"),
+                                                );
+                                        }
+                                        Err(e) => eprintln!("删除关系失败：{e}"),
+                                    }
+                                    this.refresh();
+                                    cx.notify();
+                                }
+                            })),
+                    ),
+            )
+            .child(track)
+            .into_any_element()
+    }
 }
 
 impl EventEmitter<PanelEvent> for CanvasPanel {}
+impl EventEmitter<CanvasEvent> for CanvasPanel {}
+
+/// 画布发出去的事件。
+///
+/// 关系维的 Agent 入口只发事件、不自己调 DSH：派活的唯一入口在 workspace，
+/// 轨迹窗、忙碌保护、模式判断都在那边。面板自己发指令会绕过这三样。
+#[derive(Debug, Clone)]
+pub enum CanvasEvent {
+    /// 派活给某个专属 Agent（`target` = None 表示模块级一键能力）
+    Delegate {
+        agent: &'static str,
+        key: &'static str,
+        target: Option<String>,
+    },
+}
 
 impl Focusable for CanvasPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -994,8 +1190,8 @@ impl Render for CanvasPanel {
             .absolute()
             .right(theme::PAD_LG)
             .top(theme::PAD_LG)
-            .w(px(250.))
-            .p(theme::PAD_MD)
+            .w(px(SIDE_W))
+            .p(px(SIDE_PAD))
             .rounded(theme::RADIUS_CARD)
             .border_1()
             .border_color(theme::LINE())
@@ -1059,13 +1255,9 @@ impl Render for CanvasPanel {
             .when(self.dim == Dim::Relations && self.sel.len() == 1, |d| {
                 let me = self.nodes[self.sel[0]].label.clone();
                 let web = crate::relations::Web::new(&self.handle.root);
-                let mine: Vec<crate::relations::Relation> = web
-                    .all()
-                    .into_iter()
-                    .filter(|r| r.from == me || r.to == me)
-                    .collect();
-                let mut hist = div().flex().flex_col().gap(px(2.)).pt(theme::GAP_SM);
-                if mine.is_empty() {
+                let rows = crate::relations::evolution(&web, &me, self.last_chapter);
+                let mut hist = div().flex().flex_col().gap(px(3.)).pt(theme::GAP_SM);
+                if rows.is_empty() {
                     hist = hist.child(
                         div()
                             .text_size(theme::FONT_MICRO)
@@ -1073,81 +1265,68 @@ impl Render for CanvasPanel {
                             .child("还没有关系记录"),
                     );
                 }
-                for r in mine.iter().take(8) {
-                    let other = if r.from == me { r.to.clone() } else { r.from.clone() };
-                    let span = r
-                        .intervals
-                        .iter()
-                        .map(|i| {
-                            let end = if i.to_chapter == 0 {
-                                "今".to_string()
-                            } else {
-                                i.to_chapter.to_string()
-                            };
-                            format!("{}·{}-{}", i.label, i.from_chapter, end)
-                        })
-                        .collect::<Vec<_>>()
-                        .join("；");
-                    let rid = r.id.clone();
-                    hist = hist.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(theme::FONT_MICRO)
-                                    .text_color(theme::DIM())
-                                    .text_ellipsis()
-                                    .child(SharedString::from(format!("{other}：{span}"))),
-                            )
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("rel-del-{rid}")))
-                                    .cursor_pointer()
-                                    .text_size(theme::FONT_MICRO)
-                                    .text_color(theme::FAINT())
-                                    .child("×")
-                                    .on_click(cx.listener({
-                                        let rid = rid.clone();
-                                        move |this, _, _, cx| {
-                                            let web = crate::relations::Web::new(&this.handle.root);
-                                            // 先留前像再删：撤销要能逐字写回原来的关系表
-                                            let before = std::fs::read_to_string(
-                                                this.handle.root.join("relations.json"),
-                                            )
-                                            .unwrap_or_default();
-                                            match web.remove(&rid) {
-                                                Ok(()) => {
-                                                    let after = std::fs::read_to_string(
-                                                        this.handle.root.join("relations.json"),
-                                                    )
-                                                    .unwrap_or_default();
-                                                    let _ = crate::journal::Journal::new(&this.handle.root)
-                                                        .record(
-                                                            &this.handle.root,
-                                                            "relations.json",
-                                                            &before,
-                                                            &after,
-                                                            &crate::journal::Actor::Author,
-                                                            "remove",
-                                                            &format!("b{}", crate::journal::now_millis()),
-                                                            "删除关系",
-                                                        );
-                                                }
-                                                Err(e) => eprintln!("删除关系失败：{e}"),
-                                            }
-                                            this.refresh();
-                                            cx.notify();
-                                        }
-                                    })),
-                            ),
-                    );
+                for row in rows.iter().take(8) {
+                    hist = hist.child(self.evolution_row(&me, row, cx));
                 }
-                d.child(sec_label_mini("关系史"))
+                d.child(sec_label_mini("关系演变"))
+                    .child(
+                        div()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::FAINT())
+                            .child(SharedString::from(format!(
+                                "横轴第 1-{} 章，竖线是现在（第{}章）",
+                                self.last_chapter.max(1),
+                                self.chapter
+                            ))),
+                    )
                     .child(hist)
+                    // 关系维的 Agent 入口。两种：
+                    // 模块级「全量梳理」= 从正文重建整张网；
+                    // 指定对象「这个人跟谁有关」= 只捋选中的这个人的关系。
+                    // 都必须在按钮文字里说清作用范围，作者才知道点下去会改多少东西。
+                    .children(crate::capabilities::agent("relations").map(|a| {
+                        let mut bar = div().flex().flex_wrap().gap(px(4.)).pt(theme::GAP_SM);
+                        for cap in a.bulk {
+                            bar = bar.child(agent_btn(
+                                SharedString::from(format!("rel-agent-{}", cap.key)),
+                                cap.label,
+                            )
+                            .on_click(cx.listener(move |_this, _, _, cx| {
+                                cx.emit(CanvasEvent::Delegate {
+                                    agent: "relations",
+                                    key: cap.key,
+                                    target: None,
+                                });
+                            })));
+                        }
+                        for op in a.targeted {
+                            // 只有 Chapter / Character 这类"带对象"的操作在这个面板上有意义；
+                            // 面板拿不到的对象类型（线、节点、台账条目）不显示，
+                            // 免得点下去指令里写个空对象。
+                            let desc = match op.target_kind {
+                                crate::capabilities::TargetKind::Character => Some(format!(
+                                    "人物：{me}（画布关系维选中）"
+                                )),
+                                crate::capabilities::TargetKind::Chapter => {
+                                    Some(format!("第{}章", self.chapter))
+                                }
+                                _ => None,
+                            };
+                            let Some(desc) = desc else { continue };
+                            bar = bar.child(agent_btn(
+                                SharedString::from(format!("rel-agent-{}", op.key)),
+                                op.label,
+                            )
+                            .on_click(cx.listener(move |_this, _, _, cx| {
+                                cx.emit(CanvasEvent::Delegate {
+                                    agent: "relations",
+                                    key: op.key,
+                                    target: Some(desc.clone()),
+                                });
+                            })));
+                        }
+                        bar.into_any_element()
+                    }))
                     .child(sec_label_mini("新增关系"))
                     .child(
                         div()

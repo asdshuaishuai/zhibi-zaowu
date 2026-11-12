@@ -301,6 +301,65 @@ impl Web {
     }
 }
 
+/// 关系演变视图的一行：某段区间在时间轴上的位置。
+///
+/// 为什么单独算而不是直接读 intervals：作者要看到的是"这条关系在整条时间轴上
+/// 占哪一段、中间有没有断档"。裸 intervals 告诉不了这个——两段之间隔了 10 章
+/// 的空白，在列表里看不出来，在时间轴上是个明显的缺口。
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvolutionRow {
+    /// 关系 id（删的时候要用）
+    pub rid: String,
+    /// 对方的名字
+    pub other: String,
+    /// 关系粗分类（着色用）
+    pub kind: String,
+    /// 每一段：起、止（0 = 至今）、标签、读者是否已知
+    pub spans: Vec<(u32, u32, String, bool)>,
+    /// 这条关系第一次出现的章
+    pub first: u32,
+    /// 最后一次仍在生效的章（0 = 至今）
+    pub last: u32,
+    /// 中间是否有断档（两段之间空了至少一章）
+    pub has_gap: bool,
+}
+
+/// 某个人的关系演变（按"第一次出现"排序）。
+///
+/// `horizon` 是最新成稿章：开放的区间（to=0）画到 horizon。
+pub fn evolution(web: &Web, person: &str, horizon: u32) -> Vec<EvolutionRow> {
+    let mut out: Vec<EvolutionRow> = web
+        .all()
+        .into_iter()
+        .filter(|r| r.from == person || r.to == person)
+        .map(|r| {
+            let other = if r.from == person { r.to.clone() } else { r.from.clone() };
+            let mut spans: Vec<(u32, u32, String, bool)> = r
+                .intervals
+                .iter()
+                .map(|i| (i.from_chapter, i.to_chapter, i.label.clone(), i.public_to_reader))
+                .collect();
+            spans.sort_by_key(|(a, _, _, _)| *a);
+            let first = spans.iter().map(|(a, _, _, _)| *a).min().unwrap_or(0);
+            let last = spans
+                .iter()
+                .map(|(_, b, _, _)| *b)
+                .filter(|b| *b > 0)
+                .max()
+                .unwrap_or(0);
+            // 断档：相邻两段之间，前一段有明确终点、后一段起点明显更晚
+            let has_gap = spans.windows(2).any(|w| {
+                let end_prev = w[0].1;
+                end_prev > 0 && w[1].0 > end_prev
+            });
+            EvolutionRow { rid: r.id.clone(), other, kind: r.kind.clone(), spans, first, last, has_gap }
+        })
+        .collect();
+    out.sort_by(|a, b| a.first.cmp(&b.first).then(a.other.cmp(&b.other)));
+    let _ = horizon;
+    out
+}
+
 /// 谓词 → 粗分类（用于边着色）。
 pub fn classify(predicate: &str) -> String {
     const KIN: &[&str] = &[
@@ -418,6 +477,78 @@ mod tests {
         ];
         assert_eq!(w.migrate_from_facts(&facts, &[]), 1);
         assert_eq!(w.migrate_from_facts(&facts, &[]), 0, "重复迁移不该再增");
+    }
+
+    #[test]
+    fn evolution_marks_a_gap_between_two_spans() {
+        let root = book("evolve-gap");
+        let w = Web::new(&root);
+        // 第 5-10 章师徒，第 10-20 章断了，第 20 章起仇敌
+        w.add_interval("沈砚", "老周", "师承", Interval {
+            from_chapter: 5, to_chapter: 10, label: "师徒".into(),
+            public_to_reader: true, evidence: String::new(),
+        }).unwrap();
+        w.add_interval("沈砚", "老周", "敌对", Interval {
+            from_chapter: 20, to_chapter: 0, label: "仇敌".into(),
+            public_to_reader: false, evidence: String::new(),
+        }).unwrap();
+
+        let rows = evolution(&w, "沈砚", 40);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.other, "老周");
+        assert_eq!(r.spans.len(), 2);
+        assert_eq!(r.first, 5);
+        assert!(r.has_gap, "第 10-20 章之间有 10 章空白，必须标出来");
+        // 暗线标记要带出来（画布上要画紫虚线）
+        assert!(!r.spans[1].3, "仇敌那一段是读者未知");
+    }
+
+    #[test]
+    fn evolution_without_gap_when_spans_touch() {
+        let root = book("evolve-touch");
+        let w = Web::new(&root);
+        w.add_interval("A", "B", "师承", Interval {
+            from_chapter: 1, to_chapter: 10, label: "师徒".into(),
+            public_to_reader: true, evidence: String::new(),
+        }).unwrap();
+        w.add_interval("A", "B", "敌对", Interval {
+            from_chapter: 10, to_chapter: 0, label: "仇敌".into(),
+            public_to_reader: true, evidence: String::new(),
+        }).unwrap();
+        let rows = evolution(&w, "A", 30);
+        assert!(!rows[0].has_gap, "首尾相接不算断档");
+    }
+
+    #[test]
+    fn evolution_lists_both_directions_of_a_relation() {
+        let root = book("evolve-both");
+        let w = Web::new(&root);
+        w.add_interval("甲", "乙", "其他", Interval {
+            from_chapter: 1, to_chapter: 0, label: "相识".into(),
+            public_to_reader: true, evidence: String::new(),
+        }).unwrap();
+        // 从两边的角度都能看到这条关系
+        assert_eq!(evolution(&w, "甲", 10).len(), 1);
+        assert_eq!(evolution(&w, "乙", 10).len(), 1);
+        assert_eq!(evolution(&w, "丙", 10).len(), 0);
+    }
+
+    #[test]
+    fn evolution_sorts_by_first_appearance() {
+        let root = book("evolve-order");
+        let w = Web::new(&root);
+        w.add_interval("我", "后认识", "其他", Interval {
+            from_chapter: 20, to_chapter: 0, label: "相识".into(),
+            public_to_reader: true, evidence: String::new(),
+        }).unwrap();
+        w.add_interval("我", "先认识", "其他", Interval {
+            from_chapter: 3, to_chapter: 0, label: "相识".into(),
+            public_to_reader: true, evidence: String::new(),
+        }).unwrap();
+        let rows = evolution(&w, "我", 30);
+        assert_eq!(rows[0].other, "先认识", "先出现的排前面");
+        assert_eq!(rows[1].other, "后认识");
     }
 
     #[test]

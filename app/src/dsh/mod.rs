@@ -122,14 +122,68 @@ fn short_hash(s: &str) -> String {
 }
 
 struct Inner {
+    /// 这本书的目录（进程登记表用它认人）
+    root: std::path::PathBuf,
     stdin: Mutex<Option<std::process::ChildStdin>>,
     // 子进程句柄仅用于 shutdown 强制终止；读线程持有 stdout 的所有权
-    #[allow(dead_code)]
     child: Mutex<Option<Child>>,
     pending: Mutex<HashMap<i64, async_channel::Sender<Value>>>,
     next_id: AtomicI64,
     ui_tx: async_channel::Sender<DshEvent>,
 }
+
+impl Drop for Inner {
+    /// 最后一个句柄消失时杀掉子进程。
+    ///
+    /// `std::process::Child` 的 Drop **不会**杀进程——Node 会带着整棵 DSH 树
+    /// 留在后台（一本约 100-200MB），关掉工作区回到书架也照样活着。
+    /// 这条以前是完全漏的：界面上"关掉了"，`ps` 里还在。
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.child.lock() {
+            if let Some(child) = guard.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            *guard = None;
+        }
+        if let Ok(mut guard) = self.stdin.lock() {
+            *guard = None;
+        }
+    }
+}
+
+/// 全部活着的 DSH 进程（登记顺序 = 启动顺序）。
+///
+/// 存弱引用：进程真正该死的时候没人能强留它——`Inner` 的 Drop 负责回收，
+/// 这里只是"还有谁在跑"的账本，用来执行上限。
+static LIVE: Mutex<Vec<std::sync::Weak<Inner>>> = Mutex::new(Vec::new());
+
+/// 登记一个新进程；超过上限就先关掉最老的那个。
+///
+/// 为什么要有上限：每本书一个进程是设计，但"曾经打开过的书"在切换瞬间
+/// 可能同时存在（旧工作区还没释放、新工作区已经要发第一条指令）。
+/// 没有上限时它们是自由叠加的，开五本书就是五个 Node。
+fn register(inner: &Arc<Inner>) {
+    let cap = crate::store::load_settings().max_runtime_procs.max(1) as usize;
+    let Ok(mut live) = LIVE.lock() else { return };
+    live.retain(|w| w.strong_count() > 0);
+    // 超上限：从最老的开始关，直到只剩 cap-1 个（给即将登记的这个腾位）
+    while live.len() >= cap {
+        let Some(old) = live.first().and_then(|w| w.upgrade()) else {
+            live.remove(0);
+            continue;
+        };
+        // 先摘掉再关：Drop 里不会回来看这张表，顺序反了会死锁
+        live.remove(0);
+        eprintln!(
+            "DSH 进程数已达上限 {cap}，关闭最早的一个：{}",
+            old.root.display()
+        );
+        old.close();
+    }
+    live.push(Arc::downgrade(inner));
+}
+
 
 impl Inner {
     fn write_line(&self, msg: &Value) -> Result<()> {
@@ -142,6 +196,24 @@ impl Inner {
         stdin.write_all(line.as_bytes())?;
         stdin.flush()?;
         Ok(())
+    }
+}
+
+impl Inner {
+    /// 强制关停（登记表按上限清理时用）。与 `DshClient::shutdown` 同语义。
+    fn close(&self) {
+        let msg = json!({ "jsonrpc": "2.0", "id": 0, "method": "shutdown" });
+        let _ = self.write_line(&msg);
+        if let Ok(mut guard) = self.child.lock() {
+            if let Some(child) = guard.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            *guard = None;
+        }
+        if let Ok(mut guard) = self.stdin.lock() {
+            *guard = None;
+        }
     }
 }
 
@@ -538,22 +610,16 @@ impl DshClient {
             }
         }
 
-        // 联网开关：关掉就把 tool-web 整行 disabled（不是只禁 fetch，
-        // 而是连 search 也不给——"允许联网"是一个整体授权）。
+        // 联网关掉时，除了 tool-web 本体，底层的 search/fetch 两个实现也要停：
+        // 「允许联网」是一个整体授权，只关工具外壳会留下两个仍可被调用的入口。
         if !settings.web_enabled {
-            lines.push("- id: tool-web".into());
-            lines.push("  disabled: true".into());
             lines.push("- id: web-search-deepseek".into());
             lines.push("  disabled: true".into());
             lines.push("- id: web-fetch-http".into());
             lines.push("  disabled: true".into());
         }
-
-        // 子 agent 开关：托管模式下关掉 = 主 Agent 自己干，不派活。
-        // 极简模式本来就关了，这里只影响托管/创造。
-        if !settings.subagent_enabled && mode != AgentMode::Minimal {
-            lines.push("- id: tool-subagent".into());
-            lines.push("  disabled: true".into());
+        // 子 agent 关掉时，fork 那种"复制自己"的委派也要停（它不走 allowedAgentPresets）。
+        if !settings.subagent_enabled {
             lines.push("- id: tool-subagent-fork".into());
             lines.push("  disabled: true".into());
         }
@@ -584,6 +650,25 @@ impl DshClient {
             // 创造模式要能真的把新 Agent 持久化，工具化管理器必须开着
             lines.push("- id: tool-plugin-manager".into());
             lines.push("  disabled: false".into());
+        }
+
+        // 内置插件开关（设置页「内置插件」）。只写被关掉的行——
+        // 默认全开时一行不写，避免升级后我们这条空写的行把 DSH 新加的
+        // 同 id 配置整段盖掉（patch 是按行覆盖）。
+        //
+        // 与"AI 权限"里的两个开关合并成一份：它们说的是同一件事
+        //（允许联网 / 允许派子 agent），只是入口不同。不合并的话，
+        // 作者在插件页重新打开 tool-web、但权限页还留着"关"，会莫名其妙不生效。
+        let mut overrides = settings.plugin_overrides.clone();
+        if !settings.web_enabled {
+            overrides.insert("tool-web".into(), false);
+        }
+        if !settings.subagent_enabled {
+            overrides.insert("tool-subagent".into(), false);
+        }
+        for (row, off) in crate::plugins::disabled_rows(&overrides) {
+            lines.push(format!("- id: {row}"));
+            lines.push(format!("  disabled: {}", off));
         }
 
         // 主 Agent 的系统提示：派活路由表。
@@ -757,12 +842,15 @@ impl DshClient {
 
         let (ui_tx, ui_rx) = async_channel::unbounded::<DshEvent>();
         let inner = Arc::new(Inner {
+            root: root.to_path_buf(),
             stdin: Mutex::new(Some(stdin)),
             child: Mutex::new(Some(child)),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicI64::new(1),
             ui_tx,
         });
+
+        register(&inner);
 
         // 读线程：一行一个 JSON-RPC 消息，分类路由
         let reader_inner = Arc::clone(&inner);
@@ -1006,19 +1094,24 @@ impl DshClient {
             .await
     }
 
-    /// 结束运行时（M2 接退出流程；M1 仅保留 API）。
-    #[allow(dead_code)]
+    /// 结束运行时。
     pub fn shutdown(&self) {
-        let _ = self.call("shutdown", Value::Null);
-        if let Ok(mut guard) = self.inner.child.lock() {
-            if let Some(child) = guard.as_mut() {
-                let _ = child.kill();
-            }
-            *guard = None;
-        }
-        if let Ok(mut guard) = self.inner.stdin.lock() {
-            *guard = None;
-        }
+        self.inner.close();
+    }
+
+    /// 这本书的目录（进程登记表与诊断用）。
+    #[allow(dead_code)]
+    pub fn root(&self) -> &std::path::Path {
+        &self.inner.root
+    }
+
+    /// 进程还活着吗。
+    ///
+    /// 用途：进程被上限登记表顶掉、或自己崩了之后，句柄还挂在 Workspace 上。
+    /// 不做这个检查的话，下一次发送会用一条已经关闭的 stdin 报"运行时已退出"，
+    /// 而作者看到的是"我明明刚发了一句，什么都没发生"。
+    pub fn is_alive(&self) -> bool {
+        self.inner.stdin.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 }
 

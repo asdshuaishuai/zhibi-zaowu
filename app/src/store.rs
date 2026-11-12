@@ -22,7 +22,7 @@ fn dirs_home() -> PathBuf {
 }
 
 /// 原子写：先写同名 `.tmp` 再 rename。写一半崩溃时旧文件保持完整（JSON 不会被截断）。
-fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -142,7 +142,7 @@ impl ProjectHandle {
     /// 书目信息写回（题材/简介/目标章数/章字数目标等；GUI 书目页唯一入口）。
     pub fn save_project(&self, p: &NovelProject) -> Result<(), String> {
         let json = serde_json::to_string_pretty(p).map_err(|e| e.to_string())?;
-        atomic_write(&self.root.join("project.json"), &json)
+        write_atomic(&self.root.join("project.json"), &json)
     }
 
     /// 章字数目标（编辑器进度环的事实源）。
@@ -249,15 +249,15 @@ pub fn create_project(title: &str) -> Result<PathBuf, String> {
         ..Default::default()
     };
     let json = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
-    atomic_write(&dir.join("project.json"), &json)?;
+    write_atomic(&dir.join("project.json"), &json)?;
     // M7 预言书/画板底座：α=正典基准只读行；画板视图态初始空对象
-    atomic_write(
+    write_atomic(
         &dir.join("worldlines.json"),
         &serde_json::to_string_pretty(&serde_json::json!([
             { "id": "α", "name": "正典", "premise": "当前事实基准", "forkedChapter": 0, "status": "基准", "nodes": [], "edges": [], "diffs": [], "derived": { "characters": [], "canon": [], "clues": [] } }
         ])).unwrap(),
     )?;
-    atomic_write(&dir.join("canvas.json"), "{}")?;
+    write_atomic(&dir.join("canvas.json"), "{}")?;
     Ok(dir)
 }
 
@@ -309,11 +309,11 @@ impl ProjectHandle {
             let seed = serde_json::json!([
                 { "id": "α", "name": "正典", "premise": "当前事实基准", "forkedChapter": 0, "status": "基准", "nodes": [], "edges": [], "diffs": [], "derived": { "characters": [], "canon": [], "clues": [] } }
             ]);
-            let _ = atomic_write(&wl, &serde_json::to_string_pretty(&seed).unwrap());
+            let _ = write_atomic(&wl, &serde_json::to_string_pretty(&seed).unwrap());
         }
         let cv = self.root.join("canvas.json");
         if !cv.exists() {
-            let _ = atomic_write(&cv, "{}");
+            let _ = write_atomic(&cv, "{}");
         }
     }
 
@@ -371,7 +371,7 @@ impl ProjectHandle {
         let old_text = self.prose(n);
         let old_words = chinese_count(&old_text);
         let new_words = chinese_count(text);
-        atomic_write(&self.prose_path(n), text)?;
+        write_atomic(&self.prose_path(n), text)?;
         // 落盘成功才记日志：写失败还留一条“已改动”的记录会误导撤销
         if old_text != text {
             let rel = format!("chapters/{}/prose.md", chapter_dir_name(n));
@@ -421,7 +421,7 @@ impl ProjectHandle {
         let cur = map.get(&today).and_then(|n| n.as_u64()).unwrap_or(0) as i64;
         let next = (cur + delta).max(0) as u64;
         map.insert(today, serde_json::json!(next));
-        atomic_write(&path, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
+        write_atomic(&path, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
     }
 
     pub fn ensure_chapter(&self, n: u32) -> Result<(), String> {
@@ -429,14 +429,14 @@ impl ProjectHandle {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let meta = dir.join("meta.json");
         if !meta.exists() {
-            atomic_write(
+            write_atomic(
                 &meta,
                 &format!("{{\"title\": \"第{n}章\", \"number\": {n}}}"),
             )?;
         }
         let prose = self.prose_path(n);
         if !prose.exists() {
-            atomic_write(&prose, "")?;
+            write_atomic(&prose, "")?;
         }
         Ok(())
     }
@@ -488,6 +488,17 @@ mod tests {
         assert!(cfg.web_enabled, "老配置缺键时必须默认允许联网");
         assert!(cfg.subagent_enabled, "老配置缺键时必须默认允许子 agent");
         assert_eq!(cfg.idle_recycle_min, 30);
+        assert_eq!(cfg.max_runtime_procs, 2, "老配置缺键时必须给进程数上限");
+    }
+
+    #[test]
+    fn max_runtime_procs_defaults_to_two_and_never_zero() {
+        // 上限必须至少 1：0 会让"开书"这件事本身失败（登记时先关掉最老的一个，
+        // 没有可关的就卡住）。这条防的是有人把默认值调成 0 当"不限制"。
+        assert_eq!(AppSettings::default().max_runtime_procs, 2);
+        let old = serde_json::json!({ "model": "x" });
+        let cfg: AppSettings = serde_json::from_value(old).unwrap();
+        assert_eq!(cfg.max_runtime_procs, 2, "老配置缺键时用默认值");
     }
 
     #[test]
@@ -631,6 +642,134 @@ mod tests {
 
         // 不存在对象报错（世界线排期板拒拖野卡）
         assert!(handle.set_event_chapter("E99", 1).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn accepting_a_proposal_that_breaks_the_ledger_rolls_it_back() {
+        // AI 写出的 payload 是自由 JSON。这里构造一个"看起来合理但结构坏了"的
+        // 提案：同一次采纳里改两条伏笔，其中一条的章号是中文数字。
+        let (home, _guard) = use_home("schema-reject");
+        let dir = create_project("结构校验").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        handle
+            .save_array(
+                "clues.json",
+                &[serde_json::json!({ "id": "F01", "title": "旧伏笔", "plantedChapter": 3, "status": "埋下" })],
+            )
+            .unwrap();
+        let pid = handle
+            .add_proposal_local(
+                "测试",
+                "坏提案",
+                "",
+                serde_json::json!({
+                    "kind": "clues",
+                    "clues": [
+                        { "id": "F02", "title": "新伏笔", "plantedChapter": 5 },
+                        // 这条会让整个文件不合法
+                        { "id": "F03", "title": "坏章号", "plantedChapter": "第十二章" }
+                    ]
+                }),
+            )
+            .unwrap();
+
+        let err = handle.accept_proposal(&pid).unwrap_err();
+        assert!(err.contains("采纳被拒"), "{err}");
+        assert!(err.contains("plantedChapter"), "要指出坏在哪：{err}");
+
+        // 台账回到采纳前：一条都没多
+        let clues = handle.ledger(Ledger::Clues).unwrap();
+        assert_eq!(clues.len(), 1, "整档回滚，不留半条：{clues:?}");
+        assert_eq!(clues[0]["id"], serde_json::json!("F01"));
+
+        // 提案仍是待审——作者修好 payload 还能再来一次
+        let p = handle.proposals().into_iter().find(|p| p.id == pid).unwrap();
+        assert_eq!(p.status, "待确认");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn accepting_a_clean_proposal_still_works_with_the_guard() {
+        let (home, _guard) = use_home("schema-ok");
+        let dir = create_project("结构校验通过").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        let pid = handle
+            .add_proposal_local(
+                "测试",
+                "好提案",
+                "",
+                serde_json::json!({
+                    "kind": "clues",
+                    "clues": [{ "id": "F01", "title": "新伏笔", "plantedChapter": 5 }]
+                }),
+            )
+            .unwrap();
+        let (applied, _) = handle.accept_proposal(&pid).unwrap();
+        assert_eq!(applied, 1);
+        assert_eq!(handle.ledger(Ledger::Clues).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn adopt_single_node_turns_it_into_a_planned_event_proposal() {
+        let (home, _guard) = use_home("adopt-node");
+        let dir = create_project("逐节点采纳").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        handle.save_worldlines(&[serde_json::json!({
+            "id": "β", "name": "假设线", "premise": "他没去救", "kind": "what-if",
+            "forkedChapter": 12, "status": "推演中",
+            "nodes": [
+                { "id": "n1", "kind": "event", "label": "师兄反目", "chapter": 15, "state": "planned" },
+                { "id": "n2", "kind": "event", "label": "夜探总舵", "chapter": 0, "state": "planned" }
+            ],
+            "edges": [], "diffs": []
+        })]).unwrap();
+
+        // 未排章的节点不能采纳：没有章号就排不进 events
+        let err = handle.adopt_node("β", "n2").unwrap_err();
+        assert!(err.contains("排章"), "要说明为什么不能采纳，实际：{err}");
+
+        let pid = handle.adopt_node("β", "n1").unwrap();
+        let p = handle.proposals().into_iter().find(|p| p.id == pid).unwrap();
+        assert_eq!(p.payload["kind"], serde_json::json!("plannedEvent"));
+        assert_eq!(p.payload["chapter"], serde_json::json!(15));
+        assert_eq!(p.payload["title"], serde_json::json!("师兄反目"));
+        assert_eq!(p.capability, "世界线·逐节点采纳");
+
+        // 节点状态同步改成 adopted——时间轴上要能看出"这条已经承认了"
+        let line = handle.worldlines().into_iter().find(|l| l["id"] == serde_json::json!("β")).unwrap();
+        let n1 = line["nodes"].as_array().unwrap().iter().find(|n| n["id"] == "n1").unwrap().clone();
+        assert_eq!(n1["state"], serde_json::json!("adopted"));
+
+        // 重复采纳被拒（不能靠连点造出两条一样的提案）
+        assert!(handle.adopt_node("β", "n1").is_err());
+
+        // 采纳仍然只是提案：正典事件没动，要过收件箱
+        assert!(handle.events().is_empty(), "采纳 ≠ 直写正典");
+        handle.accept_proposal(&pid).unwrap();
+        let ev = handle.events();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["chapter"], serde_json::json!(15));
+        assert_eq!(ev[0]["happened"], serde_json::json!(false), "还没写到，是计划事件");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn adopt_node_reads_chapter_from_reference_when_field_is_empty() {
+        // AI 填的节点常常只有 reference 里的 ch-015，没有 chapter 字段。
+        // 这种节点作者看图点"采纳"时不该被拦下来。
+        let (home, _guard) = use_home("adopt-guess");
+        let dir = create_project("采纳猜章").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        handle.save_worldlines(&[serde_json::json!({
+            "id": "γ", "name": "推断", "kind": "what-if", "forkedChapter": 5, "status": "推演中",
+            "nodes": [{ "id": "n1", "kind": "event", "label": "城门失守", "reference": "ch-018" }],
+            "edges": [], "diffs": []
+        })]).unwrap();
+        let pid = handle.adopt_node("γ", "n1").unwrap();
+        let p = handle.proposals().into_iter().find(|p| p.id == pid).unwrap();
+        assert_eq!(p.payload["chapter"], serde_json::json!(18));
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1404,7 +1543,7 @@ impl ProjectHandle {
     fn save_proposals(&self, list: &[Proposal]) -> Result<(), String> {
         let path = self.root.join("proposals").join("inbox.json");
         let json = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
-        atomic_write(&path, &json)
+        write_atomic(&path, &json)
     }
 
     /// 确定性采纳（账房语义与 novel-pack apply_proposal 一致：同题保护/同 id 合并/
@@ -1416,7 +1555,21 @@ impl ProjectHandle {
             return Err(format!("提案已处理（{}），拒绝重复采纳", list[idx].status));
         }
         let p = list[idx].clone();
-        let (applied, skipped) = self.apply_payload(&p.payload)?;
+        // 采纳前抓住台账前像：AI 写的 payload 是自由 JSON，落库之后
+        // 一旦发现结构坏了（章号写成“第十二章”、id 撞车），必须整档退回，
+        // 不能让作者面对一份"半新半旧"的台账。
+        let guard = crate::schema::Guard::capture(&self.root);
+        let (applied, skipped) = match self.apply_payload(&p.payload) {
+            Ok(r) => r,
+            Err(e) => return Err(e),
+        };
+        if let Err(problems) = guard.verify(&self.root) {
+            let why: Vec<String> = problems.iter().map(|p| p.summary()).collect();
+            return Err(format!(
+                "采纳被拒：{}。台账已恢复到采纳前，提案保持待审。",
+                why.join("；")
+            ));
+        }
         if applied == 0 {
             return Err(format!("未入库：{}——提案保持待审", skipped.join("、")));
         }
@@ -1465,7 +1618,7 @@ impl ProjectHandle {
                         continue;
                     }
                     let body = d.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                    atomic_write(&file, body)?;
+                    write_atomic(&file, body)?;
                     applied += 1;
                 }
             }
@@ -1530,8 +1683,8 @@ impl ProjectHandle {
                     let backups = self.root.join("canon").join("backups");
                     std::fs::create_dir_all(&backups).map_err(|e| e.to_string())?;
                     let backup = unique_backup_path(&backups, &safe_file_name(&title));
-                    atomic_write(&backup, &doc)?;
-                    atomic_write(&file, body)?;
+                    write_atomic(&backup, &doc)?;
+                    write_atomic(&file, body)?;
                     applied += 1;
                 }
             }
@@ -1676,7 +1829,7 @@ impl ProjectHandle {
                         .map_err(|e| format!("读取设定「{title}」失败：{e}"))?;
                     let body = strip_category_header(&body);
                     self.snapshot_ledger_files(&[&format!("canon/{}.md", safe_file_name(&title))])?;
-                    atomic_write(&file, &format!("<!-- 类别:{category} -->\n{body}"))?;
+                    write_atomic(&file, &format!("<!-- 类别:{category} -->\n{body}"))?;
                     if let Some(rename) = it.get("rename").and_then(|r| r.as_str()) {
                         let rename = rename.trim();
                         if !rename.is_empty() && rename != title {
@@ -1846,7 +1999,7 @@ impl ProjectHandle {
                 }
                 mem["facts"] = serde_json::json!(cur);
                 self.snapshot_ledger_files(&["memory.json"])?;
-                atomic_write(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)?;
+                write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)?;
                 applied = added;
             }
             "aliases" => {
@@ -1898,7 +2051,7 @@ impl ProjectHandle {
                 }
                 mem["aliases"] = serde_json::json!(cur);
                 self.snapshot_ledger_files(&["memory.json"])?;
-                atomic_write(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)?;
+                write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)?;
             }
             "dossier" => {
                 // 档案卡入 dossiers.json（同章覆盖：最新档案为准）
@@ -2090,7 +2243,7 @@ impl ProjectHandle {
             };
             let path = dir.join(&name);
             if !path.exists() {
-                return atomic_write(&path, &src);
+                return write_atomic(&path, &src);
             }
             seq += 1;
         }
@@ -2177,7 +2330,7 @@ impl ProjectHandle {
     }
 
     fn save_array(&self, file: &str, arr: &[serde_json::Value]) -> Result<(), String> {
-        atomic_write(
+        write_atomic(
             &self.root.join(file),
             &serde_json::to_string_pretty(arr).map_err(|e| e.to_string())?,
         )
@@ -2254,7 +2407,7 @@ impl ProjectHandle {
         for name in names {
             upsert_alias_from_subject(&mut mem, &serde_json::json!({ "subject": name }));
         }
-        atomic_write(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)
+        write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)
     }
     /// 合并写章 meta（骨架/报告/标题共用）。
     pub(crate) fn meta_patch(&self, n: u32, patch: &[(&str, serde_json::Value)]) -> Result<(), String> {
@@ -2270,7 +2423,7 @@ impl ProjectHandle {
                 obj.insert((*k).to_string(), val.clone());
             }
         }
-        atomic_write(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
+        write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
     }
 
     pub fn set_chapter_title(&self, n: u32, title: &str) -> Result<(), String> {
@@ -2285,7 +2438,7 @@ impl ProjectHandle {
             obj.insert("title".into(), serde_json::json!(title));
             obj.insert("number".into(), serde_json::json!(n));
         }
-        atomic_write(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
+        write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
     }
 
     pub fn chapter_notes(&self, n: u32) -> String {
@@ -2311,7 +2464,7 @@ impl ProjectHandle {
         if let Some(obj) = v.as_object_mut() {
             obj.insert("notes".into(), serde_json::json!(notes));
         }
-        atomic_write(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
+        write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
     }
 
     /// 最近成稿章（有非空正文的最大章号；无成稿时按 1）。
@@ -2374,7 +2527,7 @@ impl ProjectHandle {
         obj.insert("premise".into(), serde_json::json!(premise.trim()));
         obj.insert("targetChapters".into(), serde_json::json!(target_chapters));
         obj.insert("chapterWordTarget".into(), serde_json::json!(chapter_word_target));
-        atomic_write(&path, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
+        write_atomic(&path, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
     }
 
     pub fn chapter_word_target(&self) -> u32 {
@@ -2435,6 +2588,17 @@ pub struct AppSettings {
     pub subagent_enabled: bool,
     /// 空闲回收 DSH 进程的分钟数（0 = 不回收）。
     pub idle_recycle_min: u32,
+    /// 内置插件开关：行 id → 是否启用。缺键 = 开（默认全开）。
+    ///
+    /// 为什么 key 是 patch 行 id 而不是包名：能开关的最小单位是一行，
+    /// 一个包可能插三行。见 `plugins.rs` 的模块注释。
+    pub plugin_overrides: std::collections::BTreeMap<String, bool>,
+    /// 同时活着的 DSH 进程上限（每本书一个进程，切书时旧的可能还没释放）。
+    ///
+    /// 默认 2：正常写作只需要一本书的进程；切书瞬间会短暂出现两个。
+    /// 调大没有意义（多出来的进程只会占内存），调小到 1 会让切书时立刻互相顶掉，
+    /// 每次回上一本书都要重新启动 + resume。
+    pub max_runtime_procs: u32,
 }
 
 impl Default for AppSettings {
@@ -2451,6 +2615,8 @@ impl Default for AppSettings {
             web_enabled: true,
             subagent_enabled: true,
             idle_recycle_min: 30,
+            max_runtime_procs: 2,
+            plugin_overrides: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -2496,7 +2662,7 @@ pub fn load_settings() -> AppSettings {
 
 pub fn save_settings(s: &AppSettings) -> Result<(), String> {
     let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    atomic_write(&settings_path(), &json)
+    write_atomic(&settings_path(), &json)
 }
 
 impl ProjectHandle {
@@ -2618,7 +2784,7 @@ impl ProjectHandle {
     }
 
     pub fn save_worldlines(&self, lines: &[serde_json::Value]) -> Result<(), String> {
-        atomic_write(
+        write_atomic(
             &self.root.join("worldlines.json"),
             &serde_json::to_string_pretty(lines).map_err(|e| e.to_string())?,
         )
@@ -2633,7 +2799,7 @@ impl ProjectHandle {
     }
 
     pub fn save_canvas_state(&self, v: &serde_json::Value) -> Result<(), String> {
-        atomic_write(
+        write_atomic(
             &self.root.join("canvas.json"),
             &serde_json::to_string_pretty(v).map_err(|e| e.to_string())?,
         )
@@ -2774,6 +2940,90 @@ impl ProjectHandle {
         Ok(id)
     }
 
+    /// 逐节点采纳：把一条 if 线上的某个节点定为正典后续。
+    ///
+    /// 与 `promote_diff_chapter` 的区别在**粒度**：diff 是"这条假设对正典的影响"，
+    /// 一次能有好几条，还常常含糊到没法直接排章；节点是"第 N 章发生这件事"，
+    /// 作者看图时指的就是它。计划里写"可逐节点采纳"要的正是这条路径。
+    ///
+    /// 产出仍是提案（`plannedEvent`），不是直写 events.json：采纳是作者的
+    /// 决定，落库仍要过收件箱——否则一条 AI 推出来的节点会绕过裁决进正典。
+    /// 节点状态同步置 `adopted`，这样时间轴上能看出"这条已经承认了"，
+    /// 而不是还显示成"计划"。
+    pub fn adopt_node(&self, worldline_id: &str, node_id: &str) -> Result<String, String> {
+        let mut lines = self.read_array_checked("worldlines.json")?;
+        let w = lines
+            .iter_mut()
+            .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(worldline_id))
+            .ok_or_else(|| format!("世界线不存在：{worldline_id}"))?;
+        let nodes = w.get("nodes").and_then(|n| n.as_array()).cloned().unwrap_or_default();
+        let node = nodes
+            .iter()
+            .find(|n| n.get("id").and_then(|i| i.as_str()) == Some(node_id))
+            .cloned()
+            .ok_or_else(|| format!("线{worldline_id}没有节点 {node_id}"))?;
+        let label = node.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let state = node.get("state").and_then(|v| v.as_str()).unwrap_or("planned");
+        if state == "adopted" || state == "written" {
+            return Err(format!("节点「{label}」已采纳，拒绝重复"));
+        }
+        let reference0 = node
+            .get("reference")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        // 章号优先取显式 chapter，其次从 reference/label 里的 ch-NNN 猜
+        // （与 Node::chapter_or_guess 同一套规则，这里够用）。
+        let chapter = node
+            .get("chapter")
+            .and_then(|v| v.as_u64())
+            .filter(|c| *c > 0)
+            .map(|c| c as u32)
+            .or_else(|| {
+                crate::worldline::guess_chapter(&format!("{reference0} {label}"))
+            })
+            .ok_or_else(|| format!("节点「{label}」还没排章，无法采纳——先给它定第几章"))?;
+        let storyline = if reference0.is_empty() { label.clone() } else { reference0.clone() };
+        let payload = serde_json::json!({
+            "kind": "plannedEvent",
+            "chapter": chapter,
+            "title": label,
+            "storylineID": storyline,
+            "from": format!("线{worldline_id}"),
+            "sourceRefs": [format!("线{worldline_id}"), format!("节点:{node_id}")],
+        });
+        let id = uuid_like();
+        let mut plist = self.proposals_checked()?;
+        plist.insert(0, Proposal {
+            id: id.clone(),
+            capability: "世界线·逐节点采纳".into(),
+            title: format!("{label} → 第{chapter}章（线{worldline_id}）"),
+            note: format!("逐节点采纳：线{worldline_id} 的节点 {node_id}"),
+            payload,
+            status: "待确认".into(),
+            created_at: iso_now(),
+            decided_at: None,
+            reject_reason: None,
+            apply_result: None,
+            extra: Default::default(),
+        });
+        self.save_proposals(&plist)?;
+
+        // 写回节点状态
+        if let Some(arr) = w.get_mut("nodes").and_then(|n| n.as_array_mut()) {
+            for n in arr.iter_mut() {
+                if n.get("id").and_then(|i| i.as_str()) == Some(node_id) {
+                    if let Some(obj) = n.as_object_mut() {
+                        obj.insert("state".into(), serde_json::json!("adopted"));
+                        obj.insert("adoptedProposalId".into(), serde_json::json!(id));
+                    }
+                }
+            }
+        }
+        self.save_worldlines(&lines)?;
+        Ok(id)
+    }
+
     /// 世界线归档/恢复（预言书面板按钮；α 基准不可动）。
     pub fn toggle_worldline_archive(&self, id: &str) -> Result<String, String> {
         if id == "α" {
@@ -2794,16 +3044,20 @@ impl ProjectHandle {
         Ok(new.to_string())
     }
 
+    /// 直接落一条待审提案（内部用：能力产出、测试）。
+    ///
+    /// 返回提案 id——调用方几乎总要拿它去 accept 或回显，不返回就只能再查一遍。
     fn add_proposal_local(
         &self,
         capability: &str,
         title: &str,
         note: &str,
         payload: serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
+        let id = uuid_like();
         let mut list = self.proposals_checked()?;
         list.insert(0, Proposal {
-            id: uuid_like(),
+            id: id.clone(),
             capability: capability.into(),
             title: title.into(),
             note: note.into(),
@@ -2815,7 +3069,8 @@ impl ProjectHandle {
             apply_result: None,
             extra: Default::default(),
         });
-        self.save_proposals(&list)
+        self.save_proposals(&list)?;
+        Ok(id)
     }
 }
 

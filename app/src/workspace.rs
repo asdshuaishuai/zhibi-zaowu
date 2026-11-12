@@ -22,7 +22,7 @@ use std::rc::Rc;
 
 use crate::chat::{ChatEvent, ChatMsg, ChatPanel};
 use crate::bookinfo::{BookInfoEvent, BookInfoPanel};
-use crate::canvas::{CanvasPanel, OracleEvent, OraclePanel};
+use crate::canvas::{CanvasEvent, CanvasPanel, OracleEvent, OraclePanel};
 use crate::director::{DirectorEvent, DirectorPanel};
 use crate::dsh::{self, AgentMode, DshClient, DshEvent, model_route};
 use crate::editor::{EditorEvent, EditorPanel};
@@ -356,6 +356,20 @@ pub struct Workspace {
     meta_target: Entity<InputState>,
     meta_word_target: Entity<InputState>,
     meta_open: bool,
+}
+
+impl Drop for Workspace {
+    /// 关掉书 = 杀掉这本书的 DSH 进程。
+    ///
+    /// 不做这件事的后果是肉眼看不见的：界面回到书架，`ps` 里还留着一个 Node
+    /// （一本 100-200MB），继续开着直到整个 App 退出。`Child` 的 Drop 不杀进程，
+    /// 读线程还持着 `Arc<Inner>`，所以光靠丢智能指针也回收不掉——
+    /// 必须显式 kill，让 stdout 关闭、读线程退出，`Inner` 才跟着释放。
+    fn drop(&mut self) {
+        if let Some(client) = self.client.take() {
+            client.shutdown();
+        }
+    }
 }
 
 impl Workspace {
@@ -824,6 +838,22 @@ impl Workspace {
                             .worldline_view
                             .update(cx, |p, cx| p.set_message(format!("删除失败：{e}"), cx)),
                     },
+                    WE::NodeAdopt { line, node } => {
+                        match this.handle.adopt_node(line, node) {
+                            Ok(pid) => {
+                                this.worldline_view.update(cx, |p, cx| {
+                                    p.set_message(
+                                        format!("已逐节点采纳 → 提案 {pid}（收件箱待裁决）"),
+                                        cx,
+                                    )
+                                });
+                                this.inbox.update(cx, |panel, cx| panel.refresh(cx));
+                            }
+                            Err(e) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message(format!("采纳失败：{e}"), cx)),
+                        }
+                    }
                     WE::NodeAdd { line, kind, label, chapter } => {
                         let nid = next_node_id(line, &this.handle);
                         let mut n = crate::worldline::Node::new(&nid, kind, label);
@@ -910,6 +940,18 @@ impl Workspace {
                             }),
                         }
                     }
+                }
+            },
+        )
+        .detach();
+
+        // 画布（关系维）的 Agent 入口：只转交，不自己拼指令。
+        cx.subscribe_in(
+            &canvas_view,
+            window,
+            |this, _, ev: &CanvasEvent, _window, cx| match ev {
+                CanvasEvent::Delegate { agent, key, target } => {
+                    this.delegate(agent, key, target.clone(), cx);
                 }
             },
         )
@@ -1715,8 +1757,18 @@ impl Workspace {
         // 每次要用之前检查一次——比后台定时器简单，也不会在作者正忙时误杀。
         self.recycle_if_idle(cx);
         if let Some(client) = &self.client {
-            self.dsh_last_active = std::time::Instant::now();
-            return Ok(client.clone());
+            if client.is_alive() {
+                self.dsh_last_active = std::time::Instant::now();
+                return Ok(client.clone());
+            }
+            // 进程已经没了（被上限顶掉 / 崩了）：丢掉死句柄重新起一个。
+            // 会话历史在 DSH 的 jsonl 里，重建后 resume 接得回来。
+            self.trajectory.update(cx, |panel, cx| {
+                panel.push(TrajKind::Info("DSH 进程已不在，正在重启（会话历史保留）".into()), cx)
+            });
+            self.client = None;
+            self.initialized = false;
+            self.session_attached = false;
         }
         self.dsh_last_active = std::time::Instant::now();
         let mode = self.agent_mode;
@@ -1961,6 +2013,18 @@ impl Workspace {
     /// 为什么放在回合结束而不是每次写文件时：一次回合可能写很多次，
     /// 逐次通报会把轨迹刷满；而且作者在一次回合里更关心"这批改动整体合规吗"。
     fn check_breaches(&mut self, cx: &mut Context<Self>) {
+        // 先查台账结构：AI 绕过工具直写的台账 JSON 如果结构坏了，这里自动回滚。
+        //
+        // 顺序放在越界检查之前：越界检查是基于 journal 的（AI 改过哪些章），
+        // 而台账回滚本身也走 journal 的 undo——先回滚能把"已撤回"的状态定下来，
+        // 后面的越界统计才不会把一条已经退回去的改动再报一次。
+        let broken = crate::schema::validate_and_rollback_ai_edits(&self.root, 200);
+        for p in &broken {
+            self.trajectory.update(cx, |panel, cx| {
+                panel.push(TrajKind::Fail(format!("⚠ {}", p.summary())), cx)
+            });
+        }
+
         let auth = crate::journal::BookAuth::load(&self.root);
         let breaches = crate::journal::find_breaches(&self.root, &auth, 200);
         if breaches.is_empty() {
