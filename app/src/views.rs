@@ -18,7 +18,6 @@ use gpui_kit::component::table::{
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::Sizable;
-use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
@@ -44,7 +43,6 @@ impl EventEmitter<PanelEvent> for StatsPanel {}
 impl EventEmitter<ViewEvent> for StatsPanel {}
 impl EventEmitter<PanelEvent> for CluesPanel {}
 impl EventEmitter<ViewEvent> for CluesPanel {}
-impl EventEmitter<PanelEvent> for CharactersPanel {}
 
 /* ───────────────────────── 视觉公共件（chip / 表格 / 按钮令牌配方） ───────────────────────── */
 
@@ -899,16 +897,145 @@ impl ComponentPanel for CluesPanel {
     }
 }
 
-/* ───────────────────────── 人物卡（别名归一） ───────────────────────── */
+/* ───────────────────────── 人物档案（左列表 · 右档案 · 可编辑） ───────────────────────── */
+
+/// 人物页的编辑事件。所有写操作都走宿主，页面本身不碰磁盘。
+#[derive(Debug, Clone)]
+pub enum CharacterEvent {
+    /// 新建人物（名字）
+    Create(String),
+    /// 保存当前档案
+    Save(Box<crate::characters::Character>),
+    /// 删除某人
+    Delete(String),
+    /// 把 from 合并进 into
+    Merge { into: String, from: String },
+    /// 新建别名（追加到当前人物）
+    AddAlias(String),
+    /// 移除别名
+    RemoveAlias(String),
+    /// 从 memory.json 迁移
+    Migrate,
+    /// 锁定/解锁某字段
+    ToggleLock(String),
+}
 
 pub struct CharactersPanel {
     focus_handle: FocusHandle,
     handle: Rc<ProjectHandle>,
+    /// 列表
+    people: Vec<crate::characters::Character>,
+    /// 当前选中
+    selected: Option<String>,
+    /// 档案字段编辑框（与 selected 同步）
+    ed_name: Entity<gpui_kit::component::input::InputState>,
+    ed_role: Entity<gpui_kit::component::input::InputState>,
+    ed_faction: Entity<gpui_kit::component::input::InputState>,
+    ed_appearance: Entity<gpui_kit::component::input::InputState>,
+    ed_personality: Entity<gpui_kit::component::input::InputState>,
+    ed_motivation: Entity<gpui_kit::component::input::InputState>,
+    ed_background: Entity<gpui_kit::component::input::InputState>,
+    ed_voice: Entity<gpui_kit::component::input::InputState>,
+    ed_status: Entity<gpui_kit::component::input::InputState>,
+    /// 新建 / 加别名的临时输入
+    ed_new: Entity<gpui_kit::component::input::InputState>,
+    /// 提示（迁移结果、错误）
+    message: Option<String>,
 }
 
 impl CharactersPanel {
-    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
-        Self { focus_handle: cx.focus_handle(), handle }
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        // 每个输入框都新建一个 InputState；window 借用不能跨闭包捕获，所以逐个写
+        fn mk(
+            window: &mut Window,
+            cx: &mut Context<CharactersPanel>,
+            placeholder: &str,
+        ) -> Entity<gpui_kit::component::input::InputState> {
+            cx.new(|c| {
+                gpui_kit::component::input::InputState::new(window, c)
+                    .placeholder(placeholder.to_string())
+            })
+        }
+        let mut panel = Self {
+            focus_handle: cx.focus_handle(),
+            handle,
+            people: Vec::new(),
+            selected: None,
+            ed_name: mk(window, cx, "本名"),
+            ed_role: mk(window, cx, "角色定位：主角/反派/导师…"),
+            ed_faction: mk(window, cx, "阵营 / 所属"),
+            ed_appearance: mk(window, cx, "外貌"),
+            ed_personality: mk(window, cx, "性格"),
+            ed_motivation: mk(window, cx, "动机：他/她想要什么"),
+            ed_background: mk(window, cx, "背景"),
+            ed_voice: mk(window, cx, "口吻：说话方式、用词、口头禅"),
+            ed_status: mk(window, cx, "当前状态：活着/受伤/失忆…"),
+            ed_new: mk(window, cx, "名字"),
+            message: None,
+        };
+        panel.reload(window, cx);
+        panel
+    }
+
+    /// 从磁盘重读，并把选中项回填到编辑框。
+    pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.people = crate::characters::Roster::new(&self.handle.root).all();
+        if self.selected.is_none() && !self.people.is_empty() {
+            self.selected = Some(self.people[0].id.clone());
+        }
+        self.fill_editors(window, cx);
+        cx.notify();
+    }
+
+    fn current(&self) -> Option<&crate::characters::Character> {
+        let id = self.selected.as_ref()?;
+        self.people.iter().find(|c| &c.id == id)
+    }
+
+    /// 把选中人物的字段灌进编辑框。切人时调用，避免把上一个人的值带过去。
+    fn fill_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let c = self.current().cloned().unwrap_or_default();
+        let pairs: [(Entity<gpui_kit::component::input::InputState>, String); 9] = [
+            (self.ed_name.clone(), c.name),
+            (self.ed_role.clone(), c.role),
+            (self.ed_faction.clone(), c.faction),
+            (self.ed_appearance.clone(), c.appearance),
+            (self.ed_personality.clone(), c.personality),
+            (self.ed_motivation.clone(), c.motivation),
+            (self.ed_background.clone(), c.background),
+            (self.ed_voice.clone(), c.voice),
+            (self.ed_status.clone(), c.status),
+        ];
+        for (entity, value) in pairs {
+            entity.update(cx, |state, cx| state.set_value(value.as_str(), window, cx));
+        }
+    }
+
+    /// 用编辑框的内容拼出一份完整档案（保留下拉/弧线/锁定等未在表单上的字段）。
+    pub fn draft(&self, cx: &App) -> Option<crate::characters::Character> {
+        let mut c = self.current()?.clone();
+        c.name = self.ed_name.read(cx).value().to_string();
+        c.role = self.ed_role.read(cx).value().to_string();
+        c.faction = self.ed_faction.read(cx).value().to_string();
+        c.appearance = self.ed_appearance.read(cx).value().to_string();
+        c.personality = self.ed_personality.read(cx).value().to_string();
+        c.motivation = self.ed_motivation.read(cx).value().to_string();
+        c.background = self.ed_background.read(cx).value().to_string();
+        c.voice = self.ed_voice.read(cx).value().to_string();
+        c.status = self.ed_status.read(cx).value().to_string();
+        Some(c)
+    }
+
+    pub fn set_message(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.message = Some(text);
+        self.reload(window, cx);
+    }
+
+    /// 选中某人（并回填编辑框）。
+    pub fn select(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected = Some(id);
+        self.fill_editors(window, cx);
+        cx.notify();
     }
 }
 
@@ -918,169 +1045,340 @@ impl Focusable for CharactersPanel {
     }
 }
 
+impl EventEmitter<PanelEvent> for CharactersPanel {}
+impl EventEmitter<CharacterEvent> for CharactersPanel {}
+
 impl Render for CharactersPanel {
-    fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let aliases = self.handle.aliases();
-        let facts = self.handle.memory_facts();
-        let mut cards = Vec::new();
-        for a in aliases.iter().take(60) {
-            let canon = a.get("canonicalName").and_then(|v| v.as_str()).unwrap_or("?").to_string();
-            let subs: Vec<String> = a
-                .get("aliases")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let mine: Vec<&serde_json::Value> = facts
-                .iter()
-                .filter(|f| f.get("subject").and_then(|s| s.as_str()) == Some(canon.as_str()))
-                .collect();
-            let first_ch = mine
-                .iter()
-                .filter_map(|f| f.get("fromChapter").and_then(|c| c.as_u64()))
-                .min();
-            cards.push(character_card(&canon, &subs, mine.len(), first_ch));
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let message = self.message.clone();
+        let selected = self.selected.clone();
+
+        // —— 左列表 ——
+        let mut list = div().w(px(196.)).flex_shrink_0().flex().flex_col().gap(px(1.));
+        for c in &self.people {
+            let on = selected.as_deref() == Some(c.id.as_str());
+            let id = c.id.clone();
+            let sub = if c.aliases.is_empty() {
+                c.role.clone()
+            } else {
+                format!("{} · {}", c.role, c.aliases.join("、"))
+            };
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("char-row-{}", c.id)))
+                    .px(theme::PAD_SM)
+                    .py(px(5.))
+                    .rounded(theme::RADIUS_BTN_SM)
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(if on { theme::ACCENT_BORDER() } else { theme::PANEL() })
+                    .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL() })
+                    .hover(|d| d.border_color(theme::ACCENT_BORDER()))
+                    .child(
+                        div()
+                            .text_size(theme::FONT_LABEL)
+                            .text_color(if on { theme::ACCENT() } else { theme::TEXT() })
+                            .text_ellipsis()
+                            .child(SharedString::from(c.name.clone())),
+                    )
+                    .children(if sub.trim().is_empty() {
+                        None
+                    } else {
+                        Some(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .text_ellipsis()
+                                .child(SharedString::from(sub.clone())),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select(id.clone(), window, cx);
+                    })),
+            );
         }
+
+        // —— 右档案 ——
+        let detail: gpui_kit::AnyElement = match self.current().cloned() {
+            None => empty_hint("还没有人物", "点左下角新建，或从已有记忆迁移（别名 + 事实 → 人物档案）。")
+                .into_any_element(),
+            Some(c) => {
+                let cid = c.id.clone();
+                let cur = c.clone();
+                let status_ch = c.status_chapter;
+                let aliases = c.aliases.clone();
+                let arc = c.arc.clone();
+                let locked = c.locked_fields.clone();
+
+                // 别名逐条可删
+                let mut alias_chips = div().flex().flex_wrap().gap(theme::GAP_XS);
+                for a in &aliases {
+                    let a2 = a.clone();
+                    alias_chips = alias_chips.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(4.))
+                            .bg(theme::PANEL2())
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::DIM())
+                                    .child(SharedString::from(a.clone())),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("rm-alias-{a2}")))
+                                    .cursor_pointer()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::FAINT())
+                                    .child("×")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(CharacterEvent::RemoveAlias(a2.clone()));
+                                    })),
+                            ),
+                    );
+                }
+                if aliases.is_empty() {
+                    alias_chips = alias_chips.child(
+                        div()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::FAINT())
+                            .child("（无别名）"),
+                    );
+                }
+
+                // 弧线：按章排，只读呈现（编辑走 AI 或后续版本）
+                let arc_line = if arc.is_empty() {
+                    "（还没有弧线记录）".to_string()
+                } else {
+                    arc.iter()
+                        .map(|p| format!("第{}章 {}", p.chapter, p.state))
+                        .collect::<Vec<_>>()
+                        .join(" → ")
+                };
+
+                let mut form = div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme::GAP_SM)
+                    .child(field("本名", &self.ed_name))
+                    .child(field("定位", &self.ed_role))
+                    .child(field("阵营", &self.ed_faction))
+                    .child(field("外貌", &self.ed_appearance))
+                    .child(field("性格", &self.ed_personality))
+                    .child(field("动机", &self.ed_motivation))
+                    .child(field("背景", &self.ed_background))
+                    .child(field("口吻", &self.ed_voice))
+                    .child(field("状态", &self.ed_status));
+
+                // 锁定按钮：作者锁住的字段 AI 不许改
+                let mut locks = div().flex().flex_wrap().gap(theme::GAP_XS);
+                for fname in ["voice", "motivation", "background", "personality"] {
+                    let on = locked.iter().any(|x| x == fname);
+                    let f2 = fname.to_string();
+                    locks = locks.child(
+                        div()
+                            .id(SharedString::from(format!("lock-{fname}")))
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(if on { theme::AMBER() } else { theme::LINE() })
+                            .cursor_pointer()
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(if on { theme::AMBER() } else { theme::FAINT() })
+                                    .child(if on {
+                                        format!("🔒 {fname}")
+                                    } else {
+                                        format!("锁 {fname}")
+                                    }),
+                            )
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(CharacterEvent::ToggleLock(f2.clone()));
+                            })),
+                    );
+                }
+
+                form = form
+                    .child(sec_title("别名"))
+                    .child(alias_chips)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_SM)
+                            .child(div().flex_1().child(field("", &self.ed_new)))
+                            .child(
+                                cap_btn("char-add-alias", "加别名", cx).on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        let v = this.ed_new.read(cx).value().to_string();
+                                        if !v.trim().is_empty() {
+                                            cx.emit(CharacterEvent::AddAlias(v));
+                                        }
+                                    },
+                                )),
+                            ),
+                    )
+                    .child(sec_title("AI 不可改的字段"))
+                    .child(locks)
+                    .child(sec_title("弧线"))
+                    .child(
+                        div()
+                            .text_size(theme::FONT_MICRO)
+                            .line_height(relative(theme::LINE_HEIGHT_BODY))
+                            .text_color(theme::DIM())
+                            .child(SharedString::from(arc_line)),
+                    )
+                    .when_true(status_ch > 0, |d| {
+                        d.child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(format!("状态自第{status_ch}章起"))),
+                        )
+                    });
+
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme::GAP_MD)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_MD)
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_TITLE)
+                                    .font_family(theme::FAMILY_SERIF)
+                                    .text_color(theme::TEXT())
+                                    .child(SharedString::from(cur.name.clone())),
+                            )
+                            .child(div().ml_auto().flex().gap(theme::GAP_SM).children({
+                                let cid = cid.clone();
+                                vec![
+                                    primary_btn("char-save", "保存", cx)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(c) = this.draft(cx) {
+                                                cx.emit(CharacterEvent::Save(Box::new(c)));
+                                            }
+                                        }))
+                                        .into_any_element(),
+                                    cap_btn("char-delete", "删除", cx)
+                                        .on_click(cx.listener({
+                                            let cid = cid.clone();
+                                            move |_, _, _, cx| {
+                                                cx.emit(CharacterEvent::Delete(cid.clone()))
+                                            }
+                                        }))
+                                        .into_any_element(),
+                                ]
+                            })),
+                    )
+                    .child(form)
+                    .into_any_element()
+            }
+        };
+
+        // —— 合并：选另一个人并进来 ——
+        let others: Vec<(String, String)> = self
+            .people
+            .iter()
+            .filter(|c| Some(c.id.as_str()) != selected.as_deref())
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+
         panel_root("characters-scroll").child(
             panel_col()
-                .child(sec_title("人物卡"))
+                .child(sec_title("人物档案"))
+                .when_true(message.is_some(), |d| {
+                    d.child(chip(
+                        SharedString::from(message.clone().unwrap_or_default()),
+                        Tone::Green,
+                    ))
+                })
                 .child(
                     div()
-                        .text_size(theme::FONT_LABEL)
-                        .text_color(theme::FAINT())
-                        .child("按别名归一聚合；事实来自记忆提取提案。AI 可用 propose_aliases / propose_memory 增补，采纳后自动入卡。"),
+                        .flex()
+                        .gap(theme::GAP_LG)
+                        .items_start()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(theme::GAP_SM)
+                                .child(list)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(theme::GAP_SM)
+                                        .items_center()
+                                        .child(div().flex_1().child(field("", &self.ed_new)))
+                                        .child(cap_btn("char-create", "新建", cx).on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                let v = this.ed_new.read(cx).value().to_string();
+                                                if !v.trim().is_empty() {
+                                                    cx.emit(CharacterEvent::Create(v));
+                                                }
+                                            }),
+                                        )),
+                                )
+                                .child(cap_btn("char-migrate", "从记忆迁移", cx).on_click(
+                                    cx.listener(|_, _, _, cx| cx.emit(CharacterEvent::Migrate)),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .p(theme::PAD_LG)
+                                .bg(theme::PANEL())
+                                .border_1()
+                                .border_color(theme::LINE())
+                                .rounded(theme::RADIUS_CARD)
+                                .child(detail),
+                        ),
                 )
-                .child(div().flex().flex_wrap().gap(theme::GAP_GROUP).children(cards))
-                .when_true(aliases.is_empty(), |d| {
-                    d.child(empty_hint("还没有别名档案", "记忆提取 / 人物归一提案采纳后，本名与别名会在这里归一。"))
+                .when_true(others.len() > 0 && self.current().is_some(), |d| {
+                    // 合并入口：把某人并进当前选中的人。合并是纠错，不该藏在菜单里。
+                    let into = self.current().map(|c| c.id.clone()).unwrap_or_default();
+                    let into_name = self.current().map(|c| c.name.clone()).unwrap_or_default();
+                    let mut rows = div().flex().flex_wrap().gap(theme::GAP_XS);
+                    for (oid, oname) in others.clone() {
+                        let i2 = into.clone();
+                        rows = rows.child(
+                            cap_btn(
+                                Box::leak(format!("merge-{oid}").into_boxed_str()),
+                                Box::leak(format!("并入「{oname}」").into_boxed_str()),
+                                cx,
+                            )
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(CharacterEvent::Merge {
+                                    into: i2.clone(),
+                                    from: oid.clone(),
+                                });
+                            })),
+                        );
+                    }
+                    d.child(sec_title("合并人物"))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(format!(
+                                    "把另一位并进「{into_name}」：别名并集、空格子补齐、已有的值保留。"
+                                ))),
+                        )
+                        .child(rows)
                 }),
         )
     }
-}
-
-/// 人物卡（游戏卡牌式）：上部立绘位（首字巨印 + 渐变色带 + 朱砂角印），
-/// 下部称谓 / 别名 / 事实账。色带按人名哈希在四语义色相间轮换（与书封同一套语言）。
-fn character_card(
-    canon: &str,
-    aliases: &[String],
-    fact_count: usize,
-    first_chapter: Option<u64>,
-) -> gpui_kit::AnyElement {
-    let h = canon
-        .chars()
-        .fold(7u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
-    let hue = match h % 4 {
-        0 => theme::ACCENT(),
-        1 => theme::BLUE(),
-        2 => theme::GREEN(),
-        _ => theme::PURPLE(),
-    };
-    let glyph: String = canon.chars().take(1).collect();
-    div()
-        .w(px(224.))
-        .flex()
-        .flex_col()
-        .rounded(theme::RADIUS_CARD)
-        .bg(theme::PANEL())
-        .border_1()
-        .border_color(theme::LINE())
-        .overflow_hidden()
-        .shadow_sm()
-        .hover(|d| d.border_color(theme::ACCENT_BORDER()))
-        .child(
-            div()
-                .relative()
-                .w_full()
-                .h(px(132.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(theme::BG().blend(hue.alpha(0.20)))
-                .child(
-                    div()
-                        .font_family(theme::FAMILY_SERIF)
-                        .text_size(px(56.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme::COVER_TEXT())
-                        .child(SharedString::from(glyph)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .right(px(10.))
-                        .bottom(px(10.))
-                        .w(px(22.))
-                        .h(px(22.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(4.))
-                        .bg(theme::ACCENT().alpha(0.9))
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .font_family(theme::FAMILY_SERIF)
-                                .text_color(theme::ON_ACCENT())
-                                .child("执"),
-                        ),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(0.))
-                        .top(px(0.))
-                        .right(px(0.))
-                        .h(px(3.))
-                        .bg(hue.alpha(0.75)),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(theme::GAP_SM)
-                .px(theme::PAD_MD)
-                .py(theme::PAD_SM)
-                .child(
-                    div()
-                        .font_family(theme::FAMILY_SERIF)
-                        .text_size(theme::FONT_TITLE_SM)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::TEXT())
-                        .child(SharedString::from(canon.to_string())),
-                )
-                .child(
-                    div()
-                        .text_size(theme::FONT_LABEL)
-                        .text_color(theme::DIM())
-                        .child(SharedString::from(if aliases.is_empty() {
-                            "（无别名）".to_string()
-                        } else {
-                            format!("又作：{}", aliases.join("、"))
-                        })),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(theme::GAP_SM)
-                        .child(
-                            Tag::secondary()
-                                .outline()
-                                .child(SharedString::from(format!("{fact_count} 条事实"))),
-                        )
-                        .when(first_chapter.is_some(), |d| {
-                            d.child(
-                                Tag::secondary()
-                                    .outline()
-                                    .child(SharedString::from(format!(
-                                        "首见 第{}章",
-                                        first_chapter.unwrap_or(0)
-                                    ))),
-                            )
-                        }),
-                ),
-        )
-        .into_any_element()
 }
 
 impl BasePanel for CharactersPanel {
@@ -1094,10 +1392,9 @@ impl ComponentPanel for CharactersPanel {
             .text_size(theme::FONT_BODY)
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme::TEXT())
-            .child("人物卡")
+            .child("人物档案")
     }
 }
-
 
 /* ───────────────────────── 设置（端点 + 连通测试） ───────────────────────── */
 

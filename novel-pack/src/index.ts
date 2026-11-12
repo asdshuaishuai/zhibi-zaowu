@@ -1028,6 +1028,33 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
             ),
             text,
           )
+          // 留一枚“AI 参与”墨点：作者在编辑器里能看到这一章有 AI 的手笔。
+          // 只标变化区间的起点，不试图精确对齐段落——精确对齐要 diff 算法，
+          // 这里的目的只是“让作者知道该看一眼哪里”。
+          try {
+            const fs = process.getBuiltinModule('node:fs')
+            const path = process.getBuiltinModule('node:path')
+            const dir = path.join(store.root, 'chapters', `ch-${String(chapter).padStart(3, '0')}`)
+            fs.mkdirSync(dir, { recursive: true })
+            const marksPath = path.join(dir, 'ai-marks.json')
+            let marks: any[] = []
+            try {
+              marks = JSON.parse(fs.readFileSync(marksPath, 'utf8'))
+              if (!Array.isArray(marks)) marks = []
+            } catch {
+              marks = []
+            }
+            marks.push({
+              start: 0,
+              end: text.length,
+              changeId: `ai-${Date.now()}`,
+              mode: currentMode(store.root),
+            })
+            fs.writeFileSync(marksPath, JSON.stringify(marks, null, 2), 'utf8')
+          } catch {
+            // 墨点写不出去不影响正文落盘——可追溯性降级，但内容是对的
+          }
+
           const delta = text.length - before.length
           return `已直接写入第${chapter}章正文（${text.length} 字，${delta >= 0 ? '+' : ''}${delta}）。${
             args.note ? `说明：${args.note}` : ''

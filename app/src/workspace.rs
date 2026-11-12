@@ -33,7 +33,7 @@ use crate::theme;
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
 use crate::views::{
     CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel,
-    JournalEvent, JournalPanel, MemoryPanel,
+    CharacterEvent, JournalEvent, JournalPanel, MemoryPanel,
     OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent,
 };
 
@@ -422,7 +422,7 @@ impl Workspace {
         let memory_view = cx.new(|cx| MemoryPanel::new(cx, handle.clone()));
         let stats_view = cx.new(|cx| StatsPanel::new(cx, handle.clone()));
         let clues_view = cx.new(|cx| CluesPanel::new(cx, handle.clone()));
-        let characters_view = cx.new(|cx| CharactersPanel::new(cx, handle.clone()));
+        let characters_view = cx.new(|cx| CharactersPanel::new(window, cx, handle.clone()));
         let settings_view = cx.new(|cx| SettingsPanel::new(window, cx));
         let snapshots_view = cx.new(|cx| SnapshotsPanel::new(cx, handle.clone(), chapter));
         let journal_view = cx.new(|cx| JournalPanel::new(window, cx, handle.clone()));
@@ -685,6 +685,151 @@ impl Workspace {
                         panel.word_target = wt;
                         cx.notify();
                     });
+                }
+            },
+        )
+        .detach();
+
+// 人物档案：所有写操作走这里——写盘 + 记日志，页面只发事件不碰磁盘
+        cx.subscribe_in(
+            &characters_view,
+            window,
+            |this, _, ev: &CharacterEvent, window, cx| {
+                let roster = crate::characters::Roster::new(&this.handle.root);
+                let journal = crate::journal::Journal::new(&this.handle.root);
+                let snapshot = |list: &[crate::characters::Character]| -> String {
+                    serde_json::to_string(list).unwrap_or_default()
+                };
+                // 每次写都先读旧内容，供日志记前像
+                let before = snapshot(&roster.all());
+                let record = |what: &str, after: &str| {
+                    if before != after {
+                        let _ = journal.record(
+                            &this.handle.root,
+                            "characters.json",
+                            &before,
+                            after,
+                            &crate::journal::Actor::Author,
+                            "edit",
+                            &format!("b{}", crate::journal::now_millis()),
+                            what,
+                        );
+                    }
+                };
+                let msg = match ev {
+                    CharacterEvent::Create(name) => {
+                        let name = name.trim().to_string();
+                        if name.is_empty() {
+                            Some("名字不能为空".to_string())
+                        } else if roster.find(&name).is_some() {
+                            // 同名会让“找谁”变得不确定，先拒绝并要求明确
+                            Some(format!("已有叫「{name}」的人物，请用别名或改名"))
+                        } else {
+                            let c = crate::characters::Character::new(&name);
+                            match roster.upsert(c) {
+                                Ok(()) => {
+                                    record(&format!("新建人物 {name}"), &snapshot(&roster.all()));
+                                    Some(format!("已新建人物「{name}」"))
+                                }
+                                Err(e) => Some(format!("新建失败：{e}")),
+                            }
+                        }
+                    }
+                    CharacterEvent::Save(c) => match roster.upsert((**c).clone()) {
+                        Ok(()) => {
+                            record(&format!("编辑人物 {}", c.name), &snapshot(&roster.all()));
+                            Some(format!("已保存「{}」", c.name))
+                        }
+                        Err(e) => Some(format!("保存失败：{e}")),
+                    },
+                    CharacterEvent::Delete(id) => match roster.remove(id) {
+                        Ok(()) => {
+                            record("删除人物", &snapshot(&roster.all()));
+                            Some("已删除".to_string())
+                        }
+                        Err(e) => Some(format!("删除失败：{e}")),
+                    },
+                    CharacterEvent::Merge { into, from } => {
+                        match roster.merge(into, from) {
+                            Ok(()) => {
+                                record("合并人物", &snapshot(&roster.all()));
+                                Some("已合并（别名并集、空格子补齐）".to_string())
+                            }
+                            Err(e) => Some(format!("合并失败：{e}")),
+                        }
+                    }
+                    CharacterEvent::AddAlias(alias) => {
+                        let Some(mut c) = this
+                            .characters_view
+                            .read(cx)
+                            .draft(cx)
+                        else {
+                            return;
+                        };
+                        let a = alias.trim().to_string();
+                        if a.is_empty() {
+                            Some("别名不能为空".to_string())
+                        } else if c.aliases.iter().any(|x| *x == a) || c.name == a {
+                            Some("这个别名已经有了".to_string())
+                        } else {
+                            c.aliases.push(a.clone());
+                            match roster.upsert(c) {
+                                Ok(()) => {
+                                    record("加别名", &snapshot(&roster.all()));
+                                    Some(format!("已加别名「{a}」"))
+                                }
+                                Err(e) => Some(format!("加别名失败：{e}")),
+                            }
+                        }
+                    }
+                    CharacterEvent::RemoveAlias(alias) => {
+                        let Some(mut c) = this.characters_view.read(cx).draft(cx) else {
+                            return;
+                        };
+                        c.aliases.retain(|x| x != alias);
+                        match roster.upsert(c) {
+                            Ok(()) => {
+                                record("移除别名", &snapshot(&roster.all()));
+                                Some(format!("已移除别名「{alias}」"))
+                            }
+                            Err(e) => Some(format!("移除失败：{e}")),
+                        }
+                    }
+                    CharacterEvent::Migrate => {
+                        let (added, _) = roster.migrate_from_memory(
+                            &this.handle.memory_facts(),
+                            &this.handle.aliases(),
+                        );
+                        if added > 0 {
+                            record("从记忆迁移人物", &snapshot(&roster.all()));
+                        }
+                        Some(if added > 0 {
+                            format!("已从记忆建了 {added} 个人物档案（只补空，不覆盖你写的）")
+                        } else {
+                            "没有新人物可迁移（别名与事实都已在档案里）".to_string()
+                        })
+                    }
+                    CharacterEvent::ToggleLock(field) => {
+                        let Some(mut c) = this.characters_view.read(cx).draft(cx) else {
+                            return;
+                        };
+                        if c.is_locked(field) {
+                            c.locked_fields.retain(|f| f != field);
+                        } else {
+                            c.locked_fields.push(field.clone());
+                        }
+                        match roster.upsert(c) {
+                            Ok(()) => {
+                                record("切换字段锁", &snapshot(&roster.all()));
+                                None
+                            }
+                            Err(e) => Some(format!("切换锁失败：{e}")),
+                        }
+                    }
+                };
+                if let Some(text) = msg {
+                    this.characters_view
+                        .update(cx, |p, cx| p.set_message(text, window, cx));
                 }
             },
         )

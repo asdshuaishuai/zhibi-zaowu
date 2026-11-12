@@ -267,7 +267,9 @@ impl Journal {
             .collect()
     }
 
-    /// 按实体/章节筛最近记录（改动记录页用）。
+    /// 按实体/章节筛最近记录。改动记录页目前用 `groups` 按回合聚合，
+    /// 保留按路径筛的能力给后续“只看某个人物的改动”。
+    #[allow(dead_code)]
     pub fn recent(&self, path_contains: &str, limit: usize) -> Vec<Change> {
         self.all()
             .into_iter()
@@ -471,7 +473,9 @@ impl Journal {
 
     /// 记一段 AI 参与的区间。
     ///
-    /// 调用方负责算偏移（它知道改了哪一段）；这里只负责持久化与去重。
+    /// 目前 AI 直写正文发生在 novel-pack（独立进程），由 `write_prose` 自己写
+    /// ai-marks.json；这个 Rust 侧入口留给「宿主代 AI 写入」的路径（如未来批量代笔）。
+    #[allow(dead_code)]
     pub fn mark(
         &self,
         book_root: &Path,
@@ -494,6 +498,7 @@ impl Journal {
     }
 
     /// 清掉某章的全部标记（作者整章重写后调用）。
+    #[allow(dead_code)]
     pub fn clear_marks(&self, book_root: &Path, chapter: u32) -> Result<(), String> {
         let path = self.marks_path(book_root, chapter);
         if path.exists() {
@@ -543,6 +548,9 @@ impl WritingMode {
     ///
     /// 存在 `zhibi-auth.json`（不在 DSH 沙箱可写范围外也要读得到，所以放书目录）；
     /// 授权是显式的：没授权就是空，代笔档也写不了正文。
+    /// 权限判断的实际执行方是 novel-pack（它读同一份 zhibi-auth.json）。
+    /// 这里保留一份等价实现供界面预判与测试。
+    #[allow(dead_code)]
     pub fn allows_chapter(self, book_root: &Path, chapter: u32) -> bool {
         if self != WritingMode::Ghostwrite {
             return false;

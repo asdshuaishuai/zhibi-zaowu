@@ -5,6 +5,7 @@ mod account;
 mod app_root;
 mod bookinfo;
 mod canvas;
+mod characters;
 mod chat;
 mod director;
 mod dsh;
