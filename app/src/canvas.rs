@@ -65,10 +65,9 @@ pub enum Dim {
     Timeline,
     Events,
     Turns,
-    Oracle,
 }
 
-const DIMS: [(Dim, &'static str); 8] = [
+const DIMS: [(Dim, &'static str); 7] = [
     (Dim::Overview, "总览"),
     (Dim::Canon, "设定"),
     (Dim::Cast, "人物"),
@@ -76,7 +75,6 @@ const DIMS: [(Dim, &'static str); 8] = [
     (Dim::Timeline, "时间"),
     (Dim::Events, "事件"),
     (Dim::Turns, "转折"),
-    (Dim::Oracle, "预言"),
 ];
 
 enum Drag {
@@ -170,7 +168,6 @@ impl CanvasPanel {
             Dim::Timeline => "tl",
             Dim::Events => "ev",
             Dim::Turns => "tr",
-            Dim::Oracle => "or",
         };
         let state = self.handle.canvas_state();
         if let Some(v) = state.get("view") {
@@ -238,7 +235,7 @@ impl CanvasPanel {
         };
 
         let want_lines = matches!(self.dim, Dim::Overview | Dim::Events);
-        let want_events = !matches!(self.dim, Dim::Canon | Dim::Cast | Dim::Relations | Dim::Oracle);
+        let want_events = !matches!(self.dim, Dim::Canon | Dim::Cast | Dim::Relations);
         let want_chars = matches!(self.dim, Dim::Overview | Dim::Cast | Dim::Relations);
         let want_clues = matches!(self.dim, Dim::Overview);
         let want_canon = matches!(self.dim, Dim::Overview | Dim::Canon);
@@ -503,81 +500,6 @@ impl CanvasPanel {
                     edges.push(CEdge { from: i, to: i + 1, kind: "influence", hidden: false, label: String::new() });
                 }
             }
-            Dim::Oracle => {
-                // 世界线沙盒：渲染一条预测/假设线的节点与边（AI simulate 写入的 nodes/edges）
-                let lines = self.handle.worldlines();
-                let pick = self.oracle_line.clone();
-                let w = lines
-                    .iter()
-                    .find(|w| {
-                        s(w, "id") != "α"
-                            && s(w, "status") != "已归档"
-                            && pick.as_deref().map(|p| s(w, "id") == p).unwrap_or(true)
-                    })
-                    .or_else(|| lines.iter().find(|w| s(w, "id") != "α"));
-                if let Some(w) = w {
-                    let lid = s(w, "id");
-                    let nn = w.get("nodes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    let has_xy = nn.iter().any(|n| {
-                        n.get("x").and_then(|v| v.as_f64()).unwrap_or(0.).abs() > 1.
-                            || n.get("y").and_then(|v| v.as_f64()).unwrap_or(0.).abs() > 1.
-                    });
-                    for nj in nn.iter() {
-                        let raw_kind = s(nj, "kind");
-                        let kind: &'static str = match raw_kind.as_str() {
-                            "storyline" => "storyline",
-                            "character" => "character",
-                            "clue" => "clue",
-                            "canon" => "canon",
-                            _ => "event",
-                        };
-                        let (x, y) = if has_xy {
-                            (
-                                nj.get("x").and_then(|v| v.as_f64()).unwrap_or(0.) as f32,
-                                nj.get("y").and_then(|v| v.as_f64()).unwrap_or(0.) as f32,
-                            )
-                        } else {
-                            let ci = match kind {
-                                "storyline" => 0,
-                                "event" => 1,
-                                "character" => 2,
-                                "clue" => 3,
-                                _ => 4,
-                            };
-                            let idx_in_col = nodes.iter().filter(|n: &&CNode| n.kind == kind).count();
-                            let _ = ci;
-                            (col("event") + idx_in_col as f32 * 210., 80. + (idx_in_col % 3) as f32 * 150.)
-                        };
-                        nodes.push(CNode {
-                            id: s(nj, "id"),
-                            kind,
-                            label: s(nj, "label").chars().take(16).collect(),
-                            meta: format!("线{lid} · {}", if raw_kind.is_empty() { "event".to_string() } else { raw_kind }),
-                            hidden: false,
-                            planned: true, // 预测/假设本身就是「未定」——统一虚线
-                            x,
-                            y,
-                        });
-                    }
-                    let en = w.get("edges").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    for ej in en {
-                        let fid = s(&ej, "from");
-                        let tid = s(&ej, "to");
-                        if let (Some(fi), Some(ti)) = (
-                            nodes.iter().position(|n| n.id == fid),
-                            nodes.iter().position(|n| n.id == tid),
-                        ) {
-                            edges.push(CEdge {
-                                from: fi,
-                                to: ti,
-                                kind: "influence",
-                                hidden: ej.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false),
-                                label: s(&ej, "kind"),
-                            });
-                        }
-                    }
-                }
-            }
             Dim::Turns => {
                 // 事件主循环已建列；此处只加档案卡拐点节点与红边
                 let dossiers = self.handle.read_array("dossiers.json");
@@ -662,7 +584,6 @@ impl CanvasPanel {
             Dim::Timeline => "tl",
             Dim::Events => "ev",
             Dim::Turns => "tr",
-            Dim::Oracle => "or",
         };
         let mut pos = serde_json::Map::new();
         // 合并旧值：只保留「其他维度」的 dim:id 键。旧版本留下的裸 id 键、已删除节点的
@@ -696,6 +617,26 @@ impl CanvasPanel {
     }
 
     /// 选中节点的一阶影响邻域（侧板行）。
+    /// 选中节点在世界线上的落点（双向弱引用的反查）。
+    ///
+    /// 画布节点是"关系网上的点"，世界线节点是"时间轴上的关节"。同一个剧情
+    /// 关节两边各有一份表示，`worldline::Node.canvas_ref` 指回这里。
+    /// 找到就把"线X · 第N章 · 标题"列在侧板上——作者点一个人物，
+    /// 能立刻看到"他在哪几条线的哪一章出现过"。
+    fn worldline_hits(&self) -> Vec<(String, u32, String)> {
+        let Some(&sel) = self.sel.last() else { return Vec::new() };
+        let cid = &self.nodes[sel].id;
+        let Ok(lines) = crate::worldline::Store::new(&self.handle.root).all() else {
+            return Vec::new();
+        };
+        let store = crate::worldline::Store::new(&self.handle.root);
+        store
+            .nodes_referencing_canvas(&lines, cid)
+            .into_iter()
+            .map(|(l, n)| (l.id.clone(), n.chapter_or_guess(), n.label.clone()))
+            .collect()
+    }
+
     fn neighbor_rows(&self) -> Vec<(String, String)> {
         let Some(&sel) = self.sel.last() else { return Vec::new() };
         let mut out = Vec::new();
@@ -724,9 +665,12 @@ impl CanvasPanel {
         out
     }
 
-    /// 外部跳转：直接切到预言维并选中某条世界线（预言书「在画布查看」）。
-    pub fn show_line(&mut self, id: String) {
-        self.dim = Dim::Oracle;
+    /// 外部跳转：记下要聚焦的世界线。
+    ///
+    /// 画布不再有"预言维"——世界线是时间轴视图，在「世界线」页看，
+    /// 画布只画关系网。这里保留一个"我从哪条线过来"的痕迹，
+    /// 供侧板显示"这条节点属于世界线 X 的第 N 章"的反向引用。
+    pub fn focus_worldline(&mut self, id: String) {
         self.oracle_line = Some(id);
         self.refresh();
     }
@@ -1044,6 +988,8 @@ impl Render for CanvasPanel {
             n => Some(format!("已选 {n} 个节点（成组可拖）")),
         };
         let rows = self.neighbor_rows();
+        // 世界线上的落点（反查）：点人物/事件节点，能看到它在哪几条线的哪一章
+        let wl_hits = self.worldline_hits();
         let side = div()
             .absolute()
             .right(theme::PAD_LG)
@@ -1061,6 +1007,53 @@ impl Render for CanvasPanel {
                     .text_color(theme::TEXT())
                     .child(sel_title.unwrap_or_else(|| "选择一个节点".into())),
             )
+            // 世界线落点：这张卡在时间轴上出现的位置（双向弱引用的反查）。
+            // 没有关联就不占地方——大多数节点没被世界线引用过，空面板是噪音。
+            .when(!wl_hits.is_empty(), |d| {
+                d.child(
+                    div()
+                        .pt(theme::GAP_SM)
+                        .pb(px(2.))
+                        .text_size(theme::FONT_MICRO)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::BLUE())
+                        .child(SharedString::from(format!("世界线落点 · {}", wl_hits.len()))),
+                )
+                .children(wl_hits.iter().map(|(lid, ch, label)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .py(px(1.))
+                        .child(
+                            div()
+                                .font_family(theme::FAMILY_MONO)
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::ACCENT())
+                                .child(SharedString::from(lid.clone())),
+                        )
+                        .child(
+                            div()
+                                .font_family(theme::FAMILY_MONO)
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(if *ch > 0 {
+                                    format!("第{ch}章")
+                                } else {
+                                    "未排章".into()
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_ellipsis()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::DIM())
+                                .child(SharedString::from(label.clone())),
+                        )
+                }))
+            })
             // 关系维：选中一个人时，给出「与谁、什么关系、从第几章起」的就地编辑，
             // 以及该人参与的关系史（含已结束的区间）与删除入口。
             .when(self.dim == Dim::Relations && self.sel.len() == 1, |d| {
@@ -1414,72 +1407,7 @@ impl Render for CanvasPanel {
                 b.on_click(cx.listener(move |this, _, _, cx| this.set_dim(dd, cx)))
             }));
 
-        // 预言维：世界线选择条（非 α 线逐条切换）
-        let mut oracle_switch: Option<gpui_kit::AnyElement> = None;
-        if self.dim == Dim::Oracle {
-            let lines: Vec<String> = self
-                .handle
-                .worldlines()
-                .iter()
-                .filter(|w| s(w, "id") != "α" && s(w, "status") != "已归档")
-                .map(|w| s(w, "id"))
-                .collect();
-            let cur = self.oracle_line.clone();
-            let mut row: Vec<gpui_kit::AnyElement> = vec![
-                div()
-                    .text_size(theme::FONT_TAG)
-                    .text_color(theme::FAINT())
-                    .child("世界线：")
-                    .into_any_element(),
-            ];
-            if lines.is_empty() {
-                row.push(
-                    div()
-                        .text_size(theme::FONT_TAG)
-                        .text_color(theme::FAINT())
-                        .child("（还没有预测/假设线——去「预言书」提假设或预测续写）")
-                        .into_any_element(),
-                );
-            }
-            for lid in lines {
-                let on = cur.as_deref().map(|c| c == lid).unwrap_or(false);
-                let pick = lid.clone();
-                let b = Button::new(SharedString::from(format!("wl-pick-{lid}")))
-                    .xsmall()
-                    .label(SharedString::from(lid.clone()));
-                let b = if on { b.primary() } else { b };
-                row.push(
-                    b.on_click(cx.listener(move |this, _, _, cx| {
-                        this.oracle_line = Some(pick.clone());
-                        this.refresh();
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                );
-            }
-            oracle_switch = Some(
-                div()
-                    .absolute()
-                    .left(theme::PAD_LG)
-                    .top(px(52.))
-                    .flex()
-                    .items_center()
-                    .gap(theme::GAP_XS)
-                    .p(theme::GAP_XS)
-                    .rounded(theme::RADIUS_CARD)
-                    .border_1()
-                    .border_color(theme::LINE())
-                    .bg(theme::PANEL())
-                    .children(row)
-                    .into_any_element(),
-            );
-        }
-
-        let stage = match oracle_switch {
-            Some(sw) => stage.child(side).child(bar).child(tabs).child(sw),
-            None => stage.child(side).child(bar).child(tabs),
-        };
-        stage
+        stage.child(side).child(bar).child(tabs)
     }
 }
 
@@ -1508,23 +1436,7 @@ impl ComponentPanel for CanvasPanel {
 #[derive(Debug, Clone)]
 pub enum OracleEvent {
     Simulate { premise: String, fork: u32 },
-    /// 从（线, 节点）分叉出一条新线
-    ForkFrom { line: String, node: String, name: String },
-    /// 节点字段改一条（章号 / 标题 / 备注 / 状态）
-    NodePatch {
-        line: String,
-        node: String,
-        patch: crate::worldline::NodePatch,
-    },
-    /// 删一个节点
-    NodeRemove { line: String, node: String },
-    /// 新增一个节点
-    NodeAdd {
-        line: String,
-        kind: String,
-        label: String,
-        chapter: u32,
-    },
+
     /// 预测续写（M8）：fork 自动=最新成稿下一章，AI 按大纲/成稿向前织
     Forecast,
     /// 晋升成功：宿主刷新收件箱/轨迹
@@ -1532,228 +1444,6 @@ pub enum OracleEvent {
     /// 在画布上查看该世界线（切到预言维）
     ViewOnCanvas { worldline: String },
 }
-
-/// 车道里某条线指向的父线 id（没有就是空串）。
-fn line_parent_id(lines: &[crate::worldline::Line], id: &str) -> String {
-    lines
-        .iter()
-        .find(|l| l.id == id)
-        .map(|l| l.parent_id.clone())
-        .unwrap_or_default()
-}
-
-/// 线模式的节点详情抽屉：作者点车道上的节点时，就地看它、改它、从它分叉。
-///
-/// 做成一个函数而不是内联进 render 的原因：render 已经太长，而这块
-/// 逻辑（选中节点 → 找它 → 拼表单）和画布坐标没有关系。
-fn lane_detail(
-    cx: &mut Context<OraclePanel>,
-    lines: &[crate::worldline::Line],
-    lane: &Option<String>,
-    handle: &std::rc::Rc<ProjectHandle>,
-) -> Option<gpui_kit::AnyElement> {
-    let lid = lane.as_ref()?;
-    let line = lines.iter().find(|l| &l.id == lid)?;
-    let mut body = div().flex().flex_col().gap(px(3.));
-    let mut nodes = line.nodes.clone();
-    nodes.sort_by_key(|n| n.chapter_or_guess());
-    if nodes.is_empty() {
-        body = body.child(
-            div()
-                .text_size(theme::FONT_MICRO)
-                .text_color(theme::FAINT())
-                .child("这条线还没有节点。推演一次，或者让主 Agent 派 worldline 子 Agent。"),
-        );
-    }
-    for n in nodes.iter().take(14) {
-        let ch = n.chapter_or_guess();
-        let nid = n.id.clone();
-        let lid = line.id.clone();
-        let patch_ch = nid.clone();
-        let patch_lid = lid.clone();
-        let del_n = nid.clone();
-        let del_l = lid.clone();
-        let fork_l = lid.clone();
-        let fork_n = nid.clone();
-        let fork_name: String = format!("{}·{}", line.name, n.label)
-            .chars()
-            .take(24)
-            .collect();
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(theme::GAP_SM)
-                .py(px(1.))
-                .child(
-                    // 章号：点一下 +1（改排章是最常做的事，同 M6 台账的就地微调）
-                    div()
-                        .id(SharedString::from(format!("wn-ch-{lid}-{nid}")))
-                        .w(px(46.))
-                        .flex_shrink_0()
-                        .cursor_pointer()
-                        .font_family(theme::FAMILY_MONO)
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::FAINT())
-                        .child(SharedString::from(if ch > 0 {
-                            format!("第{ch}章")
-                        } else {
-                            "排章".into()
-                        }))
-                        .on_click(cx.listener(move |_this, _, _, cx| {
-                            cx.emit(OracleEvent::NodePatch {
-                                line: patch_lid.clone(),
-                                node: patch_ch.clone(),
-                                patch: crate::worldline::NodePatch::chapter(ch + 1),
-                            });
-                        })),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_ellipsis()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::DIM())
-                        .child(SharedString::from(n.label.clone())),
-                )
-                .child(
-                    div()
-                        .text_size(px(9.))
-                        .text_color(if n.state == crate::worldline::NodeState::Written {
-                            theme::GREEN()
-                        } else {
-                            theme::FAINT()
-                        })
-                        .child(n.state.label()),
-                )
-                .child(
-                    // 从此节点再分叉：树可以一层层长下去
-                    div()
-                        .id(SharedString::from(format!("wn-fork-{lid}-{nid}")))
-                        .flex_shrink_0()
-                        .cursor_pointer()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::FAINT())
-                        .child("⤴")
-                        .on_click(cx.listener(move |_this, _, _, cx| {
-                            cx.emit(OracleEvent::ForkFrom {
-                                line: fork_l.clone(),
-                                node: fork_n.clone(),
-                                name: fork_name.clone(),
-                            });
-                        })),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("wn-del-{lid}-{nid}")))
-                        .flex_shrink_0()
-                        .cursor_pointer()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::FAINT())
-                        .child("×")
-                        .on_click(cx.listener(move |_this, _, _, cx| {
-                            cx.emit(OracleEvent::NodeRemove {
-                                line: del_l.clone(),
-                                node: del_n.clone(),
-                            });
-                        })),
-                ),
-        );
-    }
-    let total = line.nodes.len();
-    let _ = handle;
-    Some(
-        div()
-        .absolute()
-        .left(px(52.))
-        .bottom(px(20.))
-        .w(px(360.))
-        .p(theme::PAD_SM)
-        .rounded(theme::RADIUS_PANEL)
-        .border_1()
-        .border_color(theme::LINE())
-        .bg(theme::PANEL())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(theme::GAP_SM)
-                .child(
-                    div()
-                        .font_family(theme::FAMILY_MONO)
-                        .text_size(theme::FONT_META)
-                        .text_color(theme::ACCENT())
-                        .child(SharedString::from(line.id.clone())),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(theme::FONT_META)
-                        .text_color(theme::TEXT())
-                        .child(SharedString::from(line.name.clone())),
-                )
-                .child(
-                    div()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::FAINT())
-                        .child(SharedString::from(format!(
-                            "{} · {total} 节点{fork_note}{diff_note}",
-                            line.kind.label(),
-                            fork_note = if line.fork_node.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" · 自分叉于 {}", line.fork_node)
-                            },
-                            // 撤销型影响（kind=remove）在正典里是"删掉某个设定"，
-                            // 比 add/change 更需要作者留意，单独点出来。
-                            diff_note = if line.diffs.iter().any(|d| d.is_remove()) {
-                                " · 含撤销型影响".to_string()
-                            } else {
-                                String::new()
-                            }
-                        ))),
-                ),
-        )
-        .child(
-            div()
-                .mt(theme::GAP_XS)
-                .flex()
-                .items_center()
-                .gap(theme::GAP_SM)
-                .child(
-                    div()
-                        .id("wn-add")
-                        .cursor_pointer()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::ACCENT())
-                        .child("＋ 加节点")
-                        .on_click(cx.listener({
-                            let lid = line.id.clone();
-                            let next_ch = nodes.iter().map(|n| n.chapter_or_guess()).max().unwrap_or(0) + 1;
-                            move |_this, _, _, cx| {
-                                cx.emit(OracleEvent::NodeAdd {
-                                    line: lid.clone(),
-                                    kind: "event".into(),
-                                    label: "新节点".into(),
-                                    chapter: next_ch,
-                                });
-                            }
-                        })),
-                )
-                .child(
-                    div()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::FAINT())
-                        .child("「⤴」从此节点再分叉；「×」删节点；点章号 +1"),
-                ),
-        )
-        .child(body)
-        .into_any_element(),
-    )
-}
-
 /// 世界线的两种看法：并轨图（横轴=章节的平行线）与世界树（纵向生长的枝）。
 /// 两种并存，默认并轨（旧形态不改），世界树是新增视图。
 #[derive(Clone, Copy, PartialEq)]
@@ -1806,7 +1496,16 @@ impl OraclePanel {
         }
     }
 
-    /// 当前活跃车道：作者在预言书里点中的那条线；没点过就是正典 α。
+    /// 选中某条世界线（世界线页联动过来）。推演/晋升都针对它。
+    pub fn select_line(&mut self, id: String, cx: &mut Context<Self>) {
+        self.selected = Some(id.clone());
+        self.lane = Some(id);
+        self.node = None;
+        self.message = None;
+        cx.notify();
+    }
+
+    /// 外部跳转：直接切到预言维并选中某条世界线（预言书「在画布查看」）。    /// 当前活跃车道：作者在预言书里点中的那条线；没点过就是正典 α。
     ///
     /// 宿主用它决定"假设推演"从谁身上分叉——这是「从任意节点再分叉」的
     /// 父线来源。返回 None 表示连 α 都读不到（书还没初始化），
@@ -1821,23 +1520,6 @@ impl OraclePanel {
             .find(|l| l.is_base())
             .map(|l| l.id.clone())
             .or_else(|| lines.first().map(|l| l.id.clone()))
-    }
-
-    /// 宿主改完世界线后的统一反馈：更新选中车道并提示结果。
-    ///
-    /// 外部只能这样改面板状态（字段是私有的），这样"提示 + 重绘"不会漏掉一个。
-    pub fn after_line_change(
-        &mut self,
-        lane: Option<String>,
-        message: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(l) = lane {
-            self.lane = Some(l);
-            self.node = None;
-        }
-        self.message = Some(message.into());
-        cx.notify();
     }
 
     /// 选中车道最后一个节点所在章：作为"假设推演"的默认分叉章。
@@ -3162,382 +2844,9 @@ impl Render for OraclePanel {
             }
         }
 
-        // —— 线模式（横轴 = 真实章节）——
-        //
-        // 三条老问题在这里一并解决：
-        // 1. 旧版横轴只有"从 1 到 max"一段，看不出幕、也看不出"现在"在哪。
-        //    现在叠上 stages.json 的幕带，并在最新成稿章画一条"现在"标线，
-        //    左侧实线（已发生）、右侧虚线（还没写）。
-        // 2. 旧版每条线只是"从 fork 章弯出来再横着画"，节点一个都不落。
-        //    现在节点按自己的 chapter 落在车道上，一眼看得出这条线推到第几章。
-        // 3. 旧版只能从 forkedChapter 分叉。现在 forkNode 指到具体节点，
-        //    曲线从那个节点的位置弯出——同一章两个节点也能区分。
-        let lanes_el: Option<gpui_kit::AnyElement> = if self.view == WlView::Lanes {
-            // 画布这一层仍用 Value（AI 可能写进未知字段，转数字段会丢），
-            // 但布局与血缘判断走带类型的那一层：字段名写错在那里是编译错误。
-            let typed: Vec<crate::worldline::Line> = lines
-                .iter()
-                .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                .collect();
-            let detail = lane_detail(cx, &typed, &self.lane, &self.handle);
-            let lane_rows = crate::worldline::layout::lanes(&typed);
-            let stage_raw: Vec<(String, String, u32, u32)> = self
-                .handle
-                .stages()
-                .iter()
-                .map(|st| {
-                    (
-                        s(st, "name"),
-                        s(st, "theme"),
-                        st.get("chapterStart").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                        st.get("chapterEnd").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                    )
-                })
-                .collect();
-            let bands = crate::worldline::layout::bands(&stage_raw);
-            // 现在 = 最新成稿章；一条都没写时是 0（标线不画）
-            let now_ch = self
-                .handle
-                .chapters()
-                .iter()
-                .filter(|c| c.has_prose)
-                .map(|c| c.n)
-                .max()
-                .unwrap_or(0);
-            let max_ch = self
-                .handle
-                .next_chapter_number()
-                .max(lane_rows.iter().map(|l| l.last_chapter).max().unwrap_or(0))
-                .max(now_ch + 3)
-                .max(12);
-            // 车道高度固定 30：节点圆点直径 7，行距再小就挤成一条
-            let row_h = 30.;
-            let head_h = 46.;
-            let lane_h = head_h + lane_rows.len().max(1) as f32 * row_h + 10.;
-
-            let lane_snapshot = lane_rows.clone();
-            let band_snapshot = bands.clone();
-            let node_map: Vec<(String, Vec<(u32, String, bool)>)> = typed
-                .iter()
-                .map(|l| {
-                    let mut ns: Vec<(u32, String, bool)> = l
-                        .nodes
-                        .iter()
-                        .map(|n| {
-                            (
-                                n.chapter_or_guess(),
-                                n.label.clone(),
-                                n.state == crate::worldline::NodeState::Written,
-                            )
-                        })
-                        .filter(|(ch, _, _)| *ch > 0)
-                        .collect();
-                    ns.sort_by_key(|(ch, _, _)| *ch);
-                    (l.id.clone(), ns)
-                })
-                .collect();
-            let selected_lane = self.lane.clone();
-
-            let lanes_el: gpui_kit::AnyElement = {
-                let alpha_color = theme::BLUE();
-                let dim_color = theme::FAINT();
-                let line_color = theme::LINE();
-                let acc = theme::ACCENT();
-                let green = theme::GREEN();
-                let purple = theme::PURPLE();
-                let panel = theme::PANEL();
-                let bg = theme::BG();
-                let rows = lane_snapshot.clone();
-                let bands_s = band_snapshot.clone();
-                let nodes = node_map.clone();
-                let sel = selected_lane.clone();
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(lane_h))
-                    .child(
-                        canvas(
-                            |_, _, _| {},
-                            move |bounds, _, window, _| {
-                                let w = bounds.size.width.as_f32();
-                                let h = bounds.size.height.as_f32();
-                                let ox = bounds.origin.x.as_f32();
-                                let oy = bounds.origin.y.as_f32();
-                                let pad_l = 52.0;
-                                let pad_r = 20.0;
-                                let track = (w - pad_l - pad_r).max(1.);
-                                let x_of = |ch: u32| {
-                                    pad_l + (ch as f32 / max_ch as f32).clamp(0., 1.) * track
-                                };
-                                let y_of = |i: usize| head_h + row_h * i as f32;
-                                let p = |x: f32, y: f32| point(px(ox + x), px(oy + y));
-
-                                // 幕带：交替底色 + 顶部卷名，作者一眼看出"这段是第一幕"
-                                for (bi, b) in bands_s.iter().enumerate() {
-                                    let x0 = x_of(b.start.saturating_sub(1));
-                                    let x1 = x_of(b.end.min(max_ch));
-                                    if x1 <= x0 {
-                                        continue;
-                                    }
-                                    let mut rect = PathBuilder::fill();
-                                    rect.move_to(p(x0, 0.));
-                                    rect.line_to(p(x1, 0.));
-                                    rect.line_to(p(x1, h));
-                                    rect.line_to(p(x0, h));
-                                    rect.close();
-                                    if let Ok(path) = rect.build() {
-                                        // 奇偶交替，靠明度区分而不是靠颜色堆砌
-                                        let a = if bi % 2 == 0 { 0.055 } else { 0.025 };
-                                        window.paint_path(path, hsla(purple).opacity(a));
-                                    }
-                                    let mut edge = PathBuilder::stroke(px(1.));
-                                    edge.move_to(p(x0, 0.));
-                                    edge.line_to(p(x0, h));
-                                    if let Ok(path) = edge.build() {
-                                        window.paint_path(path, hsla(purple).opacity(0.22));
-                                    }
-                                }
-
-                                // 章节刻度：每 5 章一道，带章号
-                                let mut ch = 5;
-                                while ch <= max_ch {
-                                    let x = x_of(ch);
-                                    let mut t = PathBuilder::stroke(px(1.));
-                                    t.move_to(p(x, head_h - 8.));
-                                    t.line_to(p(x, h - 2.));
-                                    if let Ok(path) = t.build() {
-                                        window.paint_path(path, hsla(line_color).opacity(0.65));
-                                    }
-                                    ch += 5;
-                                }
-
-                                // "现在"标线：左侧已发生、右侧未写
-                                if now_ch > 0 {
-                                    let x = x_of(now_ch);
-                                    let mut past = PathBuilder::stroke(px(1.4));
-                                    past.move_to(p(x, head_h - 10.));
-                                    past.line_to(p(x, h - 2.));
-                                    if let Ok(path) = past.build() {
-                                        window.paint_path(path, hsla(acc).opacity(0.55));
-                                    }
-                                    let mut future = PathBuilder::stroke(px(1.2));
-                                    future = future.dash_array(&[px(4.), px(4.)]);
-                                    future.move_to(p(x, head_h - 10.));
-                                    future.line_to(p(x, h - 2.));
-                                    if let Ok(path) = future.build() {
-                                        window.paint_path(path, hsla(acc).opacity(0.28));
-                                    }
-                                }
-
-                                // 车道
-                                for (i, lane) in rows.iter().enumerate() {
-                                    let y = y_of(i);
-                                    let on = sel.as_deref() == Some(lane.id.as_str());
-                                    let c = if lane.id == "α" {
-                                        alpha_color
-                                    } else if lane.archived {
-                                        dim_color
-                                    } else if lane.forecast {
-                                        green
-                                    } else {
-                                        purple
-                                    };
-                                    let c = if on { acc } else { c };
-                                    let op = if lane.archived { 0.42 } else if on { 1.0 } else { 0.85 };
-
-                                    // 基线：整条车道画到底，作者能看出这条线覆盖到哪
-                                    let base_end = if lane.last_chapter > 0 {
-                                        x_of(lane.last_chapter)
-                                    } else {
-                                        x_of(lane.fork_chapter.max(1))
-                                    };
-                                    let mut b = PathBuilder::stroke(px(if on { 1.8 } else { 1.3 }));
-                                    if lane.archived {
-                                        b = b.dash_array(&[px(3.), px(3.)]);
-                                    }
-                                    b.move_to(p(x_of(0), y));
-                                    b.line_to(p(base_end.max(x_of(0) + 4.), y));
-                                    if on {
-                                        // 选中线：淡底块，一眼找到
-                                        let mut fill = PathBuilder::fill();
-                                        fill.move_to(p(0., y - row_h / 2. + 2.));
-                                        fill.line_to(p(w, y - row_h / 2. + 2.));
-                                        fill.line_to(p(w, y + row_h / 2. - 2.));
-                                        fill.line_to(p(0., y + row_h / 2. - 2.));
-                                        fill.close();
-                                        if let Ok(path) = fill.build() {
-                                            window.paint_path(path, hsla(acc).opacity(0.06));
-                                        }
-                                    }
-                                    if let Ok(path) = b.build() {
-                                        window.paint_path(path, hsla(c).opacity(op));
-                                    }
-                                    if lane.archived {
-                                        continue;
-                                    }
-
-                                    // 分叉：从父线（正典或另一条）的对应车道弯出
-                                    if lane.id != "α" {
-                                        let py = rows
-                                            .iter()
-                                            .position(|r| r.id == line_parent_id(&typed, &lane.id))
-                                            .map(|pi| y_of(pi))
-                                            .unwrap_or(y_of(0));
-                                        let fx = x_of(lane.fork_chapter.max(1));
-                                        let mut curve = PathBuilder::stroke(px(if on { 1.8 } else { 1.3 }));
-                                        curve.move_to(p(fx, py));
-                                        curve.cubic_bezier_to(
-                                            p(fx + 10., py),
-                                            p(fx + 10., y),
-                                            p((fx + 22.).min(w - pad_r), y),
-                                        );
-                                        if let Ok(path) = curve.build() {
-                                            window.paint_path(path, hsla(c).opacity(op));
-                                        }
-                                    }
-
-                                    // 节点落点：已写的实心、计划中的空心
-                                    if let Some((_, ns)) = nodes.iter().find(|(id, _)| id == &lane.id) {
-                                        for (nch, _, written) in ns {
-                                            let nx = x_of(*nch);
-                                            let r = if on { 3.4 } else { 2.6 };
-                                            if *written {
-                                                let k = 0.5523 * r;
-                                                let mut d = PathBuilder::fill();
-                                                d.move_to(p(nx + r, y));
-                                                d.cubic_bezier_to(p(nx + r, y + k), p(nx + k, y + r), p(nx, y + r));
-                                                d.cubic_bezier_to(p(nx - k, y + r), p(nx - r, y + k), p(nx - r, y));
-                                                d.cubic_bezier_to(p(nx - r, y - k), p(nx - k, y - r), p(nx, y - r));
-                                                d.cubic_bezier_to(p(nx + k, y - r), p(nx + r, y - k), p(nx + r, y));
-                                                if let Ok(path) = d.build() {
-                                                    window.paint_path(path, hsla(c).opacity(if on { 0.95 } else { 0.72 }));
-                                                }
-                                            } else {
-                                                let mut d = PathBuilder::stroke(px(1.1));
-                                                d.move_to(p(nx + r, y));
-                                                let k = 0.5523 * r;
-                                        d.cubic_bezier_to(p(nx + r, y + k), p(nx + k, y + r), p(nx, y + r));
-                                                d.cubic_bezier_to(p(nx - k, y + r), p(nx - r, y + k), p(nx - r, y));
-                                                d.cubic_bezier_to(p(nx - r, y - k), p(nx - k, y - r), p(nx, y - r));
-                                                d.cubic_bezier_to(p(nx + k, y - r), p(nx + r, y - k), p(nx + r, y));
-                                                if let Ok(path) = d.build() {
-                                                    window.paint_path(path, hsla(c).opacity(if on { 0.85 } else { 0.55 }));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                let _ = (panel, bg);
-                            },
-                        )
-                        .absolute()
-                        .size_full(),
-                    )
-                    // 左侧车道名（等宽字体，与画布 y 对齐）
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(4.))
-                            .top(px(head_h))
-                            .flex()
-                            .flex_col()
-                            .children(lane_snapshot.iter().map(|lane| {
-                                let on = self.lane.as_deref() == Some(lane.id.as_str());
-                                let c = if lane.id == "α" {
-                                    theme::BLUE()
-                                } else if lane.archived {
-                                    theme::FAINT()
-                                } else if on {
-                                    theme::ACCENT()
-                                } else {
-                                    theme::DIM()
-                                };
-                                let id = lane.id.clone();
-                                div()
-                                    .id(SharedString::from(format!("lane-sel-{}", lane.id)))
-                                    .h(px(row_h))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(3.))
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.lane = Some(id.clone());
-                                        this.node = None;
-                                        this.message = None;
-                                        cx.notify();
-                                    }))
-                                    .child(
-                                        div()
-                                            .font_family(theme::FAMILY_MONO)
-                                            .text_size(theme::FONT_MICRO)
-                                            .text_color(c)
-                                            .child(SharedString::from(lane.id.clone())),
-                                    )
-                                    .when(lane.pending_diffs > 0, |d| {
-                                        d.child(
-                                            div()
-                                                .text_size(px(8.))
-                                                .font_family(theme::FAMILY_MONO)
-                                                .text_color(theme::GREEN())
-                                                .child(SharedString::from(format!(
-                                                    "{}",
-                                                    lane.pending_diffs
-                                                ))),
-                                        )
-                                    })
-                            })),
-                    )
-                    // 幕名（画在幕带顶上，跟着 x 位置走会更好，但 canvas 里排版文字成本高，
-                    // 这里用相对定位容器按百分比摆放）
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(52.))
-                            .right(px(20.))
-                            .top(px(6.))
-                            .h(px(18.))
-                            .relative()
-                            .children(band_snapshot.iter().map(|b| {
-                                let total = max_ch.max(1) as f32;
-                                let start = (b.start.saturating_sub(1)) as f32 / total;
-                                let width = ((b.end.saturating_sub(b.start) + 1) as f32 / total)
-                                    .clamp(0.02, 1.);
-                                let name = b.name.clone();
-                                let theme_s = b.theme.clone();
-                                div()
-                                    .absolute()
-                                    .left(relative(start))
-                                    .w(relative(width))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_size(theme::FONT_MICRO)
-                                    .text_color(theme::PURPLE())
-                                    .child(SharedString::from(if theme_s.is_empty() {
-                                        name
-                                    } else {
-                                        format!("{name} · {theme_s}")
-                                    }))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .right(px(4.))
-                            .bottom(px(2.))
-                            .text_size(theme::FONT_MICRO)
-                            .text_color(theme::FAINT())
-                            .child(SharedString::from(format!(
-                                "共 {max_ch} 章 · 现在第 {now_ch} 章 · 实心=已写 空心=计划"
-                            ))),
-                    )
-                    .children(detail)
-                    .into_any_element()
-            };
-            Some(lanes_el)
-        } else {
-            None
-        };
-
+        // 三视图（并轨 / 世界树 / 对比）已经搬到「世界线」页——
+        // 那一页是时间轴（横轴=章节、固化段实线、开放段虚线），
+        // 这一页（预言书）只做一件事：选中一条 if 线，推演它，看影响，决定扶不扶正。
 
         // 页头：并轨 / 世界树 双视图（旧形态默认，世界树是新增看法）
         let seg = |label: &'static str, on: bool, key: &'static str| {
@@ -3612,330 +2921,37 @@ impl Render for OraclePanel {
             );
 
         // —— 对比视图：两条线并排 ——
-        let compare_el: Option<gpui_kit::AnyElement> = if self.view == WlView::Compare {
-            let typed_cmp: Vec<crate::worldline::Line> = lines
-                .iter()
-                .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                .collect();
-            let left = self.lane.clone().or_else(|| {
-                typed_cmp
-                    .iter()
-                    .find(|l| !l.is_base())
-                    .map(|l| l.id.clone())
-            });
-            let right = self.compare_with.clone().unwrap_or_else(|| "α".into());
-            let Some(left) = left else {
-                return div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_size(theme::FONT_LABEL)
-                            .text_color(theme::FAINT())
-                            .child("还没有可对比的世界线——先在下方写一句「如果……」开一条。"),
-                    );
-            };
-            let cmp = crate::worldline::layout::compare(&typed_cmp, &left, &right);
-            let pickable = typed_cmp.clone();
-            let seg2 = |label: String, on: bool, key: String| {
+        // 预言书的两栏：左 = 这条线（及同分叉点的兄弟线），中 = 推演卷轴与影响面。
+        let body: gpui_kit::AnyElement = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .gap(theme::GAP_GROUP)
+            .p(theme::PAD_MD)
+            .child(
                 div()
-                    .id(SharedString::from(key))
-                    .px(px(8.))
-                    .py(px(2.))
-                    .rounded(px(5.))
-                    .border_1()
-                    .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
-                    .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
-                    .cursor_pointer()
-                    .text_size(theme::FONT_MICRO)
-                    .text_color(if on { theme::ACCENT() } else { theme::DIM() })
-                    .child(SharedString::from(label))
-            };
-            let mut col_a = div().flex().flex_col().gap(px(2.));
-            for (label, ch) in &cmp.only_a {
-                col_a = col_a.child(
-                    div()
-                        .flex()
-                        .gap(theme::GAP_SM)
-                        .child(
-                            div()
-                                .w(px(40.))
-                                .flex_shrink_0()
-                                .font_family(theme::FAMILY_MONO)
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::ACCENT())
-                                .child(SharedString::from(format!("第{ch}章"))),
-                        )
-                        .child(
-                            div()
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::TEXT())
-                                .child(SharedString::from(label.clone())),
-                        ),
-                );
-            }
-            let mut col_b = div().flex().flex_col().gap(px(2.));
-            for (label, ch) in &cmp.only_b {
-                col_b = col_b.child(
-                    div()
-                        .flex()
-                        .gap(theme::GAP_SM)
-                        .child(
-                            div()
-                                .w(px(40.))
-                                .flex_shrink_0()
-                                .font_family(theme::FAMILY_MONO)
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::BLUE())
-                                .child(SharedString::from(format!("第{ch}章"))),
-                        )
-                        .child(
-                            div()
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::TEXT())
-                                .child(SharedString::from(label.clone())),
-                        ),
-                );
-            }
-            let mut conflicts_el = div().flex().flex_col().gap(px(2.));
-            if cmp.conflicts.is_empty() {
-                conflicts_el = conflicts_el.child(
-                    div()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::FAINT())
-                        .child("两条线对同一目标的影响方式一致，没有冲突。"),
-                );
-            }
-            for c in &cmp.conflicts {
-                conflicts_el = conflicts_el.child(
-                    div()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::AMBER())
-                        .child(SharedString::from(format!("⚠ {c}"))),
-                );
-            }
-            Some(
-                div()
-                    .flex_1()
+                    .id("wl-list")
+                    .w(px(248.))
+                    .flex_shrink_0()
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .gap(theme::GAP_MD)
-                    .p(theme::PAD_MD)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(theme::GAP_SM)
-                            .child(
-                                div()
-                                    .text_size(theme::FONT_MICRO)
-                                    .text_color(theme::FAINT())
-                                    .child("左"),
-                            )
-                            .children(pickable.iter().map(|l| {
-                                let id = l.id.clone();
-                                let on = id == left;
-                                seg2(id.clone(), on, format!("cmp-a-{id}")).on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.lane = Some(id.clone());
-                                        cx.notify();
-                                    },
-                                ))
-                            }))
-                            .child(
-                                div()
-                                    .px(px(6.))
-                                    .text_size(theme::FONT_MICRO)
-                                    .text_color(theme::FAINT())
-                                    .child("vs"),
-                            )
-                            .children(pickable.iter().map(|l| {
-                                let id = l.id.clone();
-                                let on = id == right;
-                                seg2(id.clone(), on, format!("cmp-b-{id}")).on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.compare_with = Some(id.clone());
-                                        cx.notify();
-                                    },
-                                ))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme::FONT_MICRO)
-                            .text_color(theme::FAINT())
-                            .child(SharedString::from(if cmp.common_ancestor.is_empty() {
-                                "两条线没有共同祖先：各自推演的全部节点都算差异".to_string()
-                            } else {
-                                format!("共同祖先：{}（只比较它之后的推演）", cmp.common_ancestor)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(theme::GAP_GROUP)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.))
-                                    .child(
-                                        div()
-                                            .text_size(theme::FONT_LABEL)
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(theme::ACCENT())
-                                            .child(SharedString::from(format!(
-                                                "{} 独有 {}",
-                                                cmp.a,
-                                                cmp.only_a.len()
-                                            ))),
-                                    )
-                                    .child(col_a),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.))
-                                    .child(
-                                        div()
-                                            .text_size(theme::FONT_LABEL)
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(theme::BLUE())
-                                            .child(SharedString::from(format!(
-                                                "{} 独有 {}",
-                                                cmp.b,
-                                                cmp.only_b.len()
-                                            ))),
-                                    )
-                                    .child(col_b),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.))
-                            .border_t_1()
-                            .border_color(theme::LINE())
-                            .pt(theme::GAP_SM)
-                            .child(
-                                div()
-                                    .text_size(theme::FONT_LABEL)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme::TEXT())
-                                    .child(SharedString::from(format!(
-                                        "共同推演 {} 件 · 冲突 {} 处",
-                                        cmp.shared.len(),
-                                        cmp.conflicts.len()
-                                    ))),
-                            )
-                            .child(conflicts_el),
-                    )
-                    .into_any_element(),
+                    .overflow_y_scroll()
+                    .children(list),
             )
-        } else {
-            None
-        };
-
-        let body: gpui_kit::AnyElement = if let Some(cmp) = compare_el {
-            cmp
-        } else if let Some(lanes) = lanes_el {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .px(theme::PAD_LG)
-                        .pt(theme::PAD_MD)
-                        .child(lanes),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .gap(theme::GAP_GROUP)
-                        .p(theme::PAD_MD)
-                        .child(
-                            div()
-                                .id("wl-list")
-                                .w(px(280.))
-                                .flex_shrink_0()
-                                .min_h_0()
-                                .flex()
-                                .flex_col()
-                                .overflow_y_scroll()
-                                .children(list),
-                        )
-                        .child(
-                            div()
-                                .id("oracle-scroll")
-                                .flex_1()
-                                .min_w_0()
-                                .min_h_0()
-                                .flex()
-                                .flex_col()
-                                .gap(theme::GAP_XS)
-                                .overflow_y_scroll()
-                                .children(right),
-                        ),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .gap(theme::GAP_GROUP)
-                .p(theme::PAD_MD)
-                .child(
-                    div()
-                        .id("wl-tree")
-                        .w(px(320.))
-                        .flex_shrink_0()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .gap(theme::GAP_SM)
-                        .overflow_y_scroll()
-                        .children(tree_col),
-                )
-                .child(
-                    div()
-                        .id("wl-list")
-                        .w(px(248.))
-                        .flex_shrink_0()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .overflow_y_scroll()
-                        .children(list),
-                )
-                .child(
-                    div()
-                        .id("oracle-scroll")
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .gap(theme::GAP_XS)
-                        .overflow_y_scroll()
-                        .children(right),
-                )
-                .into_any_element()
-        };
+            .child(
+                div()
+                    .id("oracle-scroll")
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .gap(theme::GAP_XS)
+                    .overflow_y_scroll()
+                    .children(right),
+            )
+            .into_any_element();
 
         div()
             .size_full()

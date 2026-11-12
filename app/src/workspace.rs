@@ -86,6 +86,7 @@ pub enum Mode {
     Graph,
     Canvas,
     Director,
+    Worldline,
     Oracle,
     BookInfo,
 }
@@ -130,7 +131,8 @@ impl Mode {
             Mode::Import => "导入旧稿",
             Mode::Graph => "记忆图谱",
             Mode::Canvas => "剧情画板",
-            Mode::Director => "世界线",
+            Mode::Director => "章节排期",
+            Mode::Worldline => "世界线",
             Mode::Oracle => "预言书",
             Mode::BookInfo => "书目信息",
         }
@@ -154,6 +156,7 @@ impl Mode {
             Mode::Graph => IconName::Network,
             Mode::Canvas => IconName::Waypoints,
             Mode::Director => IconName::Kanban,
+            Mode::Worldline => IconName::GitBranch,
             Mode::Oracle => IconName::Sparkle,
             Mode::BookInfo => IconName::Notebook,
         }
@@ -161,7 +164,7 @@ impl Mode {
 }
 
 /// 侧栏导航顺序（与原实现一致，只是改为数据表以便统一出行）。
-const NAV: [Mode; 15] = [
+const NAV: [Mode; 16] = [
     Mode::Editor,
     Mode::Outline,
     Mode::Canon,
@@ -171,6 +174,7 @@ const NAV: [Mode; 15] = [
     Mode::Characters,
     Mode::Canvas,
     Mode::Director,
+    Mode::Worldline,
     Mode::Oracle,
     Mode::BookInfo,
     Mode::Graph,
@@ -305,6 +309,7 @@ pub struct Workspace {
     canvas_view: Entity<CanvasPanel>,
     director_view: Entity<DirectorPanel>,
     oracle_view: Entity<OraclePanel>,
+    worldline_view: Entity<crate::worldline::view::WorldlinePanel>,
     bookinfo_view: Entity<BookInfoPanel>,
     chat: Entity<ChatPanel>,
     /// 分支卡数据（与 EditorPanel 同步；采纳读这里）
@@ -436,6 +441,8 @@ impl Workspace {
         let canvas_view = cx.new(|cx| CanvasPanel::new(window, cx, handle.clone()));
         let director_view = cx.new(|cx| DirectorPanel::new(cx, handle.clone(), chapter));
         let oracle_view = cx.new(|cx| OraclePanel::new(window, cx, handle.clone()));
+        let worldline_view =
+            cx.new(|cx| crate::worldline::view::WorldlinePanel::new(cx, handle.clone()));
         let bookinfo_view = cx.new(|cx| BookInfoPanel::new(window, cx, handle.clone()));
         let chat = cx.new(|cx| ChatPanel::new(window, cx));
 
@@ -695,6 +702,151 @@ impl Workspace {
         })
         .detach();
 
+        // 世界线页：时间轴上的手工操作（分叉 / 扶正 / 归档 / 删除 / 跳推演）
+        cx.subscribe_in(
+            &worldline_view,
+            window,
+            |this, _, ev: &crate::worldline::view::WorldlineEvent, window, cx| {
+                use crate::worldline::view::WorldlineEvent as WE;
+                let store = crate::worldline::Store::new(&this.handle.root);
+                match ev {
+                    WE::Select(id) => {
+                        // 选中联动预言书：在两页看到同一条线
+                        let id = id.clone();
+                        this.oracle_view.update(cx, |panel, cx| {
+                            panel.select_line(id, cx);
+                        });
+                    }
+                    WE::Fork { from, chapter } => {
+                        let next = next_line_id(&store);
+                        let ch = if *chapter == 0 {
+                            store
+                                .find(from)
+                                .ok()
+                                .flatten()
+                                .map(|l| l.fixed_boundary().max(l.fork_chapter()))
+                                .unwrap_or(0)
+                        } else {
+                            *chapter
+                        };
+                        let name = format!("{next}·从第{ch}章分叉");
+                        match store.fork_at_chapter(
+                            from,
+                            ch,
+                            &next,
+                            &name,
+                            "",
+                            crate::worldline::Kind::WhatIf,
+                        ) {
+                            Ok(l) => {
+                                let msg = format!("已开线 {}（自第{ch}章）", l.id);
+                                let lid = l.id.clone();
+                                this.worldline_view.update(cx, |p, cx| {
+                                    p.select(lid, cx);
+                                    p.set_message(msg, cx);
+                                });
+                            }
+                            Err(e) => {
+                                this.worldline_view.update(cx, |p, cx| {
+                                    p.set_message(format!("分叉失败：{e}"), cx)
+                                });
+                            }
+                        }
+                    }
+                    WE::Fix(id) => match store.fix_line(id) {
+                        Ok(l) => {
+                            let msg = format!(
+                                "已扶正：{} 成为正典后续（固化边界推到第 {} 章）",
+                                l.name,
+                                l.fixed_boundary()
+                            );
+                            this.worldline_view.update(cx, |p, cx| p.set_message(msg, cx));
+                            this.oracle_view.update(cx, |_, cx| cx.notify());
+                            let _ = window;
+                        }
+                        Err(e) => this
+                            .worldline_view
+                            .update(cx, |p, cx| p.set_message(format!("扶正失败：{e}"), cx)),
+                    },
+                    WE::Unfix(id) => match store.unfix_line(id) {
+                        Ok(()) => this
+                            .worldline_view
+                            .update(cx, |p, cx| p.set_message(format!("已撤销线{id}的扶正"), cx)),
+                        Err(e) => this
+                            .worldline_view
+                            .update(cx, |p, cx| p.set_message(format!("撤销失败：{e}"), cx)),
+                    },
+                    WE::Archive(id) => match this.handle.toggle_worldline_archive(id) {
+                        Ok(st) => this
+                            .worldline_view
+                            .update(cx, |p, cx| p.set_message(format!("线{id} → {st}"), cx)),
+                        Err(e) => this
+                            .worldline_view
+                            .update(cx, |p, cx| p.set_message(format!("归档失败：{e}"), cx)),
+                    },
+                    WE::Remove(id) => match store.remove(id) {
+                        Ok(()) => this.worldline_view.update(cx, |p, cx| {
+                            p.set_message(format!("已删除线{id}（子线保留）"), cx)
+                        }),
+                        Err(e) => this
+                            .worldline_view
+                            .update(cx, |p, cx| p.set_message(format!("删除失败：{e}"), cx)),
+                    },
+                    WE::NodePatch { line, node, patch } => {
+                        match store.update_node(line, node, patch.clone()) {
+                            Ok(()) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message(format!("已更新节点 {node}"), cx)),
+                            Err(e) => this.worldline_view.update(cx, |p, cx| {
+                                p.set_message(format!("更新失败：{e}"), cx)
+                            }),
+                        }
+                    }
+                    WE::NodeRemove { line, node } => match store.remove_node(line, node) {
+                        Ok(()) => this.worldline_view.update(cx, |p, cx| {
+                            p.set_message(format!("已删除节点 {node}（线{line}）"), cx)
+                        }),
+                        Err(e) => this
+                            .worldline_view
+                            .update(cx, |p, cx| p.set_message(format!("删除失败：{e}"), cx)),
+                    },
+                    WE::NodeAdd { line, kind, label, chapter } => {
+                        let nid = next_node_id(line, &this.handle);
+                        let mut n = crate::worldline::Node::new(&nid, kind, label);
+                        n.chapter = *chapter;
+                        n.state = crate::worldline::NodeState::Planned;
+                        match store.add_node(line, n) {
+                            Ok(()) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message("已新增节点", cx)),
+                            Err(e) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message(format!("新增失败：{e}"), cx)),
+                        }
+                    }
+                    WE::LinkCanvas { line, node, canvas } => {
+                        match store.link_canvas(line, node, canvas) {
+                            Ok(()) => this.worldline_view.update(cx, |p, cx| {
+                                p.set_message(format!("已把节点 {node} 关联到画布 {canvas}"), cx)
+                            }),
+                            Err(e) => this.worldline_view.update(cx, |p, cx| {
+                                p.set_message(format!("关联失败：{e}"), cx)
+                            }),
+                        }
+                    }
+                    WE::Simulate(id) => {
+                        // 跳到预言书并选中该线：推演是那一页的事
+                        let id = id.clone();
+                        this.oracle_view.update(cx, |panel, cx| {
+                            panel.select_line(id, cx);
+                        });
+                        this.switch_center(Mode::Oracle, window, cx);
+                    }
+                }
+            },
+        )
+        .detach();
+
         // 预言书：开线推演 → 走同一条 DSH 会话（轨迹窗全程可见）；晋升 → 刷新收件箱
         cx.subscribe_in(
             &oracle_view,
@@ -720,7 +872,7 @@ impl Workspace {
                         ) {
                             Ok(line) => {
                                 this.canvas_view.update(cx, |panel, _cx| {
-                                    panel.show_line(line.id.clone())
+                                    panel.focus_worldline(line.id.clone())
                                 });
                                 this.trajectory.update(cx, |panel, cx| {
                                     panel.push(
@@ -744,71 +896,9 @@ impl Workspace {
                 OracleEvent::Forecast => {
                     this.on_send(prompts::forecast_task(), cx);
                 }
-                // 世界线的手改：作者亲笔，不经过 AI。全部落 worldlines.json 并刷新两边视图。
-                OracleEvent::ForkFrom { line, node, name } => {
-                    let store = crate::worldline::Store::new(&this.handle.root);
-                    let next_id = next_line_id(&store);
-                    match store.fork(line, node, &next_id, name, name, crate::worldline::Kind::WhatIf) {
-                        Ok(l) => {
-                            let msg = format!("已从节点 {node} 分叉出线 {}", l.id);
-                            let lane = l.id.clone();
-                            this.oracle_view
-                                .update(cx, |panel, cx| panel.after_line_change(Some(lane), msg, cx));
-                            this.canvas_view.update(cx, |panel, _cx| panel.refresh());
-                        }
-                        Err(e) => this.oracle_view.update(cx, |panel, cx| {
-                            panel.after_line_change(None, format!("分叉失败：{e}"), cx)
-                        }),
-                    }
-                }
-                OracleEvent::NodePatch { line, node, patch } => {
-                    let store = crate::worldline::Store::new(&this.handle.root);
-                    match store.update_node(line, node, patch.clone()) {
-                        Ok(()) => {
-                            this.oracle_view.update(cx, |panel, cx| {
-                                panel.after_line_change(None, format!("已更新节点 {node}"), cx)
-                            });
-                            this.canvas_view.update(cx, |panel, _cx| panel.refresh());
-                        }
-                        Err(e) => this.oracle_view.update(cx, |panel, cx| {
-                            panel.after_line_change(None, format!("更新失败：{e}"), cx)
-                        }),
-                    }
-                }
-                OracleEvent::NodeRemove { line, node } => {
-                    let store = crate::worldline::Store::new(&this.handle.root);
-                    match store.remove_node(line, node) {
-                        Ok(()) => {
-                            this.oracle_view.update(cx, |panel, cx| {
-                                panel.after_line_change(None, format!("已删除节点 {node}（线{line}）"), cx)
-                            });
-                            this.canvas_view.update(cx, |panel, _cx| panel.refresh());
-                        }
-                        Err(e) => this.oracle_view.update(cx, |panel, cx| {
-                            panel.after_line_change(None, format!("删除失败：{e}"), cx)
-                        }),
-                    }
-                }
-                OracleEvent::NodeAdd { line, kind, label, chapter } => {
-                    let store = crate::worldline::Store::new(&this.handle.root);
-                    let mut node = crate::worldline::Node::new(&next_node_id(line, &this.handle), kind, label);
-                    node.chapter = *chapter;
-                    node.state = crate::worldline::NodeState::Planned;
-                    match store.add_node(line, node) {
-                        Ok(()) => {
-                            this.oracle_view.update(cx, |panel, cx| {
-                                panel.after_line_change(None, "已新增节点", cx)
-                            });
-                            this.canvas_view.update(cx, |panel, _cx| panel.refresh());
-                        }
-                        Err(e) => this.oracle_view.update(cx, |panel, cx| {
-                            panel.after_line_change(None, format!("新增失败：{e}"), cx)
-                        }),
-                    }
-                }
                 OracleEvent::ViewOnCanvas { worldline } => {
                     let wl = worldline.clone();
-                    this.canvas_view.update(cx, |panel, _cx| panel.show_line(wl));
+                    this.canvas_view.update(cx, |panel, _cx| panel.focus_worldline(wl));
                     this.switch_center(Mode::Canvas, _window, cx);
                 }
                 OracleEvent::Promoted { worldline, proposal_id } => {
@@ -1229,6 +1319,7 @@ impl Workspace {
             canvas_view,
             director_view,
             oracle_view,
+            worldline_view,
             bookinfo_view,
             chat,
             branches: Vec::new(),
@@ -1436,6 +1527,7 @@ impl Workspace {
                 self.director_view.update(cx, |panel, _cx| panel.refresh());
                 panel_handle(self.director_view.clone())
             }
+            Mode::Worldline => panel_handle(self.worldline_view.clone()),
             Mode::Oracle => panel_handle(self.oracle_view.clone()),
             Mode::BookInfo => panel_handle(self.bookinfo_view.clone()),
         };

@@ -7,61 +7,6 @@
 
 use super::{Kind, Line};
 
-/// 并轨图的一条车道。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Lane {
-    pub id: String,
-    pub name: String,
-    /// 从正典往下数几层（α = 0）
-    pub depth: usize,
-    /// 从第几章分出
-    pub fork_chapter: u32,
-    /// 这条线画到第几章
-    pub last_chapter: u32,
-    pub archived: bool,
-    pub forecast: bool,
-    pub pending_diffs: usize,
-}
-
-/// 并轨图车道顺序。
-///
-/// 顺序规则：正典在最上 → 按血缘深度分层 → 同层按分叉章 → 同章按 id。
-/// 归档线一律沉底。全序键保证同一份数据永远得到同一顺序。
-pub fn lanes(lines: &[Line]) -> Vec<Lane> {
-    let depth_of = depths(lines);
-    let mut out: Vec<Lane> = lines
-        .iter()
-        .map(|l| Lane {
-            id: l.id.clone(),
-            name: l.name.clone(),
-            depth: *depth_of.get(&l.id).unwrap_or(&0),
-            fork_chapter: if l.is_base() { 0 } else { l.fork_chapter() },
-            last_chapter: l.last_chapter(),
-            archived: l.is_archived(),
-            forecast: l.kind == Kind::Forecast,
-            pending_diffs: l.pending_diffs(),
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        // 归档沉底，但正典永远第一
-        let rank = |l: &Lane| {
-            if l.id == "α" {
-                0
-            } else if l.archived {
-                2
-            } else {
-                1
-            }
-        };
-        rank(a)
-            .cmp(&rank(b))
-            .then(a.depth.cmp(&b.depth))
-            .then(a.fork_chapter.cmp(&b.fork_chapter))
-            .then(a.id.cmp(&b.id))
-    });
-    out
-}
-
 /// 每条线到正典的血缘深度。父指针缺失/成环时按根处理（深度 0）。
 fn depths(lines: &[Line]) -> std::collections::BTreeMap<String, usize> {
     let parent: std::collections::BTreeMap<&str, &str> = lines
@@ -287,6 +232,150 @@ pub fn tree(lines: &[Line]) -> Tree {
     Tree { nodes: out, slots, max_chapter: max_chapter.max(1) }
 }
 
+/// 时间轴上的一条轨道。
+///
+/// 与旧的 `Lane` 的区别：旧的是"一条线占一条横向车道，谁跟谁平行"，
+/// 新的是"一条线在时间轴上的可见区间"——它明确区分**已固化**与**开放**两段。
+/// 这是世界线最核心的语义：前面的剧情定了，后面才是 if 的地方。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Track {
+    pub id: String,
+    pub name: String,
+    pub kind: Kind,
+    /// 分叉点：从父线的第几章分开（正典 = 0）
+    pub fork_chapter: u32,
+    /// 可见区间的起点（正典 0；if 线 = fork_chapter）
+    pub from_chapter: u32,
+    /// 这条线有内容的最后章
+    pub last_chapter: u32,
+    /// 已固化到的章（≤ 这个是实线，> 这个是虚线）
+    pub fixed_through: u32,
+    pub archived: bool,
+    /// 从哪条线分叉
+    pub parent_id: String,
+    /// 血缘深度（用于缩进）
+    pub depth: usize,
+    pub pending_diffs: usize,
+    pub node_count: usize,
+}
+
+/// 时间轴布局：把线排成轨道，分清固化段与开放段。
+///
+/// 排序规则（全序，可复现）：
+/// 1. 正典永远第一
+/// 2. 已扶正（Fixed）紧随其后——它们是"已经写进正典的那一版"
+/// 3. 其余按血缘深度 → 分叉章 → id
+/// 4. 归档沉底
+pub fn tracks(lines: &[Line], global_boundary: u32) -> Vec<Track> {
+    let depth_of = depths(lines);
+    let mut out: Vec<Track> = lines
+        .iter()
+        .map(|l| Track {
+            id: l.id.clone(),
+            name: l.name.clone(),
+            kind: l.kind,
+            fork_chapter: if l.is_base() { 0 } else { l.fork_chapter() },
+            from_chapter: if l.is_base() { 0 } else { l.fork_chapter() },
+            last_chapter: l.last_chapter().max(l.fixed_boundary()),
+            // 固化段的归属只有两种：正典（到全局边界）与已扶正线（到它自己的边界）。
+            // 未扶正的 if 线整条都是开放的——它推演得再远也还没定，
+            // 用 fixed_boundary() 会把"推演到第 15 章"误画成"固化到第 15 章"。
+            fixed_through: if l.is_base() {
+                global_boundary
+            } else if l.kind == Kind::Fixed {
+                l.fixed_boundary()
+            } else {
+                0
+            },
+            archived: l.is_archived(),
+            parent_id: l.parent_id.clone(),
+            depth: *depth_of.get(&l.id).unwrap_or(&0),
+            pending_diffs: l.pending_diffs(),
+            node_count: l.nodes.len(),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        let rank = |t: &Track| {
+            if t.id == "α" || t.kind == Kind::Base {
+                0
+            } else if t.kind == Kind::Fixed {
+                1
+            } else if t.archived {
+                3
+            } else {
+                2
+            }
+        };
+        rank(a)
+            .cmp(&rank(b))
+            .then(a.depth.cmp(&b.depth))
+            .then(a.fork_chapter.cmp(&b.fork_chapter))
+            .then(a.id.cmp(&b.id))
+    });
+    out
+}
+
+/// 时间轴上的一段：某条线在某章区间里的内容。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Segment {
+    pub track: String,
+    /// 起点（含）
+    pub from: u32,
+    /// 终点（含）
+    pub to: u32,
+    /// 这段是固化的（true）还是开放的 if（false）
+    pub fixed: bool,
+}
+
+/// 把每条轨道切成「固化段 + 开放段」。
+///
+/// 一条 if 线可能整个都在开放段（还没扶正），也可能被扶正后整段变成固化。
+/// 正典则通常前半固化、后半开放。
+pub fn segments(tracks: &[Track], horizon: u32) -> Vec<Segment> {
+    let mut out = Vec::new();
+    for t in tracks {
+        if t.archived {
+            continue;
+        }
+        let start = t.from_chapter.max(if t.kind == Kind::Base { 0 } else { t.from_chapter });
+        let end = horizon.max(t.last_chapter);
+        if end < start {
+            continue;
+        }
+        // 固化段与开放段的分界点，夹在这条线的区间内
+        let cut = t.fixed_through.min(end);
+        if cut >= start {
+            out.push(Segment { track: t.id.clone(), from: start, to: cut, fixed: true });
+        }
+        if cut < end {
+            let from = (cut + 1).max(start);
+            if from <= end {
+                out.push(Segment { track: t.id.clone(), from, to: end, fixed: false });
+            }
+        }
+    }
+    out
+}
+
+/// 某个固化点上，有哪些 if 线从这里或其之前分出（预言书页的核心查询）。
+///
+/// 找的是"在 `chapter` 这一章已经存在、并且之后还能继续走"的线——
+/// 作者选中第 12 章，想看到"在第 12 章这个时间点上，有哪些 if 已经分出来了"。
+pub fn forks_at<'a>(lines: &'a [Line], chapter: u32) -> Vec<&'a Line> {
+    let mut out: Vec<&Line> = lines
+        .iter()
+        .filter(|l| {
+            !l.is_base() && !l.is_archived() && l.fork_chapter() <= chapter
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        a.fork_chapter()
+            .cmp(&b.fork_chapter())
+            .then(a.id.cmp(&b.id))
+    });
+    out
+}
+
 /// 两条线的对比结果：共同祖先之后的差异节点与互相冲突的影响。
 ///
 /// "冲突"的定义要克制：只有**同一目标**被两条线以不同方式改（比如都改"断刀"
@@ -467,44 +556,9 @@ mod tests {
         l
     }
 
-    #[test]
-    fn lanes_put_base_first_and_archived_last() {
-        let lines = vec![
-            line("ζ", "α", 20, Kind::WhatIf, true),
-            line("β", "α", 10, Kind::WhatIf, false),
-            line("α", "", 0, Kind::Base, false),
-        ];
-        let ordered = lanes(&lines);
-        let order: Vec<&str> = ordered.iter().map(|l| l.id.as_str()).collect();
-        assert_eq!(order, vec!["α", "β", "ζ"], "正典第一，归档沉底");
-    }
-
-    #[test]
-    fn lanes_sort_by_lineage_depth_then_chapter() {
-        let lines = vec![
-            line("α", "", 0, Kind::Base, false),
-            line("γ", "β", 18, Kind::WhatIf, false), // 深一层
-            line("β", "α", 10, Kind::WhatIf, false),
-            line("δ", "α", 6, Kind::WhatIf, false), // 同层但更早
-        ];
-        let ordered = lanes(&lines);
-        let order: Vec<&str> = ordered.iter().map(|l| l.id.as_str()).collect();
-        assert_eq!(order, vec!["α", "δ", "β", "γ"], "浅的线在上，同层按分叉章");
-    }
-
-    #[test]
-    fn lanes_are_stable_across_calls() {
-        let lines = vec![
-            line("α", "", 0, Kind::Base, false),
-            line("β", "α", 10, Kind::WhatIf, false),
-            line("γ", "α", 10, Kind::Forecast, false),
-        ];
-        let a: Vec<String> = lanes(&lines).iter().map(|l| l.id.clone()).collect();
-        let b: Vec<String> = lanes(&lines).iter().map(|l| l.id.clone()).collect();
-        assert_eq!(a, b);
-        assert_eq!(a, vec!["α", "β", "γ"], "同章同层按 id 定序");
-    }
-
+    
+    
+    
     #[test]
     fn cyclic_parent_pointers_do_not_hang() {
         // 手改坏的血缘：β→γ→β 成环
@@ -514,7 +568,7 @@ mod tests {
         b.parent_id = "β".into();
         let lines = vec![line("α", "", 0, Kind::Base, false), a, b];
         // 不死循环就是通过；深度不要求正确，只要有限
-        let ls = lanes(&lines);
+        let ls = tracks(&lines, 0);
         assert_eq!(ls.len(), 3);
         assert!(ls.iter().all(|l| l.depth < 3));
         let t = tree(&lines);
@@ -656,6 +710,75 @@ mod tests {
         let lines = vec![line("α", "", 0, Kind::Base, false)];
         let c = compare(&lines, "α", "不存在");
         assert!(c.only_a.is_empty() && c.only_b.is_empty());
+    }
+
+    #[test]
+    fn tracks_put_base_then_fixed_then_ifs() {
+        let b = with_nodes(line("β", "α", 12, Kind::WhatIf, false), &[("师兄现身", 18)]);
+        let f = with_nodes(line("固定版", "α", 12, Kind::Fixed, false), &[("已扶正", 20)]);
+        let lines = vec![line("α", "", 0, Kind::Base, false), b, f];
+        let tr = tracks(&lines, 10);
+        let order: Vec<&str> = tr.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(order, vec!["α", "固定版", "β"], "正典 → 已扶正 → 其余 if");
+    }
+
+    #[test]
+    fn segments_split_fixed_and_open_at_the_boundary() {
+        let a = with_nodes(line("α", "", 0, Kind::Base, false), &[("出鞘", 5), ("初遇", 16)]);
+        let t = tracks(&[a], 16);
+        let segs = segments(&t, 30);
+        let fixed: Vec<_> = segs.iter().filter(|s| s.fixed).collect();
+        let open: Vec<_> = segs.iter().filter(|s| !s.fixed).collect();
+        assert_eq!(fixed.len(), 1);
+        assert_eq!((fixed[0].from, fixed[0].to), (0, 16), "固化段到边界为止");
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].from, 17, "开放段从边界后一章开始");
+        assert_eq!(open[0].to, 30, "开放段延伸到视野尽头");
+    }
+
+    #[test]
+    fn a_pure_if_line_is_all_open() {
+        let b = with_nodes(line("β", "α", 12, Kind::WhatIf, false), &[("假设", 15)]);
+        let lines = vec![line("α", "", 0, Kind::Base, false), b];
+        let t = tracks(&lines, 16);
+        let beta_track = t.iter().find(|x| x.id == "β").unwrap();
+        let segs = segments(&[beta_track.clone()], 30);
+        assert!(segs.iter().all(|s| !s.fixed), "没扶正的 if 线整段都是开放的");
+        assert_eq!(segs[0].from, 12, "从它的分叉点开始");
+    }
+
+    #[test]
+    fn fixed_line_becomes_solid_after_being_promoted() {
+        let b = with_nodes(line("β", "α", 12, Kind::Fixed, false), &[("扶正后", 22)]);
+        let lines = vec![line("α", "", 0, Kind::Base, false), b];
+        let t = tracks(&lines, 22);
+        let beta_track = t.iter().find(|x| x.id == "β").unwrap();
+        let segs = segments(&[beta_track.clone()], 30);
+        let solid: Vec<_> = segs.iter().filter(|s| s.fixed).collect();
+        assert_eq!(solid.len(), 1);
+        assert_eq!((solid[0].from, solid[0].to), (12, 22), "扶正后整段变实线");
+    }
+
+    #[test]
+    fn forks_at_lists_ifs_available_at_that_chapter() {
+        let b = with_nodes(line("β", "α", 12, Kind::WhatIf, false), &[("x", 18)]);
+        let g = with_nodes(line("γ", "α", 20, Kind::WhatIf, false), &[("y", 25)]);
+        let lines = vec![line("α", "", 0, Kind::Base, false), b, g];
+        // 第 15 章：只有 β（γ 还没分叉）
+        let at15: Vec<&str> = forks_at(&lines, 15).iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(at15, vec!["β"]);
+        // 第 22 章：β 与 γ 都在
+        let at22: Vec<&str> = forks_at(&lines, 22).iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(at22, vec!["β", "γ"]);
+    }
+
+    #[test]
+    fn archived_tracks_have_no_segments() {
+        let b = with_nodes(line("β", "α", 12, Kind::WhatIf, true), &[("x", 18)]);
+        let lines = vec![line("α", "", 0, Kind::Base, false), b];
+        let t = tracks(&lines, 16);
+        let segs = segments(&t, 30);
+        assert!(!segs.iter().any(|s| s.track == "β"), "归档线不该占时间轴");
     }
 
     #[test]
