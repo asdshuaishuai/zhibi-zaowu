@@ -298,6 +298,61 @@ pub struct Track {
     pub node_count: usize,
 }
 
+/// 时间轴取景框的缩放（纯算术，不碰 UI）。
+///
+/// `window` = (起章, 止章)。`factor > 1` 缩小视野（看得更细），`< 1` 拉远。
+///
+/// 为什么以中心为轴：作者放大都是为了看清"正在看的那一段"。以左端为轴的话
+/// 每按一次 ＋ 都会朝第 1 章跑，越放越离开关注点。
+///
+/// 两条不变量：
+/// 1. 跨度不小于 8 章——再窄就只剩两三根刻度，"看一段"退化成"看一章"。
+/// 2. 结果始终落在 `0..=full` 内，且**跨度不变**（越界靠整体平移解决，
+///    裁剪会改变缩放比例，按一次＋和按两次的步长就不一样了）。
+pub fn zoom_window(current: Option<(u32, u32)>, factor: f32, full: u32) -> (u32, u32) {
+    let full = full.max(12);
+    let (from, to) = current.unwrap_or((0, full));
+    let span = to.saturating_sub(from).max(1);
+    let mid = from as f32 + span as f32 / 2.;
+    let new_span = ((span as f32 * factor).round() as u32).clamp(8, full);
+    let half = new_span as f32 / 2.;
+    let mut a = (mid - half).round().max(0.) as u32;
+    let mut b = a + new_span;
+    if b > full {
+        b = full;
+        a = b.saturating_sub(new_span);
+    }
+    (a, b)
+}
+
+/// 时间轴取景框的平移：整窗左右挪 `chapters` 章，跨度不变。
+pub fn pan_window(current: Option<(u32, u32)>, chapters: i32, full: u32) -> (u32, u32) {
+    let full = full.max(12);
+    let (from, to) = current.unwrap_or((0, full));
+    let span = to.saturating_sub(from).max(1);
+    let max_from = full.saturating_sub(span);
+    let a = (from as i64 + chapters as i64).clamp(0, max_from as i64) as u32;
+    (a, a + span)
+}
+
+/// 把视野挪到某一章（已在该范围内就原样返回，避免"点一下视野就跳"）。
+pub fn focus_window(current: Option<(u32, u32)>, chapter: u32, full: u32) -> (u32, u32) {
+    let full = full.max(12);
+    let (from, to) = current.unwrap_or((0, full));
+    let span = to.saturating_sub(from).max(1);
+    if chapter >= from && chapter <= to {
+        return (from, to);
+    }
+    // 目标放在视野左三分之一处：留出"后面会怎样"的余地，
+    // 放正中间的话往后看的那一半全被浪费。
+    let mut a = chapter.saturating_sub(span / 3);
+    if a + span > full {
+        a = full.saturating_sub(span);
+    }
+    (a, a + span)
+}
+
+
 /// 时间轴布局：把线排成轨道，分清固化段与开放段。
 ///
 /// 排序规则（全序，可复现）：
@@ -842,5 +897,77 @@ mod tests {
         let raw = vec![("序", "", 0u32, 4u32)];
         let b = bands(&raw);
         assert_eq!((b[0].start, b[0].end), (1, 4), "缺起始章按第 1 章算");
+    }
+
+    #[test]
+    fn zoom_keeps_the_centre_and_the_span() {
+        // 全览 120 章 → 放大到约 1/1.8
+        let (a, b) = zoom_window(None, 1. / 1.8, 120);
+        let span = b - a;
+        assert!((64..=70).contains(&span), "跨度应约 67，实际 {span}");
+        // 中心仍在中点附近
+        let mid = (a + b) as f32 / 2.;
+        assert!((mid - 60.).abs() <= 2., "放大后应围绕原来的中心，实际 {mid}");
+    }
+
+    #[test]
+    fn zoom_never_goes_below_eight_chapters() {
+        let mut w = None;
+        for _ in 0..20 {
+            w = Some(zoom_window(w, 1. / 1.8, 500));
+        }
+        let (a, b) = w.unwrap();
+        assert_eq!(b - a, 8, "再怎么放大也要留 8 章，否则只剩两三根刻度");
+        assert!(a <= b);
+    }
+
+    #[test]
+    fn zoom_out_at_the_right_edge_pulls_back_instead_of_clipping() {
+        // 贴着右端拉远：跨度是算出来的 36 章，不能裁成 20 章——
+        // 裁剪会改变真实缩放比例，下一次按 ＋ 的步长就跟预期不符了。
+        let (a, b) = zoom_window(Some((100, 120)), 1.8, 120);
+        assert_eq!(b, 120, "右端不越界");
+        assert_eq!(b - a, 36, "跨度必须保持算出来的值，靠整体左移腾地方");
+        assert_eq!(a, 84);
+    }
+
+    #[test]
+    fn zoom_out_caps_at_the_full_span() {
+        // 10 章一次拉远 20 倍 = 200 章，超过全书 120 → 顶到全览
+        let (a, b) = zoom_window(Some((10, 20)), 20.0, 120);
+        assert_eq!((a, b), (0, 120), "拉远到底就是全览");
+    }
+
+    #[test]
+    fn pan_moves_by_the_same_span_and_stops_at_both_ends() {
+        // 跨度 40、全书 120：最多挪到 80 起
+        let (a, b) = pan_window(Some((0, 40)), 20, 120);
+        assert_eq!((a, b), (20, 60));
+        let (a, b) = pan_window(Some((0, 40)), -20, 120);
+        assert_eq!((a, b), (0, 40), "左端顶住");
+        let (a, b) = pan_window(Some((0, 40)), 999, 120);
+        assert_eq!((a, b), (80, 120), "右端顶住且跨度不变");
+    }
+
+    #[test]
+    fn focus_does_not_jump_when_the_chapter_is_already_visible() {
+        let w = Some((10, 50));
+        assert_eq!(focus_window(w, 30, 120), (10, 50), "已在视野里就别动");
+    }
+
+    #[test]
+    fn focus_brings_an_outlying_chapter_into_view() {
+        // 目标在视野左侧：应该落在三分之一处，前面留出上下文
+        let (a, b) = focus_window(Some((100, 140)), 50, 200);
+        assert_eq!(b - a, 40, "跨度不变");
+        assert!(a <= 50 && 50 <= b, "目标必须落在视野内：{a}..{b}");
+        assert!(a < 50, "目标左侧要留上下文，不能贴边：{a}");
+    }
+
+    #[test]
+    fn focus_near_the_end_clamps_inside_the_book() {
+        let (a, b) = focus_window(None, 115, 120);
+        assert_eq!(b, 120, "不能超出全书");
+        assert!(a <= 115);
     }
 }

@@ -770,7 +770,9 @@ impl Workspace {
                                 let msg = format!("已开线 {}（自第{ch}章）", l.id);
                                 let lid = l.id.clone();
                                 this.worldline_view.update(cx, |p, cx| {
-                                    p.select(lid, cx);
+                                    // 用 focus_line 而不是 select：新线长在第 ch 章，
+                                    // 长书里默认全览下它只是一个小点，等于没看见。
+                                    p.focus_line(lid, cx);
                                     p.set_message(msg, cx);
                                 });
                             }
@@ -1019,9 +1021,12 @@ impl Workspace {
                     this.on_send(prompts::forecast_task(), cx);
                 }
                 OracleEvent::ViewOnCanvas { worldline } => {
+                    // 世界线页现在是"看时间轴"的地方（画布不再有预言维），
+                    // 所以这个事件落到世界线页，并把它定位到这条线。
                     let wl = worldline.clone();
-                    this.canvas_view.update(cx, |panel, _cx| panel.focus_worldline(wl));
-                    this.switch_center(Mode::Canvas, _window, cx);
+                    this.worldline_view
+                        .update(cx, |p, cx| p.focus_line(wl, cx));
+                    this.switch_center(Mode::Worldline, _window, cx);
                 }
                 OracleEvent::Promoted { worldline, proposal_id } => {
                     this.inbox.update(cx, |panel, cx| panel.refresh(cx));

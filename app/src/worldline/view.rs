@@ -106,7 +106,11 @@ pub struct WorldlinePanel {
     focus_handle: FocusHandle,
     handle: Rc<ProjectHandle>,
     selected: Option<String>,
-    /// 时间轴的可见章节范围（None = 自动：0 到 max(边界, 最后节点) + 余量）
+    /// 时间轴的可见章节范围（None = 自动：0 到 max(边界, 最后节点) + 余量）。
+    ///
+    /// 有它是因为"固定像素每章"在长书里会挤成一团：写到 300 章时，相邻两章
+    /// 只差 2px，节点全叠在一起。`window` 就是缩放（拉开跨度）与平移
+    /// （挪范围）的载体——它不是另存一份数据，只是同一个时间轴的取景框。
     window: Option<(u32, u32)>,
     message: Option<SharedString>,
     /// 世界线的三种看法。它们看的是同一份 worldlines.json，只是镜头不同：
@@ -123,6 +127,12 @@ pub struct WorldlinePanel {
     ed_premise: Entity<gpui_kit::component::input::InputState>,
     /// 折叠的轨道（作者线多了要收起来）
     collapsed: std::collections::BTreeSet<String>,
+    /// 时间轴上点开的节点（线 id, 节点 id）。`Some` = 抽屉打开。
+    ///
+    /// 为什么是"点节点开抽屉"而不是把节点全塞进右侧详情：右侧详情是**这条线**
+    /// 的信息（名字、假设、扶正/归档），节点是**线上的一个点**。两者混在一起，
+    /// 作者点一个点就会把整条线的操作挤掉。抽屉只回答"这个点是什么、能对它做什么"。
+    picked: Option<(String, String)>,
 }
 
 impl WorldlinePanel {
@@ -142,6 +152,7 @@ impl WorldlinePanel {
             ed_name,
             ed_premise,
             collapsed: Default::default(),
+            picked: None,
             message: None,
             view: WlTab::Timeline,
             compare_with: None,
@@ -170,9 +181,37 @@ impl WorldlinePanel {
         cx.notify();
     }
 
-    pub fn select(&mut self, id: String, cx: &mut Context<Self>) {
+    /// 从外部指定一个要看的世界线（预言书"看时间轴"、创建新线后定位）。
+    ///
+    /// 除了选中，还会把视野挪到这条线的分叉处。被叫过来看的作者打开页面时
+    /// 若停在默认全览，一条在 300 章处的线只是一个点——等于没看见。
+    pub fn focus_line(&mut self, id: String, cx: &mut Context<Self>) {
+        let lines = self.lines();
+        self.prune_picked(&lines);
+        let store = Store::new(&self.handle.root);
+        let boundary = store.fixed_boundary(&lines);
+        let written = self.written_through();
+        let full = self.horizon(&lines, boundary, written);
+        if let Some(line) = lines.iter().find(|l| l.id == id) {
+            self.focus_chapter(line.fork_chapter().max(1), full);
+        }
         self.selected = Some(id);
         cx.notify();
+    }
+
+    /// 抽屉指向的节点还在不在。不在就清掉——否则删完节点再重新渲染，
+    /// 抽屉里那块区域会一直是空的（`and_then` 返回 None，什么都不画，
+    /// 但状态的 picked 还挂着，点别的点时会"先收起再展开"多一次闪）。
+    fn prune_picked(&mut self, lines: &[Line]) {
+        let Some((lid, nid)) = &self.picked else { return };
+        let alive = lines
+            .iter()
+            .find(|l| &l.id == lid)
+            .map(|l| l.nodes.iter().any(|n| &n.id == nid))
+            .unwrap_or(false);
+        if !alive {
+            self.picked = None;
+        }
     }
 
     /// 读全部线，坏文件当空（界面不能因为一份坏 JSON 整个白屏）。
@@ -195,6 +234,41 @@ impl WorldlinePanel {
             })
             .collect();
         bands(&raw)
+    }
+
+    /// 全书的章节跨度（自动取景时用）。
+    fn horizon(&self, lines: &[Line], boundary: u32, written: u32) -> u32 {
+        lines
+            .iter()
+            .map(|l| l.last_chapter())
+            .max()
+            .unwrap_or(0)
+            .max(boundary)
+            .max(written)
+            + 6
+    }
+
+    /// 缩放（算术在 `layout::zoom_window`，那里有测试）。
+    fn zoom(&mut self, factor: f32, full: u32) {
+        self.window = Some(crate::worldline::layout::zoom_window(self.window, factor, full));
+    }
+
+    /// 平移（算术在 `layout::pan_window`）。
+    fn pan(&mut self, chapters: i32, full: u32) {
+        self.window = Some(crate::worldline::layout::pan_window(self.window, chapters, full));
+    }
+
+    /// 取景框是否已偏离全览（决定要不要显示「全部」按钮）。
+    fn is_zoomed(&self, full: u32) -> bool {
+        match self.window {
+            Some((a, b)) => a > 0 || b < full.max(12),
+            None => false,
+        }
+    }
+
+    /// 把视野挪到某一章（点节点 / 新建线后自动跟过去）。
+    fn focus_chapter(&mut self, ch: u32, full: u32) {
+        self.window = Some(crate::worldline::layout::focus_window(self.window, ch, full));
     }
 
     /// 最新成稿章：作者"已经写到哪"。
@@ -229,15 +303,9 @@ impl Render for WorldlinePanel {
         let boundary = store.fixed_boundary(&lines);
         let written = self.written_through();
 
-        // 视野：从 0 到「边界与最远节点取大」再留 6 章余量——作者要看见"前面还有路"
-        let horizon = lines
-            .iter()
-            .map(|l| l.last_chapter())
-            .max()
-            .unwrap_or(0)
-            .max(boundary)
-            .max(written)
-            + 6;
+        // 视野：从 0 到「边界与最远节点取大」再留 6 章余量——作者要看见"前面还有路"。
+        // 缩放/平移都是在这个默认范围上取一个子区间（self.window）。
+        let horizon = self.horizon(&lines, boundary, written);
         let (from_ch, to_ch) = self.window.unwrap_or((0, horizon.max(12)));
         let span = (to_ch.saturating_sub(from_ch)).max(1);
 
@@ -324,26 +392,38 @@ impl Render for WorldlinePanel {
         let tr_c = tr.clone();
         // 节点带上完整状态：时间轴上要区分「已写」（绿实心）、「已采纳但正文还没写到」
         // （蓝实心）、「仅计划」（空心）。只传一个 bool 会把前两者混成一样。
-        let nodes_by_track: BTreeMap<String, Vec<(u32, String, crate::worldline::NodeState)>> = lines
-            .iter()
-            .map(|l| {
-                let mut ns: Vec<(u32, String, crate::worldline::NodeState)> = l
-                    .nodes
-                    .iter()
-                    .map(|n| (n.chapter_or_guess(), n.label.clone(), n.state))
-                    .filter(|(ch, _, _)| *ch > 0)
-                    .collect();
-                ns.sort_by_key(|(ch, _, _)| *ch);
-                (l.id.clone(), ns)
-            })
-            .collect();
+        let nodes_by_track: BTreeMap<String, Vec<(u32, String, String, crate::worldline::NodeState)>> =
+            lines
+                .iter()
+                .map(|l| {
+                    let mut ns: Vec<(u32, String, String, crate::worldline::NodeState)> = l
+                        .nodes
+                        .iter()
+                        .map(|n| {
+                            (
+                                n.chapter_or_guess(),
+                                n.id.clone(),
+                                n.label.clone(),
+                                n.state,
+                            )
+                        })
+                        .filter(|(ch, _, _, _)| *ch > 0)
+                        .collect();
+                    ns.sort_by_key(|(ch, _, _, _)| *ch);
+                    (l.id.clone(), ns)
+                })
+                .collect();
         let nodes_c = nodes_by_track.clone();
+        // 命中区要用另一份：paint 闭包 move 走了 nodes_c / tr_c
+        let hits_nodes = nodes_by_track.clone();
+        let hits_tr = tr.clone();
+        let picked_c = self.picked.clone();
         let sel = self.selected.clone();
         let row_h = 30.;
         let head_h = 48.;
         let canvas_h = head_h + tr_c.len().max(1) as f32 * row_h + 12.;
 
-        let timeline = div()
+        let mut timeline = div()
             .relative()
             .flex_1()
             .min_w_0()
@@ -469,7 +549,7 @@ impl Render for WorldlinePanel {
                         for (ti, t) in tr_c.iter().enumerate() {
                             let y = y_of(ti);
                             let Some(ns) = nodes_c.get(&t.id) else { continue };
-                            for (ch, _, state) in ns {
+                            for (ch, nid, _label, state) in ns {
                                 if *ch < from_ch || *ch > to_ch {
                                     continue;
                                 }
@@ -500,6 +580,22 @@ impl Render for WorldlinePanel {
                                     d.cubic_bezier_to(p(x + k, y - r), p(x + r, y - k), p(x + r, y));
                                     if let Ok(path) = d.build() {
                                         window.paint_path(path, hsla(theme::FAINT()).opacity(0.8));
+                                    }
+                                }
+                                // 选中的节点加一圈：抽屉开着但时间轴上看不出指的是哪个点，
+                                // 作者就得自己回忆刚才点的是哪一个。
+                                if picked_c.as_ref().map(|(l, n)| l == &t.id && n == nid)
+                                    == Some(true)
+                                {
+                                    let mut ring = PathBuilder::stroke(px(1.4));
+                                    let rr = r + 2.6;
+                                    ring.move_to(p(x + rr, y));
+                                    ring.cubic_bezier_to(p(x + rr, y + rr * 0.55), p(x + rr * 0.55, y + rr), p(x, y + rr));
+                                    ring.cubic_bezier_to(p(x - rr * 0.55, y + rr), p(x - rr, y + rr * 0.55), p(x - rr, y));
+                                    ring.cubic_bezier_to(p(x - rr, y - rr * 0.55), p(x - rr * 0.55, y - rr), p(x, y - rr));
+                                    ring.cubic_bezier_to(p(x + rr * 0.55, y - rr), p(x + rr, y - rr * 0.55), p(x + rr, y));
+                                    if let Ok(path) = ring.build() {
+                                        window.paint_path(path, hsla(theme::ACCENT()).opacity(0.9));
                                     }
                                 }
                             }
@@ -568,7 +664,269 @@ impl Render for WorldlinePanel {
                     .child(SharedString::from(format!(
                         "第 {from_ch}–{to_ch} 章 · 实线=已固化 虚线=开放的 if · ● 已写 ○ 计划"
                     ))),
+            )
+            // 节点的命中区。
+            //
+            // canvas 画出来的圆是路径，没有元素身份，收不到点击。所以在同样的位置
+            // 铺一层透明 div 当靶子：位置用百分比（章节比例）+ 固定像素（行高），
+            // 与 paint 里的 x_of / y_of 是同一套算法，不需要等布局回填。
+            // 靶子比圆大（14px 对 6px 的直径）：直径 6px 的点用鼠标点，手指更点不中。
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right(px(13.))
+                    .top_0()
+                    .bottom_0()
+                    .children({
+                        let mut hits: Vec<gpui_kit::AnyElement> = Vec::new();
+                        for (ti, t) in hits_tr.iter().enumerate() {
+                            let Some(ns) = hits_nodes.get(&t.id) else { continue };
+                            for (ch, nid, label, _state) in ns {
+                                if *ch < from_ch || *ch > to_ch {
+                                    continue;
+                                }
+                                let ratio = (*ch).saturating_sub(from_ch) as f32 / span as f32;
+                                let hid = SharedString::from(format!("wlhit-{}-{nid}", t.id));
+                                let (lid, nid2, label2) =
+                                    (t.id.clone(), nid.clone(), label.clone());
+                                hits.push(
+                                    div()
+                                        .id(hid)
+                                        .absolute()
+                                        .left(relative(ratio))
+                                        .top(px(head_h + row_h * ti as f32 - 7.))
+                                        .w(px(14.))
+                                        .h(px(14.))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(
+                                            move |this, _, _, cx| {
+                                                // 点同一个点 = 收起抽屉（与关系演变那边一致）
+                                                let same = this
+                                                    .picked
+                                                    .as_ref()
+                                                    .map(|(a, b)| {
+                                                        a == &lid && b == &nid2
+                                                    })
+                                                    .unwrap_or(false);
+                                                this.picked = if same {
+                                                    None
+                                                } else {
+                                                    Some((lid.clone(), nid2.clone()))
+                                                };
+                                                let _ = &label2;
+                                                cx.notify();
+                                            },
+                                        ))
+                                        .into_any_element(),
+                                );
+                            }
+                        }
+                        hits
+                    }),
             );
+
+        // —— 节点抽屉：点时间轴上的点后浮在底部 ——
+        //
+        // 只回答"这个点是什么、能对它做什么"。线的操作（扶正/归档/改名）
+        // 在右侧详情里，两者不混：作者点一个点不该把整条线的操作挤走。
+        let drawer: Option<gpui_kit::AnyElement> = self.picked.as_ref().and_then(|(lid, nid)| {
+            let line = lines.iter().find(|l| &l.id == lid)?;
+            let node = line.nodes.iter().find(|n| &n.id == nid)?;
+            let ch = node.chapter_or_guess();
+            let state = node.state;
+            let state_color = if state == crate::worldline::NodeState::Written {
+                theme::GREEN()
+            } else if state == crate::worldline::NodeState::Adopted {
+                theme::BLUE()
+            } else {
+                theme::FAINT()
+            };
+            // 这个节点连着哪些边：进来和出去的都算，"因果链"要能两头看
+            let mut ins: Vec<String> = Vec::new();
+            let mut outs: Vec<String> = Vec::new();
+            for e in &line.edges {
+                let label_of = |id: &str| {
+                    line.nodes
+                        .iter()
+                        .find(|n| n.id == id)
+                        .map(|n| n.label.clone())
+                        .unwrap_or_else(|| id.to_string())
+                };
+                if e.to == *nid {
+                    ins.push(format!("{}（{}）", label_of(&e.from), if e.hidden { "暗" } else { "明" }));
+                }
+                if e.from == *nid {
+                    outs.push(format!("{}（{}）", label_of(&e.to), if e.hidden { "暗" } else { "明" }));
+                }
+            }
+            let nid2 = nid.clone();
+            let lid2 = lid.clone();
+            let nid3 = nid.clone();
+            let lid3 = lid.clone();
+            let nid4 = nid.clone();
+            let lid4 = lid.clone();
+            let ndesc = format!("世界线 {}「{}」的第{ch}章节点「{}」", line.id, line.name, node.label);
+            let canvas_ref = node.canvas_ref.clone();
+            let note = node.note.clone();
+            let label = node.label.clone();
+            let can_adopt = ch > 0 && !state.is_canon();
+            Some(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right(px(13.))
+                    .bottom(px(18.))
+                    .mx(px(8.))
+                    .p(theme::PAD_SM)
+                    .rounded(theme::RADIUS_PANEL)
+                    .border_1()
+                    .border_color(theme::ACCENT_BORDER())
+                    .bg(theme::PANEL())
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .child(
+                                div()
+                                    .font_family(theme::FAMILY_MONO)
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::ACCENT())
+                                    .child(SharedString::from(format!("{} 第{ch}章", line.id))),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_ellipsis()
+                                    .text_size(theme::FONT_LABEL)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::TEXT())
+                                    .child(SharedString::from(label.clone())),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(state_color)
+                                    .child(state.label()),
+                            )
+                            .child(
+                                div()
+                                    .id("wl-drawer-close")
+                                    .cursor_pointer()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::FAINT())
+                                    .child("×")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.picked = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .when(!note.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .line_height(relative(1.4))
+                                .text_color(theme::DIM())
+                                .child(SharedString::from(note.clone())),
+                        )
+                    })
+                    // 因果链：两头都列，作者才看得出这个点在链条中的位置
+                    .when(!ins.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(format!("← {}", ins.join("、")))),
+                        )
+                    })
+                    .when(!outs.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(format!("→ {}", outs.join("、")))),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .pt(px(2.))
+                            .child(
+                                // 章号 ±1：排章是最常做的调整
+                                Button::new("wl-drawer-ch")
+                                    .xsmall()
+                                    .label(format!("第{ch}章 ＋"))
+                                    .on_click(cx.listener(move |_this, _, _, cx| {
+                                        cx.emit(WorldlineEvent::NodePatch {
+                                            line: lid2.clone(),
+                                            node: nid2.clone(),
+                                            patch: crate::worldline::NodePatch::chapter(ch + 1),
+                                        });
+                                        cx.notify();
+                                    })),
+                            )
+                            .when(can_adopt, |d| {
+                                d.child(
+                                    Button::new("wl-drawer-adopt")
+                                        .xsmall()
+                                        .label("采纳进正典")
+                                        .on_click(cx.listener(move |_this, _, _, cx| {
+                                            cx.emit(WorldlineEvent::NodeAdopt {
+                                                line: lid3.clone(),
+                                                node: nid3.clone(),
+                                            });
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .when(!canvas_ref.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_size(theme::FONT_MICRO)
+                                        .text_color(theme::BLUE())
+                                        .child(SharedString::from(format!("画布 {canvas_ref}"))),
+                                )
+                            })
+                            .child(
+                                // 推演：从这个点往后让 AI 接着想
+                                Button::new("wl-drawer-sim")
+                                    .xsmall()
+                                    .label("从这儿推演")
+                                    .on_click(cx.listener(move |_t, _, _, cx| {
+                                        cx.emit(WorldlineEvent::Delegate {
+                                            agent: "worldline",
+                                            key: "wl-from-node",
+                                            target: Some(ndesc.clone()),
+                                        });
+                                    })),
+                            )
+                            .child(
+                                Button::new("wl-drawer-del")
+                                    .xsmall()
+                                    .label("删节点")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        // 先收抽屉再删：节点没了，抽屉指向的东西也不在了
+                                        this.picked = None;
+                                        cx.emit(WorldlineEvent::NodeRemove {
+                                            line: lid4.clone(),
+                                            node: nid4.clone(),
+                                        });
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .into_any_element(),
+            )
+        });
+        timeline = timeline.when_some(drawer, |d, dr| d.child(dr));
 
         // —— 右侧详情：选中线的操作 ——
         let mut detail = div().flex().flex_col().gap(theme::GAP_SM);
@@ -1555,6 +1913,81 @@ impl Render for WorldlinePanel {
                         }
                         vec![bar.into_any_element()]
                     })
+                    // 取景：缩放 / 平移 / 回到全览。
+                    //
+                    // 只在时间轴这一页出现——树与对比各有自己的尺度，
+                    // 把同一组按钮摆在所有页上会让人以为它管全部。
+                    .when(self.view == WlTab::Timeline, |d| {
+                        let full = horizon;
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(3.))
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_MICRO)
+                                        .text_color(theme::FAINT())
+                                        .child(SharedString::from(format!(
+                                            "第{from_ch}–{to_ch}章"
+                                        ))),
+                                )
+                                .children([
+                                    ("wl-zoom-out", "－", 1.8f32),
+                                    ("wl-zoom-in", "＋", 1. / 1.8),
+                                ]
+                                .into_iter()
+                                .map(|(id, label, factor)| {
+                                    Button::new(id)
+                                        .xsmall()
+                                        .label(label)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.zoom(factor, full);
+                                            cx.notify();
+                                        }))
+                                        .into_any_element()
+                                }))
+                                .child(
+                                    Button::new("wl-pan-l")
+                                        .xsmall()
+                                        .label("◀")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let span = this
+                                                .window
+                                                .map(|(a, b)| (b - a).max(1))
+                                                .unwrap_or(full.max(12));
+                                            this.pan(-((span / 4).max(1) as i32), full);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("wl-pan-r")
+                                        .xsmall()
+                                        .label("▶")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let span = this
+                                                .window
+                                                .map(|(a, b)| (b - a).max(1))
+                                                .unwrap_or(full.max(12));
+                                            this.pan((span / 4).max(1) as i32, full);
+                                            cx.notify();
+                                        })),
+                                )
+                                // 「全部」只在真的缩放过时才有意义：
+                                // 一直显示会让人以为"现在是缩放的"，而默认就是全览。
+                                .when(self.is_zoomed(full), |d| {
+                                    d.child(
+                                        Button::new("wl-zoom-all")
+                                            .xsmall()
+                                            .label("全部")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.window = None;
+                                                cx.notify();
+                                            })),
+                                    )
+                                }),
+                        )
+                    })
                     .when_some(self.message.clone(), |d, m| {
                         d.child(
                             div()
@@ -1625,6 +2058,8 @@ impl Render for WorldlinePanel {
                                     .child("世界树")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.view = WlTab::Tree;
+                                        // 抽屉是"时间轴上那个点"的上下文，切走就没意义了
+                                        this.picked = None;
                                         cx.notify();
                                     })),
                             )
@@ -1659,6 +2094,7 @@ impl Render for WorldlinePanel {
                                             this.compare_with = Some("α".into());
                                         }
                                         this.view = WlTab::Compare;
+                                        this.picked = None;
                                         cx.notify();
                                     })),
                             ),
