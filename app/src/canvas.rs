@@ -114,8 +114,8 @@ const SIDE_W: f32 = 250.;
 const SIDE_PAD: f32 = 12.;
 /// 关系演变条的轨道宽度 = 侧板宽度减去左右内边距。
 const EVO_TRACK_W: f32 = SIDE_W - 2. * SIDE_PAD;
-/// 演变条整体高度：6px 色条 + 1px 空 + 10px 标签行。
-const EVO_TRACK_H: f32 = 17.;
+/// 演变条高度：只有一条 6px 色条（段标签已移到行首的简略章号里）。
+const EVO_TRACK_H: f32 = 6.;
 
 pub struct CanvasPanel {
     focus_handle: FocusHandle,
@@ -139,6 +139,8 @@ pub struct CanvasPanel {
     chapter: u32,
     /// 最新成稿章（滑块的右端）。
     last_chapter: u32,
+    /// 展开了详情的关系 id（一次只展开一条：侧板窄，展开两条就看不到别的了）
+    evo_open: Option<String>,
     /// 关系编辑表单：对方人名 / 关系标签 / 起始章（终点留空=至今）
     rel_to: Entity<InputState>,
     rel_label: Entity<InputState>,
@@ -181,6 +183,7 @@ impl CanvasPanel {
             reader: false,
             chapter: 1,
             last_chapter: 1,
+            evo_open: None,
             rel_to,
             rel_label,
             rel_from,
@@ -724,11 +727,15 @@ impl CanvasPanel {
         cx.notify();
     }
 
-    /// 一行关系演变：名字 + 一条按章节定位的轨道。
+    /// 一行关系演变：名字 + 简略章号 + 一条按章定位的轨道。
     ///
-    /// 为什么画轨道而不是列文字：作者要看的是"这段关系在整条时间轴上占哪一段、
-    /// 中间断没断"。`师徒 5-10；仇敌 20-今` 读起来像两句话，看不出第 10-20 章
-    /// 之间那 10 章是空白——而在轨道上，那是个显眼的缺口。
+    /// 侧板只有 226px，塞不下"第 5 章到第 19 章 师徒；第 20 章起 仇敌"这种全量描述。
+    /// 所以这里只给**简略章号**（`5–19 → 20–`）+ 一条色条：作者在这一屏要判断的是
+    /// "哪段、断没断、现在处在哪一段"。
+    ///
+    /// 两条"更细"的出路，都不在这块小面板里铺开：
+    /// - 点名字 → 跳人物卡（外貌、动机、口吻、弧线的所在地）
+    /// - 点章号 → 就地展开每一段的标签、读者可见性与依据
     fn evolution_row(
         &self,
         me: &str,
@@ -743,23 +750,13 @@ impl CanvasPanel {
         };
         let color = rel_color(&row.kind);
 
-        // 轨道容器要比色条高：标签画在色条下方，容器不够高的话
-        // 下一行会盖上来（GPUI 不做自动撑高）。
         let mut track = div()
             .relative()
             .h(px(EVO_TRACK_H))
             .w(px(EVO_TRACK_W))
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.))
-                    .top(px(0.))
-                    .h(px(6.))
-                    .w(px(EVO_TRACK_W))
-                    .rounded(px(3.))
-                    .bg(theme::BAR_TRACK()),
-            );
-        for (from, to, label, public) in &row.spans {
+            .rounded(px(3.))
+            .bg(theme::BAR_TRACK());
+        for (from, to, _label, public) in &row.spans {
             let x0 = at(*from);
             // to=0 表示至今：画到轨道右端（末章），而不是画成零宽
             let x1 = if *to == 0 { EVO_TRACK_W } else { at(*to) };
@@ -768,7 +765,7 @@ impl CanvasPanel {
                 .absolute()
                 .left(px(x0))
                 .top(px(0.))
-                .h(px(6.))
+                .h(px(EVO_TRACK_H))
                 .w(px(w))
                 .rounded(px(3.))
                 .bg(hsla(color).opacity(if *public { 0.95 } else { 0.42 }));
@@ -776,30 +773,70 @@ impl CanvasPanel {
             if !*public {
                 seg = seg.border_1().border_color(hsla(theme::PURPLE()).opacity(0.9));
             }
-            track = track.child(seg).child(
-                div()
-                    .absolute()
-                    .left(px(x0))
-                    .top(px(7.))
-                    .text_size(px(8.5))
-                    .text_color(theme::FAINT())
-                    .child(SharedString::from(label.clone())),
-            );
+            track = track.child(seg);
         }
         // "现在"的竖线：滑块所在章。它在时间轴上的位置就是判断"此刻关系"的依据。
-        let now_x = at(self.chapter);
         track = track.child(
             div()
                 .absolute()
-                .left(px(now_x))
+                .left(px(at(self.chapter)))
                 .top(px(-1.))
                 .w(px(1.))
-                .h(px(8.))
+                .h(px(EVO_TRACK_H + 2.))
                 .bg(hsla(theme::ACCENT()).opacity(0.8)),
         );
 
         let rid = row.rid.clone();
-        div()
+        let other = row.other.clone();
+        let open = self.evo_open.as_deref() == Some(rid.as_str());
+
+        // 展开态：每一段一行（标签 + 章号 + 暗/明），比轨道多出的就是这些字
+        let mut detail = div().flex().flex_col().gap(px(1.)).pt(px(2.)).pl(px(2.));
+        for (from, to, label, public) in &row.spans {
+            detail = detail.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .child(
+                        div()
+                            .w(px(46.))
+                            .flex_shrink_0()
+                            .font_family(theme::FAMILY_MONO)
+                            .text_size(px(9.))
+                            .text_color(theme::FAINT())
+                            .child(SharedString::from(
+                                crate::relations::EvolutionRow::span_text(*from, *to),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_ellipsis()
+                            .text_size(px(9.))
+                            .text_color(theme::DIM())
+                            .child(SharedString::from(if label.is_empty() {
+                                "（无标签）".to_string()
+                            } else {
+                                label.clone()
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(9.))
+                            .text_color(if *public {
+                                theme::FAINT()
+                            } else {
+                                theme::PURPLE()
+                            })
+                            .child(if *public { "明" } else { "暗" }),
+                    ),
+            );
+        }
+
+        let row_el = div()
             .flex()
             .flex_col()
             .gap(px(1.))
@@ -809,23 +846,53 @@ impl CanvasPanel {
                     .flex()
                     .items_center()
                     .gap(px(4.))
+                    // 名字：跳到完整档案。关系面板只给脉络，不复述档案——
+                    // 226px 里塞不下，塞了也只会变成两处不一致的第二份数据。
                     .child(
                         div()
+                            .id(SharedString::from(format!("rel-who-{rid}")))
+                            .flex_shrink_0()
+                            .max_w(px(88.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .cursor_pointer()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::TEXT())
+                            .hover(|d| d.text_color(theme::ACCENT()))
+                            .child(SharedString::from(other.clone()))
+                            .on_click(cx.listener(move |_this, _, _, cx| {
+                                cx.emit(CanvasEvent::OpenCharacter { name: other.clone() });
+                            })),
+                    )
+                    // 章号：点一下展开每一段；再点收起（侧板窄，只展开一条）
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("rel-open-{rid}")))
                             .flex_1()
                             .min_w_0()
-                            .text_size(theme::FONT_MICRO)
-                            .text_color(theme::DIM())
+                            .cursor_pointer()
+                            .font_family(theme::FAMILY_MONO)
+                            .text_size(px(9.))
+                            .text_color(if row.has_gap { theme::AMBER() } else { theme::FAINT() })
                             .text_ellipsis()
                             .child(SharedString::from(format!(
-                                "{}{}{}",
-                                row.other,
-                                if row.has_gap { " · 有断档" } else { "" },
-                                if row.kind.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("（{}）", row.kind)
+                                "{}{}",
+                                row.brief(),
+                                if row.has_gap { " ⚠" } else { "" }
+                            )))
+                            .on_click(cx.listener({
+                                let rid = rid.clone();
+                                move |this, _, _, cx| {
+                                    this.evo_open = if this.evo_open.as_deref() == Some(rid.as_str())
+                                    {
+                                        None
+                                    } else {
+                                        Some(rid.clone())
+                                    };
+                                    cx.notify();
                                 }
-                            ))),
+                            })),
                     )
                     .child(
                         div()
@@ -871,7 +938,8 @@ impl CanvasPanel {
                     ),
             )
             .child(track)
-            .into_any_element()
+            .when(open, |d| d.child(detail));
+        row_el.into_any_element()
     }
 }
 
@@ -890,6 +958,11 @@ pub enum CanvasEvent {
         key: &'static str,
         target: Option<String>,
     },
+    /// 打开某个人物的完整档案卡。
+    ///
+    /// 关系面板刻意只给脉络：一行关系占 226px，写不下外貌、动机、弧线。
+    /// 想读全的那份就点名字跳过去——而不是把侧板撑成第二个档案页。
+    OpenCharacter { name: String },
 }
 
 impl Focusable for CanvasPanel {

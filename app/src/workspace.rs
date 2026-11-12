@@ -953,6 +953,18 @@ impl Workspace {
                 CanvasEvent::Delegate { agent, key, target } => {
                     this.delegate(agent, key, target.clone(), cx);
                 }
+                CanvasEvent::OpenCharacter { name } => {
+                    // 关系面板只给脉络，完整档案在人物卡：切页 + 选中那个人。
+                    // 找不到就只切页——不弹"角色不存在"，因为关系里写的可能是
+                    // 别名或还没建档的名字，作者点进去自己就能看出来。
+                    let roster = crate::characters::Roster::new(&this.handle.root);
+                    if let Some(c) = roster.find(name) {
+                        let id = c.id.clone();
+                        this.characters_view
+                            .update(cx, |panel, cx| panel.select(id, _window, cx));
+                    }
+                    this.switch_center(Mode::Characters, _window, cx);
+                }
             },
         )
         .detach();

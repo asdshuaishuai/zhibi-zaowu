@@ -324,6 +324,32 @@ pub struct EvolutionRow {
     pub has_gap: bool,
 }
 
+impl EvolutionRow {
+    /// 一段区间的简略章节写法：`5–19` / `20–`（至今）。
+    ///
+    /// 侧板只有 226px 宽，"第 5 章到第 19 章"这种写法两段就折行了；
+    /// 作者在时间轴上要的是相对位置，章号越短越好读。
+    pub fn span_text(from: u32, to: u32) -> String {
+        let a = if from == 0 { 1 } else { from };
+        if to == 0 {
+            format!("{a}–")
+        } else {
+            format!("{a}–{to}")
+        }
+    }
+
+    /// 整条关系的简略写法：`5–19 → 20–`。
+    ///
+    /// 用 `→` 而不是逗号：它表达的是"先这样、后来那样"，逗号读起来像并列。
+    pub fn brief(&self) -> String {
+        self.spans
+            .iter()
+            .map(|(a, b, _, _)| Self::span_text(*a, *b))
+            .collect::<Vec<_>>()
+            .join(" → ")
+    }
+}
+
 /// 某个人的关系演变（按"第一次出现"排序）。
 ///
 /// `horizon` 是最新成稿章：开放的区间（to=0）画到 horizon。
@@ -477,6 +503,27 @@ mod tests {
         ];
         assert_eq!(w.migrate_from_facts(&facts, &[]), 1);
         assert_eq!(w.migrate_from_facts(&facts, &[]), 0, "重复迁移不该再增");
+    }
+
+    #[test]
+    fn brief_uses_short_chapter_ranges() {
+        // 侧板只有 226px 宽："第 5 章到第 19 章"两段就折行。
+        assert_eq!(EvolutionRow::span_text(5, 19), "5–19");
+        assert_eq!(EvolutionRow::span_text(20, 0), "20–", "至今写成开口区间");
+        assert_eq!(EvolutionRow::span_text(0, 0), "1–", "起章 0 当成第 1 章");
+        let row = EvolutionRow {
+            rid: "r1".into(),
+            other: "老周".into(),
+            kind: "师承".into(),
+            spans: vec![
+                (5, 19, "师徒".into(), true),
+                (20, 0, "仇敌".into(), false),
+            ],
+            first: 5,
+            last: 0,
+            has_gap: false,
+        };
+        assert_eq!(row.brief(), "5–19 → 20–");
     }
 
     #[test]
