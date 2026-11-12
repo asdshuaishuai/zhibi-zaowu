@@ -232,6 +232,41 @@ fn pack_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+/// 把 novel-pack 附带的技能（`skills/*.md`）同步到本书 `DSH_HOME/skills`。
+///
+/// 为什么同步而不是让 DSH 直接读包目录：技能根是 DSH 的既定约定
+/// （`<DSH_HOME>/skills`，rank 400），顺着它走，升级 DSH 时不用改一行。
+/// 同步是幂等的：内容相同不重写，只有我们的 `zhibi-*` 会被覆盖，
+/// 作者自己往这个目录放的技能原样保留。
+fn sync_skills(home: &std::path::Path) {
+    let Some(src) = pack_dir().map(|d| d.join("skills")) else {
+        return;
+    };
+    if !src.is_dir() {
+        return;
+    }
+    let dst = home.join("skills");
+    if std::fs::create_dir_all(&dst).is_err() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&src) else { return };
+    for e in entries.filter_map(|e| e.ok()) {
+        let name = e.file_name();
+        let name_s = name.to_string_lossy();
+        // 只接管自己的技能：作者在同名位置放的文件不该被无声覆盖
+        if !name_s.starts_with("zhibi-") || !name_s.ends_with(".md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
+        let target = dst.join(&name);
+        // 内容一样就不写：避免每次启动都改 mtime，触发 DSH 的 watcher 白刷一遍
+        if std::fs::read_to_string(&target).map(|old| old == text).unwrap_or(false) {
+            continue;
+        }
+        let _ = std::fs::write(&target, text);
+    }
+}
+
 /// guard.ts 的绝对路径（preset 子行要它）。
 fn pack_guard_path() -> Option<std::path::PathBuf> {
     let p = pack_dir()?.join("src").join("guard.ts");
@@ -471,6 +506,11 @@ impl DshClient {
 
         let home = home_dir(root);
         std::fs::create_dir_all(&home).ok();
+        // 技能库按书隔离：DSH 的 filesystem provider 会扫 `<DSH_HOME>/skills`，
+        // 而每本书本来就有独立 DSH_HOME，所以"这本书的技能"天然不串味，
+        // 不需要额外配置技能根，也不需要改 DSH 的 patch。
+        sync_skills(&home);
+
 
         // 补丁层顺序（后者覆盖前者）：本书覆盖层 mode patch → novel-pack 能力包。
         // mode patch 由我们生成，负责执行器、专属 Agent 预设与 subagent 允许列表。

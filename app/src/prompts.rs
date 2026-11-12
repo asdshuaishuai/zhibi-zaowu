@@ -1,56 +1,68 @@
-//! 执笔提示词库（Rust 侧）：每个 AI 能力的任务指令。
-//! 与旧版 PromptLibrary 同源语义：能力 → 任务书；创作法典由 novel-pack 侧注入（M3 后续）。
+//! 执笔提示词库（Rust 侧）：每个 AI 能力的触发语。
+//!
+//! M8 之后这里只做两件事：**说清目标与参数**，以及**指向对应技能**。
+//! "怎么写"的部分全部搬到 `novel-pack/skills/zhibi-*.md` —— 那是纯文本，
+//! 作者能改、AI 能加载、不用重编客户端。
+//!
+//! 为什么不干脆不发提示词、让模型自己 load 技能：UI 上的按钮必须一次点准。
+//! 主 Agent 有很多技能可选，"搭骨架"点下去要立刻走对路径，不能靠模型猜测。
+//! 所以这里保留一句明确的触发语 + 技能名，细节留给技能正文。
 
 /// 提案依据要求：所有产出提案的任务书共用；工具侧 sourceRefs / 收件箱依据区配套。
 const BASIS_RULE: &str = "提案须给出依据来源（引用既有伏笔/设定/事实编号）。";
 
+/// 能力和技能的对应：触发语里点名技能，模型就去 load。
+///
+/// 技能名与 `novel-pack/skills/*.md` 的 frontmatter `name` 一致；
+/// 名字写错不会报错，只会让模型加载失败后自己找路——所以这里集中管理。
+fn skill_of(capability: &str) -> Option<&'static str> {
+    Some(match capability {
+        "skeleton" => "zhibi-skeleton",
+        "draft" => "zhibi-draft",
+        "validate" => "zhibi-validate",
+        "deslop" => "zhibi-deslop",
+        "memory" => "zhibi-memory",
+        "inventory" => "zhibi-inventory",
+        "classify" => "zhibi-canon-classify",
+        "outsync" => "zhibi-outline-sync",
+        "audit" => "zhibi-audit",
+        "dossier" => "zhibi-dossier",
+        "continue" => "zhibi-continue",
+        "branches" => "zhibi-branches",
+        _ => return None,
+    })
+}
+
 pub fn task_for(capability: &str, chapter: u32) -> String {
-    match capability {
-        "skeleton" => format!(
-            "为第{chapter}章搭骨架：先读上一章结尾、伏笔台账与大纲，再按期待感管理给出 4-6 个节拍（每节拍含建议字数、场景层视角/地点/出场、章尾钩子形态、到期伏笔进合同），用 propose_skeleton 提案。{}",
-            BASIS_RULE
-        ),
-        "draft" => format!(
-            "为第{chapter}章写草稿：按已批准骨架逐拍成文，正文以 propose_draft 提案，采纳前不落盘。{}",
-            BASIS_RULE
-        ),
-        "validate" => format!(
-            "验证第{chapter}章：先跑确定性体检，再查客观错误（连续性矛盾/设定违背/伏笔合同未兑现/物理不可能/动机断裂），只报告不代改，用 propose_validation 提案。{}",
-            BASIS_RULE
-        ),
-        "deslop" => format!(
-            "第{chapter}章去AI味：先本地 25 项扫描，再三 pass（叙事架构→篇章→措辞）逐处给 original/replacement/reason，用 propose_deslop 提案。{}",
-            BASIS_RULE
-        ),
-        "memory" => format!(
-            "第{chapter}章写完，记一笔：提取事实三元组（主语/谓语/宾语/生效章/读者可见）与伏笔候选，用 propose_memory 提案；本章的推进与拐点另用 propose_dossier 归档（advanced/turns 各一条一句话，没有就留空）。{}",
-            BASIS_RULE
-        ),
-        "inventory" => format!(
-            "全书伏笔盘点：对照正文找出已埋未登记、登记未兑现、烂账（种下原文对不上/兑现逾期/动作日志指向不存在的章）；登记与补录用 propose_clues 提案（条目带 sourceRefs），每条烂账配一个可一键采纳的修复动作，用 propose_clue_fixes 提案。{}",
-            BASIS_RULE
-        ),
-        "classify" => format!(
-            "设定归类：对每篇设定文档给出分类（世界观/势力人物/修炼体系/剧情大纲/题材规则/未分类）与可选规范化改名，用 propose_canon_classify 提案。{}",
-            BASIS_RULE
-        ),
-        "outsync" => format!(
-            "大纲同步：对账「计划 vs 实际」，为断线/待收束的剧情线与偏移事件给出更新建议，用 propose_outline_updates 提案。{}",
-            BASIS_RULE
-        ),
-        "audit" => format!(
-            "全书连贯性审查：死者复出/位置跳跃/人称漂移/时间线倒挂/台账烂账，每条给修复动作，用 propose_clue_fixes 提案。{}",
-            BASIS_RULE
-        ),
-        "dossier" => format!(
-            "提取第{chapter}章档案卡：场景/出场/推进（advanced）/拐点（turns）/悬念/关键细节（检索锚点），用 propose_dossier 提案；advanced 与 turns 须逐条列出（每条一句话），本章没有就留空数组。{}",
-            BASIS_RULE
-        ),
-        // 纯输出能力不产提案，不加依据要求。
+    // 纯输出能力不产提案，也不加依据要求（它们只产出文本/卡片）。
+    let produce = !matches!(capability, "continue" | "branches");
+
+    let body = match capability {
+        "skeleton" => format!("为第{chapter}章搭骨架。"),
+        "draft" => format!("为第{chapter}章写草稿（按已批准骨架）。"),
+        "validate" => format!("验证第{chapter}章。"),
+        "deslop" => format!("第{chapter}章去AI味。"),
+        "memory" => format!("第{chapter}章写完，记一笔账。"),
+        "dossier" => format!("提取第{chapter}章档案卡。"),
+        "inventory" => "全书伏笔盘点。".into(),
+        "classify" => "设定归类。".into(),
+        "outsync" => "大纲同步：对账计划与实际。".into(),
+        "audit" => "全书连贯性审查。".into(),
         // 轻交互走结构化工具：前端直接读工具参数渲染卡片，不再解析文本。
-        "continue" => "续写：读出正文最后一段，用 offer_continuation 给出紧接的下一句（不超过 60 字，贴合语气与在场人物）。只调用这一个工具，不要解释。".into(),
-        "branches" => "给 3 个故事走向：每个 80-150 字正文，带一句话走向名与情绪标签，并注明牵动哪些伏笔/设定。用 offer_branches 一次提交。不要写正文之外的说明。".into(),
+        "continue" => "续写：读出正文最后一段，给出紧接的下一句。".into(),
+        "branches" => "给 3 个故事走向。".into(),
         _ => "读项目现状，给出下一步建议。".into(),
+    };
+
+    match skill_of(capability) {
+        Some(skill) => {
+            if produce {
+                format!("{body}先 `skill {skill}` 加载该能力的作业规程并照做。{BASIS_RULE}")
+            } else {
+                format!("{body}先 `skill {skill}` 加载规程并照做。")
+            }
+        }
+        None => body,
     }
 }
 
@@ -73,15 +85,17 @@ pub const EDITOR_AI_BUTTONS: &[AiButton] = &[
 
 pub fn selection_instruction(kind: &str, selected: &str) -> String {
     let verb = match kind {
-        "deepen" => "拉深（同一段写得更细更满，保持事实与视角）",
-        "expand" => "扩写（展开更多细节与回合）",
-        "condense" => "缩写（收紧节奏删冗余，保留关键动作）",
-        "rewrite" => "改写（换一种写法，保持说什么不变）",
-        "deslop" => "去AI味改写（按 25 项检测逐处修正措辞与结构）",
+        "deepen" => "拉深",
+        "expand" => "扩写",
+        "condense" => "缩写",
+        "rewrite" => "改写",
+        "deslop" => "去AI味改写",
         _ => "改写",
     };
+    // 原文必须原样附上：技能里强调过"original 逐字复制"，这里把要改的那段直接给到，
+    // 模型不需要自己去正文里找，也就少一类"找错段"的失败。
     format!(
-        "{verb}。用 offer_rewrite 提交：original 逐字复制下面要改的那一段，replacement 是你改写后的文本（不要引号、不要解释）。\n\n原文：\n{selected}"
+        "{verb}下面这段。先 `skill zhibi-rewrite` 加载规程，然后按规程用 offer_rewrite 提交。\n\n原文：\n{selected}"
     )
 }
 
@@ -97,33 +111,78 @@ pub const SELECTION_BUTTONS: &[(&str, &str)] = &[
 pub fn oracle_task(premise: &str, fork: u32) -> String {
     format!(
         "预言书推演：假设「{premise}」（fork 自第{fork}章）。\
-流程：1) get_world_state 读正典图；2) propose_worldline 开一条新线（自动取 β/γ/…）；\
-3) simulate_worldline 写入推演节点/边/影响清单——沿因果链至少走 3 跳，每条 diff 必须有 \
-before/after/reason，衍生实体自动标 line。\
-铁律：推演只写 worldlines.json 沙盒，绝不改正典；正典变更只能以 diffs 形态呈现，\
-由作者逐条晋升为提案。最后用一段话总结影响面（波及几条线、几个设定、最大风险）。{}",
-        BASIS_RULE
+先 `skill zhibi-oracle` 加载推演规程并照做。铁律：推演只写沙盒，绝不改正典。{BASIS_RULE}"
     )
 }
 
 /// 世界线排期核对任务书（M7-3，原「导演台」）：章×幕排期板触发骨架合同核对。
 pub fn director_task(chapter: u32) -> String {
-    format!(
-        "世界线排期板核对第{chapter}章排期：对照骨架合同（到期伏笔应收/种/兑）与故事线健康度，\
-给出本章的事件/伏笔挂接建议与冲突预警；需要落账的部分用 propose_clues / propose_outline_updates 提案，只报告不代改。{}",
-        BASIS_RULE
-    )
+    format!("排期板核对第{chapter}章。先 `skill zhibi-director` 加载核对规程并照做。{BASIS_RULE}")
 }
 
 /// 预测续写任务书（M8）：固化线之后向前织——有大纲按大纲预测，无大纲按成稿预测。
 pub fn forecast_task() -> String {
-    format!(
-        "预测线推演：为本书开一条 forecast 线向后续写规划。\
-流程：1) get_world_state 读全图（已成稿事件/线状态/伏笔到期/设定）；2) 读最近成稿章节结尾与到期伏笔；\
-3) propose_worldline kind=forecast（fork=最新成稿下一章）；4) simulate_worldline 写入 2-3 个候选走向，\
-每走向=节拍级 event 节点链（label 含「走向A/B/C」）+ diffs（target=事件或故事线，kind=add，after=计划剧情一句话，\
-reason=依据哪条到期伏笔/线状态/设定铁律）；若本书有明确大纲（storylines 的 plannedPayoffChapter 等）以大纲为准，\
-否则纯按已成稿预测。铁律：预测只是计划——晋升才成提案，采纳才进正典。最后总结各走向与到期伏笔的呼应关系。{}",
-        BASIS_RULE
-    )
+    format!("预测线推演：为本书开一条 forecast 线向后续写规划。先 `skill zhibi-forecast` 加载规程并照做。{BASIS_RULE}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 技能名必须与 novel-pack/skills 下真实存在的文件对得上——
+    /// 对不上不会报错，只会让模型加载失败后乱找路，属于最难查的那类问题。
+    #[test]
+    fn every_capability_points_at_an_existing_skill_file() {
+        let skills_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("novel-pack")
+            .join("skills");
+        let mut checked = 0;
+        for cap in [
+            "skeleton", "draft", "validate", "deslop", "memory", "inventory", "classify",
+            "outsync", "audit", "dossier", "continue", "branches",
+        ] {
+            let Some(skill) = skill_of(cap) else {
+                panic!("能力 {cap} 没有对应技能");
+            };
+            let path = skills_dir.join(format!("{skill}.md"));
+            assert!(path.exists(), "{} 不存在", path.display());
+            // 触发语里必须真的提到这个技能名，否则模型不知道该 load 什么
+            let task = task_for(cap, 3);
+            assert!(task.contains(skill), "{cap} 的触发语没提技能名：{task}");
+            checked += 1;
+        }
+        assert_eq!(checked, 12);
+    }
+
+    #[test]
+    fn proposal_capabilities_carry_the_basis_rule() {
+        for cap in ["skeleton", "draft", "memory", "inventory", "audit"] {
+            assert!(task_for(cap, 1).contains("依据来源"), "{cap} 缺依据要求");
+        }
+    }
+
+    #[test]
+    fn pure_output_capabilities_skip_the_basis_rule() {
+        // 续写/走向不产提案，不该带上"提案须给出依据"这种噪音
+        for cap in ["continue", "branches"] {
+            assert!(!task_for(cap, 1).contains("依据来源"), "{cap} 不该有依据要求");
+        }
+    }
+
+    #[test]
+    fn selection_instruction_embeds_the_original_text_verbatim() {
+        let original = "他推开门，看见灯还亮着。";
+        let ins = selection_instruction("rewrite", original);
+        assert!(ins.contains(original), "原文必须原样给到模型");
+        assert!(ins.contains("zhibi-rewrite"));
+    }
+
+    #[test]
+    fn unknown_capability_degrades_gracefully() {
+        let t = task_for("no-such-capability", 1);
+        assert!(!t.contains("skill "), "未知能力不该瞎指技能");
+        assert!(!t.is_empty());
+    }
 }
