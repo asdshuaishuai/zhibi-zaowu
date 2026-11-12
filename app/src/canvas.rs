@@ -1994,13 +1994,64 @@ impl Render for OraclePanel {
                                 premise.chars().take(60).collect::<String>()
                             })),
                     )
+                    // 迷你走势：一条 60px 宽的小横线，节点按章落点。
+                    // 不做成图例也不是装饰——一眼看出"这条线推到第几章、密不密"，
+                    // 比"节点 7"这种数字有用。
+                    .when(!is_alpha, |d| {
+                        let mut chs: Vec<u32> = w
+                            .get("nodes")
+                            .and_then(|n| n.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .map(|n| n.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32)
+                                    .filter(|c| *c > 0)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        chs.sort_unstable();
+                        let span = chs.last().copied().unwrap_or(0).max(1);
+                        d.child(
+                            div().h(px(10.)).w_full().relative().mt(px(2.)).children(
+                                chs.iter().map(|c| {
+                                    div()
+                                        .absolute()
+                                        .left(relative((*c as f32 / span as f32).min(1.)))
+                                        .top(px(3.))
+                                        .w(px(3.))
+                                        .h(px(3.))
+                                        .rounded(px(1.5))
+                                        .bg(theme::GREEN())
+                                }),
+                            ),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(theme::GAP_SM)
                             .when(!is_alpha, |d| {
-                                let fork_ch = w.get("forkedChapter").and_then(|v| v.as_u64()).unwrap_or(0);
+                                // 分叉章优先取 forkNode 所在章（与画布一致），
+                                // 否则卡片说第 16 章、画布画在第 12 章，作者会怀疑数据坏了。
+                                let fork_ch = w
+                                    .get("forkNode")
+                                    .and_then(|n| n.as_str())
+                                    .and_then(|fnode| {
+                                        w.get("nodes")
+                                            .and_then(|nx| nx.as_array())
+                                            .and_then(|arr| {
+                                                arr.iter()
+                                                    .find(|n| s(n, "id") == fnode)
+                                                    .map(|n| {
+                                                        n.get("chapter")
+                                                            .and_then(|c| c.as_u64())
+                                                            .unwrap_or(0)
+                                                    })
+                                            })
+                                    })
+                                    .unwrap_or_else(|| {
+                                        w.get("forkedChapter").and_then(|v| v.as_u64()).unwrap_or(0)
+                                    });
                                 d.child(
                                     div()
                                         .flex_1()
@@ -2093,7 +2144,7 @@ impl Render for OraclePanel {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::TEXT())
                             .child(SharedString::from(format!(
-                                "「{wid}」影响清单 —— 晋升后才是提案，采纳后才改正典"
+                                "「{wid}」推演卷轴 —— 沿因果链走，每条影响晋升后才成提案"
                             ))),
                     )
                     .child(
@@ -2111,6 +2162,119 @@ impl Render for OraclePanel {
                 right.push(
                     div().py(theme::PAD_MD).text_size(theme::FONT_LABEL).text_color(theme::FAINT())
                         .child("（还没有推演结果——从下方提出假设开线，AI 沿因果链走线后这里会亮起）")
+                        .into_any_element(),
+                );
+            }
+
+            // —— 因果链卷轴：把这条线的节点按章串起来，每章一段 ——
+            //
+            // 为什么先画节点再画影响：作者读推演时先想知道"这条线都发生了什么"，
+            // 再关心"这些事会改动正典的什么"。节点是叙事，diffs 是账。
+            {
+                let mut nodes: Vec<(u32, String, String, bool)> = w
+                    .get("nodes")
+                    .and_then(|n| n.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|n| {
+                                (
+                                    n.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32,
+                                    s(n, "label"),
+                                    s(n, "note"),
+                                    s(n, "state") == "written",
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                nodes.sort_by_key(|(ch, _, _, _)| *ch);
+                if !nodes.is_empty() {
+                    right.push(
+                        div()
+                            .pb(theme::GAP_XS)
+                            .text_size(theme::FONT_TAG)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::BLUE())
+                            .child(SharedString::from(format!("推演卷轴 · {} 节点", nodes.len())))
+                            .into_any_element(),
+                    );
+                    let mut last_ch = u32::MAX;
+                    for (ch, label, note, written) in nodes {
+                        // 章号变化时打一个章节分隔条，形成"卷轴分段"
+                        if ch != last_ch {
+                            last_ch = ch;
+                            right.push(
+                                div()
+                                    .pt(theme::GAP_SM)
+                                    .pb(theme::GAP_XS)
+                                    .flex()
+                                    .items_center()
+                                    .gap(theme::GAP_SM)
+                                    .child(
+                                        div()
+                                            .font_family(theme::FAMILY_MONO)
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(theme::FAINT())
+                                            .child(SharedString::from(if ch > 0 {
+                                                format!("第{ch}章")
+                                            } else {
+                                                "未排章".into()
+                                            })),
+                                    )
+                                    .child(
+                                        div().flex_1().h(px(1.)).bg(theme::LINE_SOFT()),
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
+                        right.push(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap(theme::GAP_SM)
+                                .py(px(1.))
+                                .child(
+                                    // 竖线把同一章下的节点串成一段
+                                    div()
+                                        .w(px(1.))
+                                        .h(px(14.))
+                                        .flex_shrink_0()
+                                        .bg(if written { theme::GREEN() } else { theme::LINE() }),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(theme::FONT_LABEL)
+                                        .text_color(if written { theme::TEXT() } else { theme::DIM() })
+                                        .child(SharedString::from(label)),
+                                )
+                                .when(!note.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .max_w(px(180.))
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(theme::FAINT())
+                                            .child(SharedString::from(
+                                                note.chars().take(40).collect::<String>(),
+                                            )),
+                                    )
+                                })
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
+
+            if !diffs.is_empty() {
+                right.push(
+                    div()
+                        .pt(theme::GAP_MD)
+                        .pb(theme::GAP_XS)
+                        .text_size(theme::FONT_TAG)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::AMBER())
+                        .child(SharedString::from(format!("对正典的影响 · {} 条", diffs.len())))
                         .into_any_element(),
                 );
             }
@@ -2294,6 +2458,113 @@ impl Render for OraclePanel {
                 );
                 }
             }
+            // —— 影响面板：波及面 + 批量操作 ——
+            //
+            // 单条晋升在每条影响上；这里给"这一整条线现在什么状态"的俯瞰，
+            // 以及"全都升"——作者推演完通常是整条线一起拿定主意，
+            // 逐条点 20 次不如一次批量。
+            {
+                let diffs_all = w.get("diffs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let total = diffs_all.len();
+                let promoted = diffs_all
+                    .iter()
+                    .filter(|d| d.get("promoted").and_then(|p| p.as_bool()).unwrap_or(false))
+                    .count();
+                let pending: Vec<usize> = diffs_all
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| !d.get("promoted").and_then(|p| p.as_bool()).unwrap_or(false))
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut high = 0;
+                for d in &diffs_all {
+                    if s(d, "severity") == "high" {
+                        high += 1;
+                    }
+                }
+                // 波及几条线：同一 parentId 的兄弟线数（"这条假设和谁在同一祖先下竞争"）
+                let parent_id = s(w, "parentId");
+                let siblings = lines
+                    .iter()
+                    .filter(|x| {
+                        let xid = s(x, "id");
+                        xid != s(w, "id") && s(x, "parentId") == parent_id && !parent_id.is_empty()
+                    })
+                    .count();
+                right.push(
+                    div()
+                        .mt(theme::GAP_MD)
+                        .p(theme::PAD_SM)
+                        .rounded(theme::RADIUS_PANEL)
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .bg(theme::PANEL())
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_XS)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(theme::GAP_MD)
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_TAG)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme::TEXT())
+                                        .child("影响面"),
+                                )
+                                .child(
+                                    div()
+                                        .font_family(theme::FAMILY_MONO)
+                                        .text_size(theme::FONT_MICRO)
+                                        .text_color(theme::FAINT())
+                                        .child(SharedString::from(format!(
+                                            "共 {total} 条 · 待晋升 {} · 已晋升 {promoted} · 高风险 {high} · 同门竞争 {siblings} 条线",
+                                            pending.len()
+                                        ))),
+                                )
+                                .child(div().flex_1())
+                                .when(!pending.is_empty(), |d| {
+                                    let wid2 = s(w, "id");
+                                    let mut pending2 = pending.clone();
+                                    pending2.sort_unstable();
+                                    let pending3 = pending2.clone();
+                                    d.child(
+                                        Button::new(SharedString::from(format!("promote-all-{wid2}")))
+                                            .xsmall()
+                                            .label(format!("全部晋升 {} 条", pending.len()))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                let wid = this.selected.clone().unwrap_or_default();
+                                                // 倒序推：promote_diff 目前是原地标记（不重排数组），
+                                                // 正序也能对；但倒序在任何"以后会删元素"的改法下都安全。
+                                                let mut ok = 0usize;
+                                                let mut errs: Vec<String> = Vec::new();
+                                                for i in pending3.clone().into_iter().rev() {
+                                                    match this.handle.promote_diff(&wid, i) {
+                                                        Ok(_) => ok += 1,
+                                                        Err(e) => errs.push(e),
+                                                    }
+                                                }
+                                                this.message = Some(if errs.is_empty() {
+                                                    format!("已批量晋升 {ok} 条 → 收件箱待裁决").into()
+                                                } else {
+                                                    format!("晋升 {ok} 条，失败 {} 条：{}", errs.len(), errs.join("；"))
+                                                        .into()
+                                                });
+                                                cx.emit(OracleEvent::Promoted {
+                                                    worldline: wid,
+                                                    proposal_id: format!("batch×{ok}"),
+                                                });
+                                                cx.notify();
+                                            })),
+                                    )
+                                }),
+                        )
+                        .into_any_element(),
+                );
+            }
+
             // 衍生实体（line 归属标）
             let dv = w.get("derived").cloned().unwrap_or_else(|| serde_json::json!({}));
             for key in ["characters", "canon", "clues"] {
