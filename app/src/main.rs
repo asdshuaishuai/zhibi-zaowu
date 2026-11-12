@@ -8,6 +8,7 @@ mod canvas;
 mod characters;
 #[cfg(test)]
 mod conformance;
+#[cfg(test)]
 mod conformance_helpers;
 mod chat;
 mod director;
