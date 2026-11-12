@@ -20,6 +20,7 @@ mod theme;
 mod trajectory;
 mod views;
 mod workspace;
+mod worldline;
 
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::{

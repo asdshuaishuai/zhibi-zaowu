@@ -665,10 +665,109 @@ impl Workspace {
             |this, _, ev: &OracleEvent, _window, cx| match ev {
                 OracleEvent::Simulate { premise, fork } => {
                     let fork = if *fork == 0 { this.chapter } else { *fork };
+                    // 先由宿主把这条线的血缘落下（parentId / forkNode / 分叉章），
+                    // 再交给 AI 往里填节点。顺序很重要：AI 侧 propose_worldline 只
+                    // 知道"fork 第 N 章"，不知道作者是从哪条线的哪个节点按下去的；
+                    // 血缘只在这里有，错过就只能靠猜。
+                    if let Some(parent) = this.oracle_view.read(cx).active_lane_root() {
+                        let store = crate::worldline::Store::new(&this.handle.root);
+                        let next_id = next_line_id(&store);
+                        let name: String = premise.chars().take(24).collect();
+                        match store.fork_at_chapter(
+                            &parent,
+                            fork,
+                            &next_id,
+                            &name,
+                            premise,
+                            crate::worldline::Kind::WhatIf,
+                        ) {
+                            Ok(line) => {
+                                this.canvas_view.update(cx, |panel, _cx| {
+                                    panel.show_line(line.id.clone())
+                                });
+                                this.trajectory.update(cx, |panel, cx| {
+                                    panel.push(
+                                        TrajKind::Info(format!(
+                                            "已开线 {}（自分叉章 {fork} 起，父线 {parent}）",
+                                            line.id
+                                        )),
+                                        cx,
+                                    )
+                                });
+                            }
+                            Err(e) => {
+                                this.trajectory.update(cx, |panel, cx| {
+                                    panel.push(TrajKind::Fail(format!("开线失败，仍交给 AI：{e}")), cx)
+                                });
+                            }
+                        }
+                    }
                     this.on_send(prompts::oracle_task(premise, fork), cx);
                 }
                 OracleEvent::Forecast => {
                     this.on_send(prompts::forecast_task(), cx);
+                }
+                // 世界线的手改：作者亲笔，不经过 AI。全部落 worldlines.json 并刷新两边视图。
+                OracleEvent::ForkFrom { line, node, name } => {
+                    let store = crate::worldline::Store::new(&this.handle.root);
+                    let next_id = next_line_id(&store);
+                    match store.fork(line, node, &next_id, name, name, crate::worldline::Kind::WhatIf) {
+                        Ok(l) => {
+                            let msg = format!("已从节点 {node} 分叉出线 {}", l.id);
+                            let lane = l.id.clone();
+                            this.oracle_view
+                                .update(cx, |panel, cx| panel.after_line_change(Some(lane), msg, cx));
+                            this.canvas_view.update(cx, |panel, _cx| panel.refresh());
+                        }
+                        Err(e) => this.oracle_view.update(cx, |panel, cx| {
+                            panel.after_line_change(None, format!("分叉失败：{e}"), cx)
+                        }),
+                    }
+                }
+                OracleEvent::NodePatch { line, node, patch } => {
+                    let store = crate::worldline::Store::new(&this.handle.root);
+                    match store.update_node(line, node, patch.clone()) {
+                        Ok(()) => {
+                            this.oracle_view.update(cx, |panel, cx| {
+                                panel.after_line_change(None, format!("已更新节点 {node}"), cx)
+                            });
+                            this.canvas_view.update(cx, |panel, _cx| panel.refresh());
+                        }
+                        Err(e) => this.oracle_view.update(cx, |panel, cx| {
+                            panel.after_line_change(None, format!("更新失败：{e}"), cx)
+                        }),
+                    }
+                }
+                OracleEvent::NodeRemove { line, node } => {
+                    let store = crate::worldline::Store::new(&this.handle.root);
+                    match store.remove_node(line, node) {
+                        Ok(()) => {
+                            this.oracle_view.update(cx, |panel, cx| {
+                                panel.after_line_change(None, format!("已删除节点 {node}（线{line}）"), cx)
+                            });
+                            this.canvas_view.update(cx, |panel, _cx| panel.refresh());
+                        }
+                        Err(e) => this.oracle_view.update(cx, |panel, cx| {
+                            panel.after_line_change(None, format!("删除失败：{e}"), cx)
+                        }),
+                    }
+                }
+                OracleEvent::NodeAdd { line, kind, label, chapter } => {
+                    let store = crate::worldline::Store::new(&this.handle.root);
+                    let mut node = crate::worldline::Node::new(&next_node_id(line, &this.handle), kind, label);
+                    node.chapter = *chapter;
+                    node.state = crate::worldline::NodeState::Planned;
+                    match store.add_node(line, node) {
+                        Ok(()) => {
+                            this.oracle_view.update(cx, |panel, cx| {
+                                panel.after_line_change(None, "已新增节点", cx)
+                            });
+                            this.canvas_view.update(cx, |panel, _cx| panel.refresh());
+                        }
+                        Err(e) => this.oracle_view.update(cx, |panel, cx| {
+                            panel.after_line_change(None, format!("新增失败：{e}"), cx)
+                        }),
+                    }
                 }
                 OracleEvent::ViewOnCanvas { worldline } => {
                     let wl = worldline.clone();
@@ -1791,7 +1890,54 @@ impl Workspace {
                 .update(cx, |panel, cx| panel.push(TrajKind::Fail(format!("台账操作失败：{e}")), cx)),
         }
     }
+}
 
+/// 生成一个该线内不重复的节点 id（作者亲笔建的节点没有 AI 给的 id）。
+fn next_node_id(line: &str, handle: &crate::store::ProjectHandle) -> String {
+    let existing: Vec<String> = crate::worldline::Store::new(&handle.root)
+        .find(line)
+        .ok()
+        .flatten()
+        .map(|l| l.nodes.into_iter().map(|n| n.id).collect())
+        .unwrap_or_default();
+    let mut n = 1;
+    loop {
+        let cand = format!("{line}-n{n}");
+        if !existing.iter().any(|e| e == &cand) {
+            return cand;
+        }
+        n += 1;
+    }
+}
+
+/// 生成下一个未占用的世界线 id（β、γ…，用完了就叫 β2）。
+fn next_line_id(store: &crate::worldline::Store) -> String {
+    const GREEK: &[&str] = &[
+        "β", "γ", "δ", "ε", "ζ", "η", "θ", "ι", "κ", "λ", "μ", "ν", "ξ", "ο", "π", "ρ", "σ",
+        "τ", "υ", "φ", "χ", "ψ", "ω",
+    ];
+    let used: Vec<String> = store
+        .all()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+    for g in GREEK {
+        if !used.iter().any(|u| u == g) {
+            return (*g).to_string();
+        }
+    }
+    let mut n = 2;
+    loop {
+        let cand = format!("β{n}");
+        if !used.iter().any(|u| u == &cand) {
+            return cand;
+        }
+        n += 1;
+    }
+}
+
+impl Workspace {
     /// 三个轻交互工具的参数直接落成 UI 状态。
     ///
     /// 这是“不再解析模型文本”的落点：分支卡、改写建议、续写都由工具参数给出，
