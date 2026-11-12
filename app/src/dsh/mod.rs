@@ -242,42 +242,42 @@ pub fn zhibi_presets() -> Vec<PresetSpec> {
             id: "character",
             label: "人物",
             order: 1,
-            persona: "你负责本书的人物档案：从正文与档案里核对人物信息，补全外貌、性格、动机、背景、目标、缺陷、口吻与弧线，并提出合并/拆分建议。只描述可取证的事实；不确定的标注为待作者确认。",
+            persona: "你负责本书的人物档案：从正文与档案里核对人物信息，补全外貌、性格、动机、背景、目标、缺陷、口吻与弧线，并提出合并/拆分建议。只描述可取证的事实；不确定的标注为待作者确认。开工前先 `skill zhibi-dossier` 加载作业规程。",
             deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
         },
         PresetSpec {
             id: "relations",
             label: "关系",
             order: 2,
-            persona: "你负责人物关系网：梳理谁与谁之间的关系、关系类型与方向，标注每段关系从第几章成立、到第几章结束、读者是否已知。同一对人物可以有多段不同区间的关系。",
+            persona: "你负责人物关系网：梳理谁与谁之间的关系、关系类型与方向，标注每段关系从第几章成立、到第几章结束、读者是否已知。同一对人物可以有多段不同区间的关系。开工前先 `skill zhibi-memory` 加载作业规程。",
             deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
         },
         PresetSpec {
             id: "worldline",
             label: "世界线",
             order: 3,
-            persona: "你负责世界线推演：从指定节点分叉，沿因果链推演后续，每个节点标注章节与状态。所有推演只写沙盒，不改正典；要进正典必须走提案由作者采纳。",
+            persona: "你负责世界线推演：从指定节点分叉，沿因果链推演后续，每个节点标注章节与状态。所有推演只写沙盒，不改正典；要进正典必须走提案由作者采纳。开工前先 `skill zhibi-oracle` 加载推演规程。",
             deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
         },
         PresetSpec {
             id: "oracle",
             label: "预言",
             order: 4,
-            persona: "你负责预测与影响分析：按大纲（无大纲则按成稿）向前预测 2-3 个走向，说明每个走向呼应了哪些到期伏笔与设定铁律，并评估影响面（波及几条线、几个设定、最大风险）。",
+            persona: "你负责预测与影响分析：按大纲（无大纲则按成稿）向前预测 2-3 个走向，说明每个走向呼应了哪些到期伏笔与设定铁律，并评估影响面（波及几条线、几个设定、最大风险）。开工前先 `skill zhibi-forecast` 加载规程。",
             deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
         },
         PresetSpec {
             id: "outline",
             label: "大纲伏笔",
             order: 5,
-            persona: "你负责大纲、伏笔与设定的整理：对账计划与实际，找出断线、逾期未兑现、烂账，并给出可执行修正。台账的最终落库由作者决定。",
+            persona: "你负责大纲、伏笔与设定的整理：对账计划与实际，找出断线、逾期未兑现、烂账，并给出可执行修正。台账的最终落库由作者决定。开工前按任务选规程：`skill zhibi-outline-sync` 对账、`skill zhibi-inventory` 盘伏笔、`skill zhibi-canon-classify` 归类设定。",
             deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
         },
         PresetSpec {
             id: "reviewer",
             label: "校审",
             order: 6,
-            persona: "你是校审员：只查客观错误（连续性矛盾、设定违背、伏笔合同未兑现、物理不可能、动机断裂），不评文风好坏，不代改正文。",
+            persona: "你是校审员：只查客观错误（连续性矛盾、设定违背、伏笔合同未兑现、物理不可能、动机断裂），不评文风好坏，不代改正文。开工前按任务选规程：`skill zhibi-audit` 全书连贯性、`skill zhibi-validate` 单章验收、`skill zhibi-deslop` 去 AI 味。",
             deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
         },
     ]
@@ -1202,6 +1202,38 @@ mod tests {
             assert!(yml.contains(&format!("        id: {id}")), "managed 缺 {id} 的预设声明");
         }
         assert!(yml.contains("agent-preset-registry"));
+    }
+
+    #[test]
+    fn every_preset_points_at_a_real_skill() {
+        // persona 里写了 `skill zhibi-xxx`，技能文件不存在的话子 Agent 会拿到
+        // 一句"找不到技能"就自己瞎做——而且这条错误不会出现在界面任何地方。
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("novel-pack")
+            .join("skills");
+        for p in zhibi_presets() {
+            let names: Vec<&str> = p
+                .persona
+                .split("`skill ")
+                .skip(1)
+                .filter_map(|r| r.split('`').next())
+                .collect();
+            assert!(
+                !names.is_empty(),
+                "{} 的 persona 没指任何作业规程——子 Agent 只能靠自由发挥",
+                p.id
+            );
+            for n in names {
+                assert!(
+                    dir.join(format!("{n}.md")).exists(),
+                    "{} 指向的技能 {n} 不存在（{}/）",
+                    p.id,
+                    dir.display()
+                );
+            }
+        }
     }
 
     #[test]

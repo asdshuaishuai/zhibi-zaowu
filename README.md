@@ -121,7 +121,7 @@ scripts/dev.sh
 ### 测试
 
 ```sh
-scripts/test-all.sh     # Rust（177 项）+ novel-pack（4 项）
+scripts/test-all.sh     # Rust（178 项）+ novel-pack（4 项）
 ```
 
 两端读同一份 `tests/conformance/cases.json`。改了任意一侧的规则而没改夹具，

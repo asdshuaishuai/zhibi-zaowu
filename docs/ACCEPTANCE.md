@@ -2,7 +2,7 @@
 
 构建：`./scripts/build_app.sh` → `open target/release/执笔造物.app`
 （`.app` 已内置 Node + DSH，目标机无需安装；真实模型在「设置」里配 API Key 或账号）。
-双端测试：`./scripts/test-all.sh`（Rust 177 项 + novel-pack 4 项）。
+双端测试：`./scripts/test-all.sh`（Rust 178 项 + novel-pack 4 项）。
 逐项打勾即验收；「期望」为验收标准，不符请记现象。
 
 ## A. 书架（首页）
@@ -167,6 +167,10 @@
       点下去指令里带上"人物：沈砚（…）"，子 Agent 不用自己再查是谁
 - [ ] **主 Agent 自行派活**：在对话里说「把第 12 章的人物关系捋一下」（不提 Agent 名字）
       → 主 Agent 自己判断派给 `relations`，轨迹里能看到 subagent 调用
+- [ ] **子 Agent 有作业规程**：任意专属 Agent 被派活后，轨迹里能看到它先
+      `skill zhibi-xxx`（人物→dossier、关系→memory、世界线→oracle、
+      预言→forecast、大纲→outline-sync/inventory/canon-classify、
+      校审→audit/validate/deslop），不是直接自由发挥
 
 ## K. 设置（M2）
 - [ ] **账号**：DeepSeek 账号余额可查（未登录显示可读原因，不显示 0）
