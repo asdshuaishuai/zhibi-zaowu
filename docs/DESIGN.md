@@ -177,18 +177,45 @@
 
 ```
 zhibi-next/
-├── app/          # GPUI 前端（Rust，gpui-kit 0.9）
-├── novel-pack/   # DSH Cordis 插件包（TS）：工具面 + prompt + 法典
-├── protocol/     # 前端↔novel-pack 的项目数据 API（TS↔RS 类型共享）
-└── docs/
+├── app/                 # GPUI 前端（Rust，gpui-kit 0.9）
+│   └── src/             # workspace / canvas / director / characters / relations /
+│                        # journal / worldline / dsh / account / prompts …
+├── novel-pack/          # DSH 能力包（TS）：30 工具 + 16 技能 + guard + write-policy
+│   ├── skills/          # 写作能力的作业规程（AI 加载，作者可改，不需重编客户端）
+│   └── test/            # 双端一致性
+├── runtime/zhibi-runtime# 封闭的 DSH sdk 运行环境（只装 sdk 闭包，274MB）
+├── tests/conformance/   # 双端共享夹具
+└── docs/                # DESIGN / ACCEPTANCE / SPIKE-M0
 ```
 
-- **M1 骨架可跑**：GPUI 窗口 + Dock/侧栏布局 + DSH sdk 子进程连通（发一句话收到 session.event 流，右侧轨迹实时滚动）。
+### 第一轮（M1–M6）：能写、能提案、能打包
+
+- **M1 骨架可跑**：GPUI 窗口 + Dock/侧栏布局 + DSH sdk 子进程连通。
 - **M2 项目与编辑器**：.zhibi 读写 + 稿纸编辑器 + 章节树/书架。
-- **M3 提案闭环**：novel-pack 首批工具（骨架/草稿/盘点）+ 收件箱 + 就地采纳 + 状态条。
-- **M4 彩云式共写**：幽灵续写 + 分支卡 + 选区改写（diff 采纳 + 快照）。
+- **M3 提案闭环**：novel-pack 首批工具 + 收件箱 + 就地采纳 + 状态条。
+- **M4 彩云式共写**：幽灵续写 + 分支卡 + 选区改写。
 - **M5 全能力复刻**：审查/对账/去AI味/记忆/图谱/导入导出/统计。
-- **M6 跨端打包**：Win/Linux 适配 + 打包与自动更新。
+- **M6 跨端打包**：Win/Linux 适配 + 打包。
+
+### 第二轮（M0–M9）：AI 体系与作者主权
+
+- **M0 运行环境**：只用 DSH 的 sdk profile，剥离 web/桌面端；封闭包 274MB，
+  升级只需改 `runtime/zhibi-runtime/package.json` 一处版本号。结论见 `SPIKE-M0.md`。
+- **M1 Agent 体系**：每本书一个 DSH 进程（`DSH_HOME` + cwd 都指这本书）；
+  托管 / 极简 / 创造三模式；6 个内置专属 Agent；审批与提问弹窗；
+  停止 = 杀进程 + `session/resume`。
+- **M2 设置中心**：账号余额、模型与推理强度、通用设置、模式说明。
+- **M3 作者主权**：改动日志（JSONL + 内容寻址前像）、单条/整批撤销含冲突检测、
+  AI 参与墨点、写作档位闸门（辅助/共写/代笔 + 逐章授权）。
+- **M4 人物实体**：`characters.json` + 无损迁移 + 可编辑档案页（字段锁、合并、别名）。
+- **M5 关系网**：`relations.json`，一条关系多个章节区间（起止章 + 读者可见），
+  画布关系维按章过滤。
+- **M6 台账 CRUD**：四类台账可亲笔增删改、去截断、全部走日志可撤销。
+- **M7 世界线与预言书**：`worldline/` 带类型读写层 + 纯函数布局；
+  三种看法（并轨 / 世界树 / 对比）；从任意节点分叉；节点手改；三栏卷轴。
+- **M8 技能库与创造模式**：16 个技能替代硬编码任务书；官方 `tool-cordis`
+  + 本书专属 Agent（删除即恢复默认）。
+- **M9 一致性**：Rust 与 TS 读同一份夹具，任一侧改规则而没改夹具会同时红。
 
 ## 8. 拍板记录（原「待定问题」，均已定案并落地）
 
@@ -365,9 +392,25 @@ worldlines.json: [{
 2. **依据不可点回**：依据区列出编号/标题，但没有跳到设定页、伏笔台账或正文位置的导航。
 3. **生成前决定点枚举未做**：决定点只在生成后以提案条目呈现。
 4. **输入快照不完整**：没有记录引用条目的版本、生成参数与模型；决策树/分叉对比未做。
-5. **正文来源标记未做**：作者手写与 AI 草稿在数据层是分开的（提案 vs 正文），但正文内没有逐段来源标记。
+5. ~~**正文来源标记未做**~~ **已补（M3）**：AI 改过的正文区间写进
+   `chapters/ch-NNN/ai-marks.json`，编辑器左缘显示墨点；改动撤销后标记同步清除。
+   仍然没有的：逐段"这段是 AI 写的还是我写的"的完整溯源，墨点只记"有 AI 参与"的区间。
 6. **落库后的只读查看**：`meta.beats` / `meta.report` 采纳后没有独立只读页；已决历史可展开回看 payload 与持久化的 `applyResult`（入库/跳过条数），但看不到落库后文件的当前内容。
 7. **`sourceRefs` 覆盖面有限**：`propose_canon`/`propose_clues` 与预言书晋升（canon/canonRevise/clues/outlineUpdates/plannedEvent）会产出该字段；其余 kind 靠既有字段推导（report/deslop/clueFixes/outlineUpdates/memoryPack/dossier/canon/canonRevise/plannedEvent），推导不出的显式标「未提供依据」。
 8. **引用来源未做成硬闸门**：`app/src/prompts.rs::BASIS_RULE` 只是提示词要求，工具 schema 里的 `sourceRefs` 仍是可选字段；当前靠界面把「未提供依据」显性化，生成端不拦截。
-9. **非正文台账快照无恢复入口**：`snapshots/ledger/` 保留了会被覆盖的 meta/dossiers/memory/storylines/clues/events/canon 原文件，但界面只有正文「快照」页，台账快照需手动从磁盘恢复。
+9. ~~**非正文台账快照无恢复入口**~~ **已补（M3/M6）**：改动日志为每次落库存前像
+   （内容寻址），「改动记录」页可按条或按批撤销，带冲突检测。`snapshots/ledger/`
+   仍保留，但不再是唯一恢复途径。
 10. **部分成功仍显示「已采纳」**：多条目提案部分跳过时状态仍为「已采纳」，已决历史用 `applyResult` 显示实际入库/跳过条数，但没有独立的「部分采纳」状态。
+
+11. **世界线树布局是槽位均分**：`worldline/layout.rs` 做的是 tidy-tree 的简化版
+    （叶 1 槽、父 = 子树之和）。它保证可复现、不重叠，但没有做力导向或
+    最小交叉优化——节点特别多时枝会靠得较近。
+
+12. **对比模式只比"共同祖先之后"**：`layout::compare` 用章节切分而非严格
+    按节点集合差异。如果两条线在共同祖先之前就各自改过节点，这部分差异
+    不会被报出来。
+
+13. **本书专属 Agent 的接管是"提示词级"**：`takeover` 只改主 Agent 的
+    personaPrefix 一段话，不是硬约束。主 Agent 仍可能自己把活干了——
+    要硬约束得改 `tool-subagent` 的派活策略，那属于对 DSH 的魔改，没做。
