@@ -2,7 +2,7 @@
 
 构建：`./scripts/build_app.sh` → `open target/release/执笔造物.app`
 （`.app` 已内置 Node + DSH，目标机无需安装；真实模型在「设置」里配 API Key 或账号）。
-双端测试：`./scripts/test-all.sh`（Rust 179 项 + novel-pack 4 项）。
+双端测试：`./scripts/test-all.sh`（Rust 179 项 + novel-pack 6 项）。
 逐项打勾即验收；「期望」为验收标准，不符请记现象。
 
 ## A. 书架（首页）
@@ -199,6 +199,8 @@
 ## L. 一致性与文档（M9）
 - [ ] `scripts/test-all.sh` 两端全绿
 - [ ] 改动 `tests/conformance/cases.json` 里任一期望值 → **两侧同时红**
+- [ ] 改 `novel-pack/src/relations.ts` 的 `intervalCovers`（如把 `<` 写成 `<=`）
+      → Node 侧立刻红，Rust 侧仍绿（它们测的是各自的实现 + 同一份夹具）
 - [ ] `cargo build` 零警告
 
 ## M. 已知边界（非缺陷，验收时勿计入）

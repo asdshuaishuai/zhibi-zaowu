@@ -104,5 +104,12 @@ fn relation_interval_covers_matches_the_shared_fixture() {
             expected,
             "[{from},{to}) 是否覆盖第 {chapter} 章与夹具不符（{why}）"
         );
+        // 合法性判定也要与 TS 侧一致：终点早于起点是坏数据，0 表示开放不算坏。
+        // （TS 侧 test/conformance.test.mjs 的「区间合法性判定」测同一件事。）
+        assert_eq!(
+            iv.is_valid(),
+            to == 0 || to > from,
+            "[{from},{to}) 的合法性判定与夹具语义不符"
+        );
     }
 }

@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { safeFileName, chapterDirName } from '../src/store.ts'
+import { intervalCovers, intervalIsValid, activeIntervals } from '../src/relations.ts'
 import {
   canWriteLedger,
   canWriteProse,
@@ -69,12 +70,39 @@ test('写作档位闸门与共享夹具一致', (t) => {
   t.diagnostic(`覆盖 ${cases.writePolicy.length} 个档位组合`)
 })
 
-test('关系区间覆盖与共享夹具一致', () => {
-  // interval.covers 在 Rust 侧（relations.rs）；TS 侧没有等价实现，
-  // 这里只校验夹具本身的边界语义没被写歪（防的是"改夹具时手滑"）。
+test('关系区间覆盖与共享夹具一致', (t) => {
+  // 两端各有真实实现在跑这条夹具（Rust: relations::Interval::covers，
+  // TS: relations.ts intervalCovers）。以前这里只校验夹具自身语义，
+  // 等于没测——TS 侧改了边界规则也不会红。
   for (const c of cases.intervalCovers) {
-    const started = c.from === 0 || c.chapter >= c.from
-    const notEnded = c.to === 0 || c.chapter < c.to
-    assert.equal(started && notEnded, c.covers, `[${c.from},${c.to}) vs ${c.chapter}（${c.why ?? ''}）`)
+    const iv = { fromChapter: c.from, toChapter: c.to }
+    assert.equal(
+      intervalCovers(iv, c.chapter),
+      c.covers,
+      `[${c.from},${c.to}) vs 第${c.chapter}章（${c.why ?? ''}）`,
+    )
   }
+  t.diagnostic(`覆盖 ${cases.intervalCovers.length} 个区间边界组合`)
+})
+
+test('区间合法性判定与共享夹具一致', () => {
+  // 终点早于起点是坏数据；0 表示开放，不算坏。
+  for (const c of cases.intervalCovers) {
+    const expected = c.to === 0 || c.to > c.from
+    assert.equal(intervalIsValid({ fromChapter: c.from, toChapter: c.to }), expected)
+  }
+  assert.equal(intervalIsValid({ fromChapter: 10, toChapter: 5 }), false)
+  assert.equal(intervalIsValid({ fromChapter: 10, toChapter: 10 }), false, '空区间不算合法')
+})
+
+test('同一时刻的并存区间都会被取到', () => {
+  // 第 5-19 章师徒，第 20 章起仇敌：第 19 章只有师徒，第 20 章只有仇敌，
+  // 中间不存在"两个都对"的时刻——夹具的边界语义要是写歪了，这里会露出来。
+  const ivs = [
+    { fromChapter: 5, toChapter: 20, label: '师徒' },
+    { fromChapter: 20, toChapter: 0, label: '仇敌' },
+  ]
+  assert.deepEqual(activeIntervals(ivs, 19).map((i) => i.label), ['师徒'])
+  assert.deepEqual(activeIntervals(ivs, 20).map((i) => i.label), ['仇敌'])
+  assert.deepEqual(activeIntervals(ivs, 4).map((i) => i.label), [])
 })
