@@ -447,6 +447,10 @@ impl DshClient {
             return std::env::var("ZHIBI_MODE_PATCH").ok();
         }
 
+        // 设置页的开关要真的生效，不能只是存进 settings.json。
+        // 联网与子 agent 是"能力开关"，关掉就把对应的行 disabled。
+        let settings = crate::store::load_settings();
+
         // guard 插件的绝对路径：从 novel-pack 的安装/检出位置推导。
         // 找不到就不写这一行（专属 Agent 会退回“继承全部工具”，由校审 persona 兜底，
         // 并在轨迹里提示），绝不写一个无效路径让整个预设加载失败。
@@ -532,6 +536,26 @@ impl DshClient {
                     lines.push(format!("      - {id}"));
                 }
             }
+        }
+
+        // 联网开关：关掉就把 tool-web 整行 disabled（不是只禁 fetch，
+        // 而是连 search 也不给——"允许联网"是一个整体授权）。
+        if !settings.web_enabled {
+            lines.push("- id: tool-web".into());
+            lines.push("  disabled: true".into());
+            lines.push("- id: web-search-deepseek".into());
+            lines.push("  disabled: true".into());
+            lines.push("- id: web-fetch-http".into());
+            lines.push("  disabled: true".into());
+        }
+
+        // 子 agent 开关：托管模式下关掉 = 主 Agent 自己干，不派活。
+        // 极简模式本来就关了，这里只影响托管/创造。
+        if !settings.subagent_enabled && mode != AgentMode::Minimal {
+            lines.push("- id: tool-subagent".into());
+            lines.push("  disabled: true".into());
+            lines.push("- id: tool-subagent-fork".into());
+            lines.push("  disabled: true".into());
         }
 
         if mode == AgentMode::Creator {

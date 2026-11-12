@@ -773,6 +773,96 @@ impl Store {
         self.save(&lines)
     }
 
+    /// 加一条边。节点必须都存在——悬空边会让画布画出一条指向虚空的线。
+    pub fn add_edge(&self, line_id: &str, mut edge: Edge) -> Result<(), String> {
+        let mut lines = self.all()?;
+        let line = lines
+            .iter_mut()
+            .find(|l| l.id == line_id)
+            .ok_or_else(|| format!("世界线 {line_id} 不存在"))?;
+        if !line.nodes.iter().any(|n| n.id == edge.from) {
+            return Err(format!("线{line_id}没有起点节点 {}", edge.from));
+        }
+        if !line.nodes.iter().any(|n| n.id == edge.to) {
+            return Err(format!("线{line_id}没有终点节点 {}", edge.to));
+        }
+        // 同一条边不重复加（AI 可能重复推演同一段因果）
+        if line
+            .edges
+            .iter()
+            .any(|e| e.from == edge.from && e.to == edge.to && e.kind == edge.kind)
+        {
+            return Err("这条边已存在".into());
+        }
+        if edge.kind.is_empty() {
+            edge.kind = "influence".into();
+        }
+        line.edges.push(edge);
+        self.save(&lines)
+    }
+
+    /// 删一条边（按 from+to+kind 定位）。
+    pub fn remove_edge(&self, line_id: &str, from: &str, to: &str, kind: &str) -> Result<(), String> {
+        let mut lines = self.all()?;
+        let line = lines
+            .iter_mut()
+            .find(|l| l.id == line_id)
+            .ok_or_else(|| format!("世界线 {line_id} 不存在"))?;
+        let before = line.edges.len();
+        line.edges
+            .retain(|e| !(e.from == from && e.to == to && e.kind == kind));
+        if line.edges.len() == before {
+            return Err("没有这条边".into());
+        }
+        self.save(&lines)
+    }
+
+    /// 改一条边的暗线标记（作者最常见的边操作：这条因果读者还不知道）。
+    pub fn set_edge_hidden(
+        &self,
+        line_id: &str,
+        from: &str,
+        to: &str,
+        kind: &str,
+        hidden: bool,
+    ) -> Result<(), String> {
+        let mut lines = self.all()?;
+        let line = lines
+            .iter_mut()
+            .find(|l| l.id == line_id)
+            .ok_or_else(|| format!("世界线 {line_id} 不存在"))?;
+        let edge = line
+            .edges
+            .iter_mut()
+            .find(|e| e.from == from && e.to == to && e.kind == kind)
+            .ok_or("没有这条边")?;
+        edge.hidden = hidden;
+        self.save(&lines)
+    }
+
+    /// 改线的名字与假设（作者手改；AI 推演写入的 premise 也走这里纠正）。
+    pub fn update_line_meta(
+        &self,
+        line_id: &str,
+        name: Option<String>,
+        premise: Option<String>,
+    ) -> Result<(), String> {
+        let mut lines = self.all()?;
+        let line = lines
+            .iter_mut()
+            .find(|l| l.id == line_id)
+            .ok_or_else(|| format!("世界线 {line_id} 不存在"))?;
+        if let Some(n) = name {
+            if !n.trim().is_empty() {
+                line.name = n.trim().to_string();
+            }
+        }
+        if let Some(p) = premise {
+            line.premise = p;
+        }
+        self.save(&lines)
+    }
+
     pub fn remove_node(&self, line_id: &str, node_id: &str) -> Result<(), String> {
         let mut lines = self.all()?;
         let line = lines
@@ -1069,6 +1159,76 @@ mod tests {
         assert!(lines[0].is_base());
         // 不能因为 kind 缺失就被当成可扶正的 if 线
         assert!(s.fix_line("α").is_err());
+    }
+
+    #[test]
+    fn edges_need_both_endpoints_to_exist() {
+        let root = book("edge");
+        let s = seed(&root);
+        let ok = Edge { from: "n1".into(), to: "n2".into(), kind: "influence".into(), ..Default::default() };
+        s.add_edge("α", ok).unwrap();
+        assert_eq!(s.all().unwrap()[0].edges.len(), 1);
+
+        // 端点不存在 → 拒绝（悬空边会在画布上指向虚空）
+        let bad = Edge { from: "n1".into(), to: "nope".into(), kind: "influence".into(), ..Default::default() };
+        assert!(s.add_edge("α", bad).is_err());
+        // 重复边 → 拒绝（AI 重复推演同一段因果）
+        let dup = Edge { from: "n1".into(), to: "n2".into(), kind: "influence".into(), ..Default::default() };
+        assert!(s.add_edge("α", dup).is_err());
+    }
+
+    #[test]
+    fn edge_hidden_toggle_and_removal() {
+        let root = book("edgehide");
+        let s = seed(&root);
+        s.add_edge("α", Edge { from: "n1".into(), to: "n2".into(), kind: "plant".into(), ..Default::default() })
+            .unwrap();
+        // 默认明线
+        assert!(!s.all().unwrap()[0].edges[0].hidden);
+        s.set_edge_hidden("α", "n1", "n2", "plant", true).unwrap();
+        assert!(s.all().unwrap()[0].edges[0].hidden, "暗线标记要落盘");
+
+        s.remove_edge("α", "n1", "n2", "plant").unwrap();
+        assert!(s.all().unwrap()[0].edges.is_empty());
+        assert!(s.remove_edge("α", "n1", "n2", "plant").is_err(), "删不存在的边要报错");
+    }
+
+    #[test]
+    fn updating_line_meta_keeps_blank_name_from_wiping_it() {
+        let root = book("linemeta");
+        let s = seed(&root);
+        s.fork("α", "n2", "β", "原名", "", Kind::WhatIf).unwrap();
+        s.update_line_meta("β", Some("新名".into()), Some("如果师兄没死".into()))
+            .unwrap();
+        let l = s.find("β").unwrap().unwrap();
+        assert_eq!(l.name, "新名");
+        assert_eq!(l.premise, "如果师兄没死");
+
+        // 空名字不该把原名抹掉（表单清空是误操作，不是意图）
+        s.update_line_meta("β", Some("   ".into()), None).unwrap();
+        assert_eq!(s.find("β").unwrap().unwrap().name, "新名");
+    }
+
+    #[test]
+    fn subtree_keeps_only_descendants() {
+        let root = book("subtree");
+        let s = seed(&root);
+        s.fork("α", "n2", "β", "β", "", Kind::WhatIf).unwrap();
+        let mut bn = Node::new("b1", "event", "x");
+        bn.chapter = 18;
+        s.add_node("β", bn).unwrap();
+        s.fork("β", "b1", "γ", "γ", "", Kind::WhatIf).unwrap();
+        s.fork("α", "n1", "δ", "δ", "", Kind::WhatIf).unwrap();
+        let lines = s.all().unwrap();
+
+        // 钻取 β：只剩 β 与 γ（δ 是 α 的另一个孩子，不该进来）
+        let sub = crate::worldline::layout::subtree(&lines, "β");
+        let ids: Vec<&str> = sub.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"β") && ids.contains(&"γ"));
+        assert!(!ids.contains(&"δ"));
+        // 钻取根要变成新树根，槽位才会从 0 重排
+        assert!(sub.iter().find(|l| l.id == "β").unwrap().parent_id.is_empty());
     }
 
     #[test]

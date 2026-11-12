@@ -2920,6 +2920,8 @@ pub enum JournalEvent {
     UndoBatch(String),
     /// 重新读日志
     Refresh,
+    /// 撤回所有越界改动（AI 改了没有代笔授权的章）
+    RevertBreaches,
 }
 
 pub struct JournalPanel {
@@ -2929,6 +2931,8 @@ pub struct JournalPanel {
     groups: Vec<(String, Vec<crate::journal::Change>)>,
     /// 最近一次操作的结果，显示在顶部
     message: Option<(String, Tone)>,
+    /// 当前的越界改动（AI 改了没有代笔授权的章）。空 = 没越界。
+    breaches: Vec<crate::journal::Breach>,
 }
 
 impl JournalPanel {
@@ -2938,6 +2942,7 @@ impl JournalPanel {
             handle,
             groups: Vec::new(),
             message: None,
+            breaches: Vec::new(),
         };
         panel.reload(cx);
         panel
@@ -2953,6 +2958,10 @@ impl JournalPanel {
             .map(|(k, v)| (k, v))
             .collect();
         self.groups = groups;
+        // 越界检查：这是"代笔授权"承诺的另一半——事前 write-policy 拦工具，
+        // 事后在这里兜住绕过工具的直写。
+        let auth = crate::journal::BookAuth::load(&self.handle.root);
+        self.breaches = crate::journal::find_breaches(&self.handle.root, &auth, 200);
         cx.notify();
     }
 
@@ -3040,6 +3049,58 @@ impl Render for JournalPanel {
 
         if let Some((msg, tone)) = &self.message {
             body.push(chip(SharedString::from(msg.clone()), *tone));
+        }
+
+        // 越界改动：AI 改了没有代笔授权的章。这是"代笔授权"承诺的另一半——
+        // 事前 write-policy 拦工具，这里是绕过工具直写时的兜底。
+        if !self.breaches.is_empty() {
+            let chapters: Vec<String> =
+                self.breaches.iter().map(|b| format!("第{}章", b.chapter)).collect();
+            let n = self.breaches.len();
+            body.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::GAP_SM)
+                    .p(theme::PAD_SM)
+                    .rounded(theme::RADIUS_PANEL)
+                    .border_1()
+                    .border_color(theme::AMBER())
+                    .bg(theme::AMBER_SOFT())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.))
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_LABEL)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::AMBER())
+                                    .child(SharedString::from(format!(
+                                        "⚠ AI 越界改了 {n} 处正文"
+                                    ))),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::DIM())
+                                    .child(SharedString::from(format!(
+                                        "{} 没有代笔授权。可以撤回，或到设置里授权这些章。",
+                                        chapters.join("、")
+                                    ))),
+                            ),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        cap_btn("journal-revert-breaches", "撤回越界改动", cx).on_click(
+                            cx.listener(|_this, _, _, cx| {
+                                cx.emit(JournalEvent::RevertBreaches);
+                            }),
+                        ),
+                    )
+                    .into_any_element(),
+            );
         }
 
         if self.groups.is_empty() {

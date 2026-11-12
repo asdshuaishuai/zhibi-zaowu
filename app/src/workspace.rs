@@ -329,6 +329,8 @@ pub struct Workspace {
     last_saved: String,
     /// DSH 会话是否正在跑（session.status 事件驱动，标题栏 BLUE 运行态的事实源）
     dsh_running: bool,
+    /// 最近一次与 DSH 交互的时刻。空闲回收用它判断"这个进程放着多久没用了"。
+    dsh_last_active: std::time::Instant,
     focus: bool,
     dock_hidden: bool,
     workspace_focus: gpui_kit::FocusHandle,
@@ -442,7 +444,7 @@ impl Workspace {
         let director_view = cx.new(|cx| DirectorPanel::new(cx, handle.clone(), chapter));
         let oracle_view = cx.new(|cx| OraclePanel::new(window, cx, handle.clone()));
         let worldline_view =
-            cx.new(|cx| crate::worldline::view::WorldlinePanel::new(cx, handle.clone()));
+            cx.new(|cx| crate::worldline::view::WorldlinePanel::new(window, cx, handle.clone()));
         let bookinfo_view = cx.new(|cx| BookInfoPanel::new(window, cx, handle.clone()));
         let chat = cx.new(|cx| ChatPanel::new(window, cx));
 
@@ -693,11 +695,17 @@ impl Workspace {
             .detach();
 
         cx.subscribe_in(&chat, window, |this, _, ev: &ChatEvent, _window, cx| match ev {
-            ChatEvent::Send(text) => {
+            ChatEvent::SendTo { text, target } => {
+                // 界面显示作者原话；真正发出去的是"转交给 X"的指令。
+                // 两者分开：作者看到自己写的话，AI 收到可执行的派活指令。
                 this.chat.update(cx, |panel, cx| {
                     panel.push(ChatMsg { role: "user".into(), text: text.clone() }, cx)
                 });
-                this.on_send(text.clone(), cx);
+                let outgoing = match target {
+                    Some(agent) => crate::prompts::direct_agent_task(agent, text),
+                    None => text.clone(),
+                };
+                this.on_send(outgoing, cx);
             }
         })
         .detach();
@@ -822,6 +830,65 @@ impl Workspace {
                             Err(e) => this
                                 .worldline_view
                                 .update(cx, |p, cx| p.set_message(format!("新增失败：{e}"), cx)),
+                        }
+                    }
+                    WE::UpdateMeta { line, name, premise } => {
+                        match store.update_line_meta(line, name.clone(), premise.clone()) {
+                            Ok(()) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message("已保存", cx)),
+                            Err(e) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message(format!("保存失败：{e}"), cx)),
+                        }
+                    }
+                    WE::AddEdge { line, from, to, kind } => {
+                        let e = crate::worldline::Edge {
+                            from: from.clone(),
+                            to: to.clone(),
+                            kind: kind.clone(),
+                            hidden: false,
+                            ..Default::default()
+                        };
+                        match store.add_edge(line, e) {
+                            Ok(()) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message("已加边", cx)),
+                            Err(err) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message(format!("加边失败：{err}"), cx)),
+                        }
+                    }
+                    WE::RemoveEdge { line, from, to, kind } => {
+                        match store.remove_edge(line, from, to, kind) {
+                            Ok(()) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message("已删边", cx)),
+                            Err(e) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message(format!("删边失败：{e}"), cx)),
+                        }
+                    }
+                    WE::ToggleEdgeHidden { line, from, to, kind } => {
+                        // 先读当前值再翻转
+                        let cur = store
+                            .find(line)
+                            .ok()
+                            .flatten()
+                            .and_then(|l| {
+                                l.edges
+                                    .iter()
+                                    .find(|e| &e.from == from && &e.to == to && &e.kind == kind)
+                                    .map(|e| e.hidden)
+                            })
+                            .unwrap_or(false);
+                        match store.set_edge_hidden(line, from, to, kind, !cur) {
+                            Ok(()) => this.worldline_view.update(cx, |p, cx| {
+                                p.set_message(if cur { "已改为明线" } else { "已改为暗线" }, cx)
+                            }),
+                            Err(e) => this
+                                .worldline_view
+                                .update(cx, |p, cx| p.set_message(format!("切换失败：{e}"), cx)),
                         }
                     }
                     WE::LinkCanvas { line, node, canvas } => {
@@ -1086,6 +1153,27 @@ impl Workspace {
                     JournalEvent::Refresh => {
                         this.journal_view.update(cx, |panel, cx| panel.reload(cx));
                     }
+                    JournalEvent::RevertBreaches => {
+                        let auth = crate::journal::BookAuth::load(&this.handle.root);
+                        let breaches = crate::journal::find_breaches(&this.handle.root, &auth, 200);
+                        if breaches.is_empty() {
+                            this.journal_view.update(cx, |panel, cx| {
+                                panel.set_message("没有越界改动".into(), 0, cx)
+                            });
+                        } else {
+                            let (ok, errs) = crate::journal::revert_breaches(&this.handle.root, &breaches);
+                            let text = if errs.is_empty() {
+                                format!("已撤回 {ok} 处越界改动")
+                            } else {
+                                format!("撤回 {ok} 处；{}", errs.join("；"))
+                            };
+                            let tone = if errs.is_empty() { 0u8 } else { 1u8 };
+                            this.reload_prose_from_disk(window, cx);
+                            this.refresh_ai_marks(cx);
+                            this.journal_view
+                                .update(cx, |panel, cx| panel.set_message(text, tone, cx));
+                        }
+                    }
                     JournalEvent::Undo(id) => {
                         let outcome = journal.undo(&this.handle.root, id);
                         let (text, tone): (String, u8) = match outcome {
@@ -1348,6 +1436,7 @@ impl Workspace {
             autosave: None,
             last_saved: String::new(),
             dsh_running: false,
+            dsh_last_active: std::time::Instant::now(),
             focus: false,
             dock_hidden: false,
             workspace_focus: cx.focus_handle(),
@@ -1614,9 +1703,14 @@ impl Workspace {
     }
 
     fn ensure_client(&mut self, cx: &mut Context<Self>) -> Result<DshClient> {
+        // 空闲回收：进程放着不用就占内存（一本 DSH 约 100-200MB）。
+        // 每次要用之前检查一次——比后台定时器简单，也不会在作者正忙时误杀。
+        self.recycle_if_idle(cx);
         if let Some(client) = &self.client {
+            self.dsh_last_active = std::time::Instant::now();
             return Ok(client.clone());
         }
+        self.dsh_last_active = std::time::Instant::now();
         let mode = self.agent_mode;
         let (client, rx) = DshClient::spawn(&self.root, mode)?;
         self.trajectory.update(cx, |panel, cx| {
@@ -1774,6 +1868,71 @@ impl Workspace {
     ///
     /// 这里不自动批准。DSH 的 fail-closed 语义正好保证「作者不点 = 不执行」，
     /// 所以只把卡片摆出来即可，不设超时兜底。
+    /// 空闲回收：闲置超过设置里 `idleRecycleMin` 分钟就关掉进程。
+    ///
+    /// 三条保护，避免把作者正在用的进程杀掉：
+    /// 1. 回合进行中不回收（`turn_active` / `dsh_running`）；
+    /// 2. 有待审批/待回答不回收（杀了等于替他拒绝）；
+    /// 3. 设置为 0 表示永不回收。
+    fn recycle_if_idle(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.client.as_ref() else { return };
+        if self.turn_active || self.dsh_running {
+            return;
+        }
+        if self.pending_approval.is_some() || self.pending_question.is_some() {
+            return;
+        }
+        let minutes = crate::store::load_settings().idle_recycle_min;
+        if minutes == 0 {
+            return;
+        }
+        if self.dsh_last_active.elapsed() < std::time::Duration::from_secs(minutes as u64 * 60) {
+            return;
+        }
+        // 关进程但保留会话：下次发送会重建 + session/resume 接回历史
+        client.shutdown();
+        self.client = None;
+        self.initialized = false;
+        self.session_attached = false;
+        self.trajectory.update(cx, |panel, cx| {
+            panel.push(
+                TrajKind::Info(format!(
+                    "DSH 运行时闲置 {minutes} 分钟，已释放内存（下次发送自动重建，会话历史保留）"
+                )),
+                cx,
+            )
+        });
+    }
+
+    /// 回合结束后的越界检查：AI 改了没有代笔授权的章 → 通报并给一键撤回。
+    ///
+    /// 为什么放在回合结束而不是每次写文件时：一次回合可能写很多次，
+    /// 逐次通报会把轨迹刷满；而且作者在一次回合里更关心"这批改动整体合规吗"。
+    fn check_breaches(&mut self, cx: &mut Context<Self>) {
+        let auth = crate::journal::BookAuth::load(&self.root);
+        let breaches = crate::journal::find_breaches(&self.root, &auth, 200);
+        if breaches.is_empty() {
+            return;
+        }
+        let chapters: Vec<String> = breaches.iter().map(|b| format!("第{}章", b.chapter)).collect();
+        let msg = format!(
+            "⚠ AI 越界改了 {} 章（{}）：当前档位「{}」，这些章没有代笔授权。\
+             改动已记录，可在「改动记录」撤回；或到设置里授权这些章。",
+            breaches.len(),
+            chapters.join("、"),
+            auth.mode().label()
+        );
+        self.trajectory.update(cx, |panel, cx| {
+            panel.push(TrajKind::Fail(msg.clone()), cx)
+        });
+        // 这里只通报，不自动撤。
+        //
+        // 为什么不在回合结束时自动撤销：撤销要看有没有冲突（作者中途手改过），
+        // 而且"AI 越界改了正文"是作者必须自己做的判断——自动撤掉可能连
+        // 他刚点过采纳的内容一起带走。把事实摆清楚，撤销放在改动记录页
+        // （那里有逐条冲突提示），比悄悄改回去更尊重作者。
+    }
+
     /// 停止当前回合。
     ///
     /// sdk 协议没有 `session/abort`，所以只能杀掉该书进程并让下次发送重建——
@@ -2258,6 +2417,10 @@ impl Workspace {
                 self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
                 self.turn_active = false;
                 self.inbox.update(cx, |panel, cx| panel.refresh(cx));
+                // 越界检查：事前 write-policy 拦工具调用，但 AI 也可能绕过
+                // novel-pack 直接写文件。回合结束时扫一遍改动日志，
+                // 发现"改了没授权的章"就地通报，作者可以一键撤回。
+                self.check_breaches(cx);
                 let reason = data.get("reason");
                 let kind = reason
                     .and_then(|r| r.get("kind"))

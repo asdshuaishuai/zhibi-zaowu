@@ -232,6 +232,45 @@ pub fn tree(lines: &[Line]) -> Tree {
     Tree { nodes: out, slots, max_chapter: max_chapter.max(1) }
 }
 
+/// 只保留以 `root` 为根的子树（树模式的「钻取」）。
+///
+/// 作者有一堆 if 时，整棵树会挤成一片。钻取到某条线，只看它的后代。
+/// 返回的 `lines` 里，root 的 parent 被清空——这样 `tree()` 会把它当根，
+/// 槽位从 0 重新排，画面填满而不是挤在角落。
+pub fn subtree(lines: &[Line], root: &str) -> Vec<Line> {
+    if root.is_empty() {
+        return lines.to_vec();
+    }
+    let mut keep: Vec<String> = vec![root.to_string()];
+    // 逐层往下收集：作者的树不会很深，但也不能假设
+    let mut frontier = vec![root.to_string()];
+    for _ in 0..lines.len() {
+        let mut next: Vec<String> = Vec::new();
+        for l in lines {
+            if frontier.iter().any(|f| *f == l.parent_id) && !keep.contains(&l.id) {
+                keep.push(l.id.clone());
+                next.push(l.id.clone());
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    lines
+        .iter()
+        .filter(|l| keep.contains(&l.id))
+        .map(|l| {
+            let mut c = l.clone();
+            if c.id == root {
+                c.parent_id.clear();
+                c.fork_node.clear();
+            }
+            c
+        })
+        .collect()
+}
+
 /// 时间轴上的一条轨道。
 ///
 /// 与旧的 `Lane` 的区别：旧的是"一条线占一条横向车道，谁跟谁平行"，

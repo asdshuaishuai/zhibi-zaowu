@@ -476,6 +476,28 @@ mod tests {
         d
     }
 
+    #[test]
+    fn capability_switches_default_to_on_for_old_configs() {
+        // 老 settings.json 里没有 webEnabled / subagentEnabled。
+        // serde 的 `default` 会走 AppSettings::default()——必须是"开"，
+        // 否则升级一次就把所有人的联网与子 agent 静默关掉。
+        let old = serde_json::json!({
+            "baseUrl": "http://x", "model": "m", "provider": "p"
+        });
+        let cfg: AppSettings = serde_json::from_value(old).unwrap();
+        assert!(cfg.web_enabled, "老配置缺键时必须默认允许联网");
+        assert!(cfg.subagent_enabled, "老配置缺键时必须默认允许子 agent");
+        assert_eq!(cfg.idle_recycle_min, 30);
+    }
+
+    #[test]
+    fn explicit_false_in_settings_is_respected() {
+        let v = serde_json::json!({ "webEnabled": false, "subagentEnabled": false });
+        let cfg: AppSettings = serde_json::from_value(v).unwrap();
+        assert!(!cfg.web_enabled, "作者显式关掉的不能被默认值盖回来");
+        assert!(!cfg.subagent_enabled);
+    }
+
     fn use_home(tag: &str) -> (PathBuf, MutexGuard<'static, ()>) {
         let guard = lock_home();
         let home = temp_home(tag);
@@ -2387,7 +2409,12 @@ impl ProjectHandle {
 
 /// 应用设置。字段只增不改名：旧 settings.json 里没有的键用默认值补齐，
 /// 已有的键保持，所以升级不会让作者丢配置。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// ⚠ Default 是手写的，不是 derive：`derive(Default)` 会把 bool 默认成 false，
+/// 于是「升级后旧 settings.json 没有 webEnabled 键 → 联网被静默关掉」。
+/// 开关类字段的默认值必须是"开"，否则新功能上线等于把所有老用户关在门外。
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     /// OpenAI 兼容端点（局域网/自建代理）；空 = 走 DeepSeek 官方路由。
@@ -2408,6 +2435,24 @@ pub struct AppSettings {
     pub subagent_enabled: bool,
     /// 空闲回收 DSH 进程的分钟数（0 = 不回收）。
     pub idle_recycle_min: u32,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            model: String::new(),
+            provider: String::new(),
+            reasoning_effort: String::new(),
+            max_tokens: 0,
+            writing_mode: String::new(),
+            daily_goal: 0,
+            // 能力开关默认开：老配置里没有这些键时不该被静默降级
+            web_enabled: true,
+            subagent_enabled: true,
+            idle_recycle_min: 30,
+        }
+    }
 }
 
 impl AppSettings {

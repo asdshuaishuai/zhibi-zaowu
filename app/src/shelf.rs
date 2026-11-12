@@ -416,8 +416,19 @@ impl Render for ShelfView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.books.len();
         let today_words: usize = self.books.iter().map(|b| b.today_words).sum();
-        let daily_goal: usize = 2500;
-        let today_ratio = (today_words as f32 / daily_goal as f32).min(1.);
+        // 每日目标读设置（0 = 不设目标）。硬编码 2500 会让作者在设置里改了也不生效，
+        // 是个"看起来能配、其实配不动"的陷阱。
+        let cfg = crate::store::load_settings();
+        let daily_goal: usize = if cfg.daily_goal == 0 {
+            0
+        } else {
+            cfg.daily_goal as usize
+        };
+        let today_ratio = if daily_goal == 0 {
+            0.
+        } else {
+            (today_words as f32 / daily_goal as f32).min(1.)
+        };
         let mut cards = Vec::new();
         for (i, b) in self.books.iter().enumerate() {
             let dir = b.dir.clone();
@@ -623,7 +634,14 @@ impl Render for ShelfView {
                                         div()
                                             .text_size(theme::FONT_TAG)
                                             .text_color(theme::FAINT())
-                                            .child(SharedString::from(format!("{count} 本书"))),
+                                            .child(SharedString::from(if daily_goal == 0 {
+                                                format!("{count} 本书")
+                                            } else {
+                                                format!(
+                                                    "目标 {} / {count} 本书",
+                                                    store::fmt_thousands(daily_goal)
+                                                )
+                                            })),
                                     ),
                             ),
                     ),

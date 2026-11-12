@@ -21,9 +21,9 @@ use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::Sizable;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, PathBuilder, Render, SharedString, StatefulInteractiveElement,
-    Styled, Window, canvas, div, point, px, relative,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, PathBuilder, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, point, px, relative,
 };
 
 use crate::store::ProjectHandle;
@@ -35,6 +35,14 @@ fn hsla(c: gpui_kit::Rgba) -> gpui_kit::Hsla {
 use crate::theme;
 use crate::worldline::layout::{bands, forks_at, segments, tracks, Band, Track};
 use crate::worldline::{Kind, Line, Store};
+
+/// 世界线的三种看法。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WlTab {
+    Timeline,
+    Tree,
+    Compare,
+}
 
 /// 世界线页的事件。写操作全部交给宿主，页面不碰磁盘。
 #[derive(Debug, Clone)]
@@ -61,6 +69,18 @@ pub enum WorldlineEvent {
     },
     /// 删一个节点
     NodeRemove { line: String, node: String },
+    /// 改线的名字 / 假设
+    UpdateMeta {
+        line: String,
+        name: Option<String>,
+        premise: Option<String>,
+    },
+    /// 加一条边
+    AddEdge { line: String, from: String, to: String, kind: String },
+    /// 删一条边
+    RemoveEdge { line: String, from: String, to: String, kind: String },
+    /// 切换边的暗线标记
+    ToggleEdgeHidden { line: String, from: String, to: String, kind: String },
     /// 把世界线节点挂到画布节点（双向弱引用的一半）
     LinkCanvas {
         line: String,
@@ -83,21 +103,60 @@ pub struct WorldlinePanel {
     /// 时间轴的可见章节范围（None = 自动：0 到 max(边界, 最后节点) + 余量）
     window: Option<(u32, u32)>,
     message: Option<SharedString>,
-    /// 「时间轴 / 对比」两个看法。时间轴回答"有哪些世界、从哪分叉"，
-    /// 对比回答"两条线具体差在哪"。两者都属于世界线，不该分页。
+    /// 世界线的三种看法。它们看的是同一份 worldlines.json，只是镜头不同：
+    /// - 时间轴：横轴=章节，固化段实线/开放段虚线（回答"确定到哪、之后有什么"）
+    /// - 世界树：纵轴=章节，按血缘长枝（回答"这些 if 是从谁身上分出来的"）
+    /// - 对比：两条线共同祖先之后差在哪
+    view: WlTab,
+    /// 对比模式的右线
     compare_with: Option<String>,
+    /// 树模式的钻取根（只看这棵子树）
+    drill: Option<String>,
+    /// 改名 / 改假设的输入框
+    ed_name: Entity<gpui_kit::component::input::InputState>,
+    ed_premise: Entity<gpui_kit::component::input::InputState>,
+    /// 折叠的轨道（作者线多了要收起来）
+    collapsed: std::collections::BTreeSet<String>,
 }
 
 impl WorldlinePanel {
-    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        let ed_name = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx).placeholder("线名")
+        });
+        let ed_premise = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("这个 if 说的是什么（一句话）")
+        });
         Self {
             focus_handle: cx.focus_handle(),
             handle,
             selected: None,
             window: None,
+            ed_name,
+            ed_premise,
+            collapsed: Default::default(),
             message: None,
+            view: WlTab::Timeline,
             compare_with: None,
+            drill: None,
         }
+    }
+
+    /// 切人时把名字/假设灌进输入框。
+    fn fill_meta(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let line = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.lines().into_iter().find(|l| &l.id == id));
+        let (name, premise) = match line {
+            Some(l) => (l.name, l.premise),
+            None => (String::new(), String::new()),
+        };
+        self.ed_name
+            .update(cx, |st, cx| st.set_value(&name, window, cx));
+        self.ed_premise
+            .update(cx, |st, cx| st.set_value(&premise, window, cx));
     }
 
     pub fn set_message(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -177,7 +236,9 @@ impl Render for WorldlinePanel {
         let span = (to_ch.saturating_sub(from_ch)).max(1);
 
         let tr = tracks(&lines, boundary);
-        let segs = segments(&tr, to_ch);
+        let mut segs = segments(&tr, to_ch);
+        // 折叠：收起的轨道只留固化段（开放段是"这条线还想干什么"，收起即不想看）
+        segs.retain(|sg| !self.collapsed.contains(&sg.track) || sg.fixed);
         let band_list = self.stage_bands();
 
         // —— 左：轨道列表 ——
@@ -196,9 +257,10 @@ impl Render for WorldlinePanel {
                     .gap(px(4.))
                     .cursor_pointer()
                     .when(on, |d| d.bg(theme::ACCENT_SOFT()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.selected = Some(pick.clone());
                         cx.emit(WorldlineEvent::Select(pick.clone()));
+                        this.fill_meta(window, cx);
                         cx.notify();
                     }))
                     .child(
@@ -225,6 +287,27 @@ impl Render for WorldlinePanel {
                             .text_color(theme::FAINT())
                             .child(t.kind.label()),
                     )
+                    .child({
+                        // 折叠：线多了要能收起来。收起后时间轴上只剩它的固化段。
+                        let cid = t.id.clone();
+                        let folded = self.collapsed.contains(&cid);
+                        div()
+                            .id(SharedString::from(format!("wlfold-{}", t.id)))
+                            .flex_shrink_0()
+                            .px(px(2.))
+                            .cursor_pointer()
+                            .text_size(px(9.))
+                            .text_color(theme::FAINT())
+                            .child(if folded { "▸" } else { "▾" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.collapsed.contains(&cid) {
+                                    this.collapsed.remove(&cid);
+                                } else {
+                                    this.collapsed.insert(cid.clone());
+                                }
+                                cx.notify();
+                            }))
+                    })
                     .into_any_element(),
             );
         }
@@ -516,6 +599,41 @@ impl Render for WorldlinePanel {
                             .text_color(theme::DIM())
                             .child(SharedString::from(kind_note)),
                     )
+                    // 名字与假设：AI 推演写的 premise 常常很糙，作者要能就地改
+                    .when(!l.is_base(), |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(field("线名", &self.ed_name))
+                                .child(field("假设", &self.ed_premise))
+                                .child(
+                                    Button::new("wl-save-meta")
+                                        .xsmall()
+                                        .label("保存名字与假设")
+                                        .on_click(
+                                        cx.listener({
+                                            let lid = l.id.clone();
+                                            move |this, _, _, cx| {
+                                                let name = if this.ed_name.read(cx).value().trim().is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(this.ed_name.read(cx).value().to_string())
+                                                };
+                                                cx.emit(WorldlineEvent::UpdateMeta {
+                                                    line: lid.clone(),
+                                                    name,
+                                                    premise: Some(
+                                                        this.ed_premise.read(cx).value().to_string(),
+                                                    ),
+                                                });
+                                            }
+                                        }),
+                                    ),
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .text_size(theme::FONT_MICRO)
@@ -727,6 +845,23 @@ impl Render for WorldlinePanel {
                                             })),
                                     )
                                     .child(
+                                        // 从这个节点起让 AI 接着推：交给预言书页（推演是那边的事）
+                                        div()
+                                            .id(SharedString::from(format!("wn-sim-{lid}-{nid}")))
+                                            .flex_shrink_0()
+                                            .cursor_pointer()
+                                            .px(px(2.))
+                                            .text_size(px(9.))
+                                            .text_color(theme::ACCENT())
+                                            .child("推演")
+                                            .on_click(cx.listener({
+                                                let lid = l.id.clone();
+                                                move |_t, _, _, cx| {
+                                                    cx.emit(WorldlineEvent::Simulate(lid.clone()));
+                                                }
+                                            })),
+                                    )
+                                    .child(
                                         div()
                                             .id(SharedString::from(format!("wn-del-{lid}-{nid}")))
                                             .flex_shrink_0()
@@ -763,6 +898,116 @@ impl Render for WorldlinePanel {
                                 .into_any_element(),
                         );
                         rows
+                    })
+                    // 边：这条线内部的因果连接。作者最常做的是标暗线。
+                    .child(
+                        div()
+                            .pt(theme::GAP_SM)
+                            .text_size(theme::FONT_MICRO)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::DIM())
+                            .child(SharedString::from(format!("因果边 · {}", l.edges.len()))),
+                    )
+                    .children({
+                        let lid = l.id.clone();
+                        let nodes = l.nodes.clone();
+                        let mut rows: Vec<gpui_kit::AnyElement> = l
+                            .edges
+                            .iter()
+                            .take(12)
+                            .map(|e| {
+                                let (f, t, k) = (e.from.clone(), e.to.clone(), e.kind.clone());
+                                let (f2, t2, k2) = (f.clone(), t.clone(), k.clone());
+                                let l1 = lid.clone();
+                                let l2 = lid.clone();
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(3.))
+                                    .py(px(1.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(if e.hidden { theme::PURPLE() } else { theme::DIM() })
+                                            .child(SharedString::from(format!(
+                                                "{} → {}",
+                                                e.from, e.to
+                                            ))),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(theme::FAINT())
+                                            .child(SharedString::from(if e.kind.is_empty() {
+                                                "influence".to_string()
+                                            } else {
+                                                e.kind.clone()
+                                            })),
+                                    )
+                                    .child(
+                                        // 明线/暗线：点一下切。暗线 = 读者还不知道的因果。
+                                        div()
+                                            .id(SharedString::from(format!("edge-h-{f}-{t}")))
+                                            .cursor_pointer()
+                                            .text_size(px(9.))
+                                            .text_color(if e.hidden { theme::PURPLE() } else { theme::FAINT() })
+                                            .child(if e.hidden { "暗" } else { "明" })
+                                            .on_click(cx.listener(move |_t, _, _, cx| {
+                                                cx.emit(WorldlineEvent::ToggleEdgeHidden {
+                                                    line: l1.clone(),
+                                                    from: f.clone(),
+                                                    to: t.clone(),
+                                                    kind: k.clone(),
+                                                });
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!("edge-x-{f2}-{t2}")))
+                                            .cursor_pointer()
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(theme::FAINT())
+                                            .child("×")
+                                            .on_click(cx.listener(move |_t, _, _, cx| {
+                                                cx.emit(WorldlineEvent::RemoveEdge {
+                                                    line: l2.clone(),
+                                                    from: f2.clone(),
+                                                    to: t2.clone(),
+                                                    kind: k2.clone(),
+                                                });
+                                            })),
+                                    )
+                                    .into_any_element()
+                            })
+                            .collect();
+                        // 加边：用最后两个节点当默认（最常见的连线是"接着往下走"）
+                        if nodes.len() >= 2 {
+                            let l3 = lid.clone();
+                            let a = nodes[nodes.len() - 2].id.clone();
+                            let b = nodes[nodes.len() - 1].id.clone();
+                            rows.push(
+                                div()
+                                    .id("edge-add")
+                                    .cursor_pointer()
+                                    .pt(px(2.))
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::ACCENT())
+                                    .child(SharedString::from(format!("＋ 连一条边（{a}→{b}）")))
+                                    .on_click(cx.listener(move |_t, _, _, cx| {
+                                        cx.emit(WorldlineEvent::AddEdge {
+                                            line: l3.clone(),
+                                            from: a.clone(),
+                                            to: b.clone(),
+                                            kind: "influence".into(),
+                                        });
+                                    }))
+                                    .into_any_element(),
+                            );
+                        }
+                        rows
                     });
             }
             None => {
@@ -778,7 +1023,271 @@ impl Render for WorldlinePanel {
         // 对比视图：选两条线，看共同祖先之后各自差在哪。
         // 对比属于世界线的第二种看法（时间轴回答"有哪些世界"，对比回答"差在哪"），
         // 所以不另开页，用页头的两个小页签切。
-        let compare_el: Option<gpui_kit::AnyElement> = self.compare_with.as_ref().map(|right| {
+        // —— 世界树：纵轴 = 章节，横轴按子树宽度分配 ——
+        //
+        // 与时间轴的分工：时间轴说"哪些章定了、之后有什么"，
+        // 树说"这些 if 是从谁身上分出来的"。血缘用 parentId，所以有环或
+        // 父节点不存在时会在 layout::tree 里被升成独立的树，不会消失。
+        let tree_el: Option<gpui_kit::AnyElement> = if self.view == WlTab::Tree {
+            // 钻取：只看某条线的子树
+            let scoped = match self.drill.as_ref() {
+                Some(r) => crate::worldline::layout::subtree(&lines, r),
+                None => lines.clone(),
+            };
+            let laid = crate::worldline::layout::tree(&scoped);
+            let drill = self.drill.clone();
+            let sel_t = self.selected.clone();
+            let pickable = lines.clone();
+            let tw = 640.0f32;
+            let th = 520.0f32;
+            let pad = 30.0f32;
+            let max_ch = laid.max_chapter.max(1);
+            let y_of = move |ch: u32| {
+                // 纵轴：第 1 章在底部，越往后越高（时间向上流）
+                let rel = ch.min(max_ch) as f32 / max_ch as f32;
+                th - pad - rel * (th - pad * 2.)
+            };
+            let nodes_c = laid.nodes.clone();
+            let slots = laid.slots.max(1.);
+            let tree_canvas = div()
+                .relative()
+                .w(px(tw))
+                .h(px(th))
+                .flex_shrink_0()
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            let ox = bounds.origin.x.as_f32();
+                            let oy = bounds.origin.y.as_f32();
+                            let p = |x: f32, y: f32| point(px(ox + x), px(oy + y));
+                            let x_of = |nx: f32| pad + nx.clamp(0., 1.) * (tw - pad * 2.);
+                            let blue = theme::BLUE();
+                            let green = theme::GREEN();
+                            let amber = theme::AMBER();
+                            let purple = theme::PURPLE();
+                            let faint = theme::FAINT();
+                            let line_c = theme::LINE();
+
+                            // 章节刻度
+                            let mut ch = 5u32;
+                            while ch <= max_ch {
+                                let y = y_of(ch);
+                                let mut t = PathBuilder::stroke(px(1.));
+                                t.move_to(p(pad * 0.4, y));
+                                t.line_to(p(tw - pad * 0.4, y));
+                                if let Ok(path) = t.build() {
+                                    window.paint_path(path, hsla(line_c).opacity(0.35));
+                                }
+                                ch += 5;
+                            }
+
+                            // 枝 + 分叉点 + 节点果
+                            for n in nodes_c.iter() {
+                                let x = x_of(n.depth as f32 * 0.10 + n.x * 0.80);
+                                let y_fork = y_of(n.fork_chapter);
+                                let y_end = y_of(n.end_chapter);
+                                let c = if n.id == "α" || n.depth == 0 {
+                                    blue
+                                } else if n.archived {
+                                    faint
+                                } else if n.forecast {
+                                    amber
+                                } else {
+                                    purple
+                                };
+                                let on = sel_t.as_deref() == Some(n.id.as_str());
+                                let c = if on { theme::ACCENT() } else { c };
+
+                                // 枝：从父节点的 x 弯到自己的 x
+                                if let Some(pid) = &n.parent {
+                                    if let Some(par) = nodes_c.iter().find(|p2| &p2.id == pid) {
+                                        let px0 = x_of(par.depth as f32 * 0.10 + par.x * 0.80);
+                                        let y0 = y_of(par.fork_chapter);
+                                        let mut b = PathBuilder::stroke(px(if on { 2.2 } else { 1.6 }));
+                                        if n.archived {
+                                            b = b.dash_array(&[px(3.), px(3.)]);
+                                        }
+                                        b.move_to(p(px0, y0));
+                                        b.cubic_bezier_to(
+                                            p(px0, y0 - 18.),
+                                            p(x, y_end + 18.),
+                                            p(x, y_end),
+                                        );
+                                        if let Ok(path) = b.build() {
+                                            window.paint_path(
+                                                path,
+                                                hsla(c).opacity(if n.archived { 0.4 } else { 0.9 }),
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // 主干：从分叉点到末端
+                                let mut tr = PathBuilder::stroke(px(if on { 3.0 } else { 2.2 }));
+                                tr.move_to(p(x, y_fork));
+                                tr.line_to(p(x, y_end));
+                                if let Ok(path) = tr.build() {
+                                    window.paint_path(path, hsla(c).opacity(0.85));
+                                }
+
+                                // 分叉点
+                                let r = 3.0;
+                                let k = 0.5523 * r;
+                                let mut d = PathBuilder::fill();
+                                d.move_to(p(x + r, y_fork));
+                                d.cubic_bezier_to(p(x + r, y_fork + k), p(x + k, y_fork + r), p(x, y_fork + r));
+                                d.cubic_bezier_to(p(x - k, y_fork + r), p(x - r, y_fork + k), p(x - r, y_fork));
+                                d.cubic_bezier_to(p(x - r, y_fork - k), p(x - k, y_fork - r), p(x, y_fork - r));
+                                d.cubic_bezier_to(p(x + k, y_fork - r), p(x + r, y_fork - k), p(x + r, y_fork));
+                                if let Ok(path) = d.build() {
+                                    window.paint_path(path, hsla(c));
+                                }
+                                // 果：这一版的节点数
+                                let m = n.node_count.min(6);
+                                for k2 in 0..m {
+                                    let t0 = if m > 1 {
+                                        k2 as f32 / (m as f32 - 1.)
+                                    } else {
+                                        0.5
+                                    };
+                                    let fy = y_fork - (y_fork - y_end) * t0;
+                                    if let Ok(path) = {
+                                        let mut g = PathBuilder::fill();
+                                        let rr = 1.8;
+                                        let kk = 0.5523 * rr;
+                                        let _ = kk;
+                                        g.move_to(p(x + rr, fy));
+                                        g.cubic_bezier_to(p(x + rr, fy + kk), p(x + kk, fy + rr), p(x, fy + rr));
+                                        g.cubic_bezier_to(p(x - kk, fy + rr), p(x - rr, fy + kk), p(x - rr, fy));
+                                        g.cubic_bezier_to(p(x - rr, fy - kk), p(x - kk, fy - rr), p(x, fy - rr));
+                                        g.cubic_bezier_to(p(x + kk, fy - rr), p(x + rr, fy - kk), p(x + rr, fy));
+                                        g.build()
+                                    } {
+                                        window.paint_path(path, hsla(green).opacity(0.6));
+                                    }
+                                }
+                            }
+                            let _ = slots;
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                // 枝梢标签（可点：选中 / 双击钻取）
+                .children(laid.nodes.iter().map(|n| {
+                    let x = pad + (n.depth as f32 * 0.10 + n.x * 0.80).clamp(0., 1.) * (tw - pad * 2.);
+                    let y = y_of(n.end_chapter);
+                    let id = n.id.clone();
+                    let id2 = n.id.clone();
+                    let on = self.selected.as_deref() == Some(n.id.as_str());
+                    div()
+                        .id(SharedString::from(format!("tree-node-{}", n.id)))
+                        .absolute()
+                        .left(px(x - 26.))
+                        .top(px(y - 14.))
+                        .w(px(52.))
+                        .text_center()
+                        .cursor_pointer()
+                        .text_size(px(9.))
+                        .font_family(theme::FAMILY_MONO)
+                        .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                        .child(SharedString::from(n.id.clone()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.selected = Some(id.clone());
+                            // 再点一次同一节点 = 钻取进它的子树
+                            this.drill = if this.drill.as_deref() == Some(id2.as_str()) {
+                                None
+                            } else {
+                                Some(id2.clone())
+                            };
+                            cx.notify();
+                        }))
+                }));
+
+            let col = div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .gap(theme::GAP_SM)
+                .p(theme::PAD_MD)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("钻取"),
+                        )
+                        .child({
+                            let on = drill.is_none();
+                            div()
+                                .id("drill-all")
+                                .px(px(7.))
+                                .py(px(2.))
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                                .cursor_pointer()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                                .child("全部")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.drill = None;
+                                    cx.notify();
+                                }))
+                        })
+                        .children(pickable.iter().map(|l| {
+                            let id = l.id.clone();
+                            let on = drill.as_deref() == Some(l.id.as_str());
+                            div()
+                                .id(SharedString::from(format!("drill-{}", l.id)))
+                                .px(px(7.))
+                                .py(px(2.))
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                                .cursor_pointer()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                                .child(SharedString::from(l.id.clone()))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.drill = Some(id.clone());
+                                    this.selected = Some(id.clone());
+                                    cx.notify();
+                                }))
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .child(div().flex_1().min_w_0().overflow_hidden().child(tree_canvas)),
+                )
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::FAINT())
+                        .child(SharedString::from(format!(
+                            "纵轴 = 章节（第 1 章在下，{} 在上）· 横轴按子树宽度分配 · 点枝梢名可钻取",
+                            max_ch
+                        ))),
+                );
+            Some(col.into_any_element())
+        } else {
+            None
+        };
+
+        let compare_el: Option<gpui_kit::AnyElement> = if self.view == WlTab::Compare {
+            self.compare_with.as_ref().map(|right| {
             let left = self
                 .selected
                 .clone()
@@ -934,7 +1443,10 @@ impl Render for WorldlinePanel {
                         .child(conflict_el),
                 )
                 .into_any_element()
-        });
+            })
+        } else {
+            None
+        };
 
         div()
             .size_full()
@@ -989,26 +1501,26 @@ impl Render for WorldlinePanel {
                                     .py(px(3.))
                                     .rounded(px(6.))
                                     .border_1()
-                                    .border_color(if self.compare_with.is_none() {
+                                    .border_color(if self.view == WlTab::Timeline {
                                         theme::ACCENT_BORDER()
                                     } else {
                                         theme::LINE()
                                     })
-                                    .bg(if self.compare_with.is_none() {
+                                    .bg(if self.view == WlTab::Timeline {
                                         theme::ACCENT_SOFT()
                                     } else {
                                         theme::PANEL2()
                                     })
                                     .cursor_pointer()
                                     .text_size(theme::FONT_MICRO)
-                                    .text_color(if self.compare_with.is_none() {
+                                    .text_color(if self.view == WlTab::Timeline {
                                         theme::ACCENT()
                                     } else {
                                         theme::DIM()
                                     })
                                     .child("时间轴")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.compare_with = None;
+                                        this.view = WlTab::Timeline;
                                         cx.notify();
                                     })),
                             )
@@ -1019,19 +1531,49 @@ impl Render for WorldlinePanel {
                                     .py(px(3.))
                                     .rounded(px(6.))
                                     .border_1()
-                                    .border_color(if self.compare_with.is_some() {
+                                    .border_color(if self.view == WlTab::Tree {
                                         theme::ACCENT_BORDER()
                                     } else {
                                         theme::LINE()
                                     })
-                                    .bg(if self.compare_with.is_some() {
+                                    .bg(if self.view == WlTab::Tree {
                                         theme::ACCENT_SOFT()
                                     } else {
                                         theme::PANEL2()
                                     })
                                     .cursor_pointer()
                                     .text_size(theme::FONT_MICRO)
-                                    .text_color(if self.compare_with.is_some() {
+                                    .text_color(if self.view == WlTab::Tree {
+                                        theme::ACCENT()
+                                    } else {
+                                        theme::DIM()
+                                    })
+                                    .child("世界树")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.view = WlTab::Tree;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("wl-tab-cmp")
+                                    .px(px(9.))
+                                    .py(px(3.))
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(if self.view == WlTab::Compare {
+                                        theme::ACCENT_BORDER()
+                                    } else {
+                                        theme::LINE()
+                                    })
+                                    .bg(if self.view == WlTab::Compare {
+                                        theme::ACCENT_SOFT()
+                                    } else {
+                                        theme::PANEL2()
+                                    })
+                                    .cursor_pointer()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(if self.view == WlTab::Compare {
                                         theme::ACCENT()
                                     } else {
                                         theme::DIM()
@@ -1042,13 +1584,15 @@ impl Render for WorldlinePanel {
                                         if this.compare_with.is_none() {
                                             this.compare_with = Some("α".into());
                                         }
+                                        this.view = WlTab::Compare;
                                         cx.notify();
                                     })),
                             ),
                     ),
             )
             .when_some(compare_el, |d, cmp| d.child(cmp))
-            .when(self.compare_with.is_none(), |d| {
+            .when_some(tree_el, |d, t| d.child(t))
+            .when(self.view == WlTab::Timeline, |d| {
                 d.child(div()
                     .flex_1()
                     .min_h_0()
@@ -1108,6 +1652,23 @@ impl ComponentPanel for WorldlinePanel {
             .text_color(theme::TEXT())
             .child("世界线 · 时间轴")
     }
+}
+
+/// 一个带标题的输入框。与 views.rs 里同名函数同形状——
+/// 各面板各有一份是因为 views 里的那个是私有的，而这里只需要这一个形状。
+fn field(label: &str, state: &Entity<gpui_kit::component::input::InputState>) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(1.))
+        .child(
+            div()
+                .text_size(theme::FONT_MICRO)
+                .text_color(theme::FAINT())
+                .child(SharedString::from(label.to_string())),
+        )
+        .child(gpui_kit::component::input::Input::new(state))
+        .into_any_element()
 }
 
 fn track_color(t: &Track) -> gpui_kit::Rgba {

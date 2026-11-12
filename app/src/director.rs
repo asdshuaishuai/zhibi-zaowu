@@ -442,7 +442,9 @@ impl Render for DirectorPanel {
                         div().text_color(theme::FAINT()).child(SharedString::from(theme_name)),
                     )
                 }),
-                            None => div().text_color(theme::LINE()).child("—"),
+                            // 没归幕的章：这里只提示，不新做一套编辑器——
+                            // 幕的增删改在大纲页（那里能看到全部幕的章节区间）。
+                            None => div().text_color(theme::LINE()).child("— 未归幕"),
                         }),
                 )
                 .child(

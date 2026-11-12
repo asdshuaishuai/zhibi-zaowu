@@ -107,6 +107,36 @@ pub const SELECTION_BUTTONS: &[(&str, &str)] = &[
     ("去AI味", "deslop"),
 ];
 
+/// 内置专属 Agent 的清单（id, 中文名, 一句话职责）。
+///
+/// 与 `dsh::zhibi_presets()` 的 id 一一对应。放这里是因为：
+/// 触发语要按 id 生成，而 prompts 不该依赖 dsh 模块的内部结构。
+pub const AGENT_PRESETS: &[(&str, &str, &str)] = &[
+    ("character", "人物", "人物档案、补全、合并建议、弧线"),
+    ("relations", "关系", "关系梳理、章节区间、读者可见性"),
+    ("worldline", "世界线", "剧情时间轴、if 分叉、因果推演"),
+    ("oracle", "预言", "按大纲预测后续、影响面分析"),
+    ("outline", "大纲伏笔", "大纲对账、伏笔盘点、设定归类"),
+    ("reviewer", "校审", "连续性审查、客观错误、去 AI 味"),
+];
+
+/// 作者直接对着某个专属 Agent 说话时的触发语。
+///
+/// 为什么走文本前缀而不是另开一个会话：DSH 的 sdk 协议没有"指定 agentPreset 发一条消息"
+/// 的方法——子 agent 只能由主 agent 通过 subagent 工具派。所以这里让主 Agent
+/// 无条件把这条任务转给指定的子 Agent，作者体验上等于"直接对它说"。
+pub fn direct_agent_task(agent: &str, text: &str) -> String {
+    let label = AGENT_PRESETS
+        .iter()
+        .find(|(id, _, _)| *id == agent)
+        .map(|(_, label, _)| *label)
+        .unwrap_or(agent);
+    format!(
+        "把下面这件事交给「{label}」子 Agent 做（用 subagent，agentPreset={agent}）。\
+         你自己不要直接动手，也不要改派给别人。等它返回后，用一段话转述它的结论。\n\n{text}"
+    )
+}
+
 /// 预言书推演任务书（M7）：全程走 novel-pack 的世界线沙盒工具链，绝不碰正典。
 pub fn oracle_task(premise: &str, fork: u32) -> String {
     format!(
@@ -177,6 +207,30 @@ mod tests {
         let ins = selection_instruction("rewrite", original);
         assert!(ins.contains(original), "原文必须原样给到模型");
         assert!(ins.contains("zhibi-rewrite"));
+    }
+
+    #[test]
+    fn direct_agent_task_names_the_preset_and_forbids_improvising() {
+        let t = direct_agent_task("relations", "理一下第 12 章谁跟谁什么关系");
+        assert!(t.contains("agentPreset=relations"), "必须点明派给哪个 preset");
+        assert!(t.contains("关系"), "要用中文名，模型才认得出");
+        assert!(t.contains("不要直接动手"), "要明确禁止主 Agent 自己干");
+        assert!(t.contains("理一下第 12 章"), "作者原话要原样带上");
+    }
+
+    #[test]
+    fn every_agent_preset_has_a_label() {
+        // 界面上的选择器直接读这张表；缺 label 会显示空按钮
+        for (id, label, duty) in AGENT_PRESETS {
+            assert!(!id.is_empty());
+            assert!(!label.is_empty(), "{id} 缺中文名");
+            assert!(!duty.is_empty(), "{id} 缺职责说明");
+        }
+        // 与 dsh 的 preset 清单必须对得上，否则派活会被拒绝
+        let dsh_ids: Vec<&str> = crate::dsh::zhibi_presets().iter().map(|p| p.id).collect();
+        for (id, _, _) in AGENT_PRESETS {
+            assert!(dsh_ids.contains(id), "{id} 不在 dsh 的 preset 清单里");
+        }
     }
 
     #[test]

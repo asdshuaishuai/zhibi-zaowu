@@ -324,6 +324,128 @@ mod tests {
         p
     }
 
+    fn ai() -> Actor {
+        Actor::Ai { mode: "ghostwrite".into(), agent: "book".into() }
+    }
+
+    #[test]
+    fn chapter_of_path_reads_the_dir_name() {
+        assert_eq!(chapter_of_path("chapters/ch-012/prose.md"), Some(12));
+        assert_eq!(chapter_of_path("chapters/ch-003/ai-marks.json"), Some(3));
+        // 不是正文目录的路径不该被误判
+        assert_eq!(chapter_of_path("clues.json"), None);
+        assert_eq!(chapter_of_path("chapters/notes.txt"), None);
+    }
+
+    #[test]
+    fn breach_is_detected_when_ai_writes_an_unauthorized_chapter() {
+        let root = tmp_book("breach");
+        std::fs::create_dir_all(root.join("chapters").join("ch-003")).unwrap();
+        let j = Journal::new(&root);
+        // 代笔档，只授权了第 5 章
+        let mut auth = BookAuth { writing_mode: "ghostwrite".into(), ghostwrite_chapters: vec![5] };
+        let _ = &mut auth;
+
+        // AI 改了第 3 章（未授权）
+        j.record(&root, "chapters/ch-003/prose.md", "旧", "新", &ai(), "save", "b1", "")
+            .unwrap();
+        let breaches = find_breaches(&root, &auth, 100);
+        assert_eq!(breaches.len(), 1);
+        assert_eq!(breaches[0].chapter, 3);
+
+        // 授权章不算越界
+        j.record(&root, "chapters/ch-005/prose.md", "旧", "新", &ai(), "save", "b1", "")
+            .unwrap();
+        assert_eq!(find_breaches(&root, &auth, 100).len(), 1, "授权的章不该报越界");
+
+        // 作者自己改也不算
+        j.record(
+            &root,
+            "chapters/ch-007/prose.md",
+            "旧",
+            "新",
+            &Actor::Author,
+            "save",
+            "b9",
+            "",
+        )
+        .unwrap();
+        assert_eq!(find_breaches(&root, &auth, 100).len(), 1, "作者自己的改动不是越界");
+    }
+
+    #[test]
+    fn assist_and_cowrite_modes_treat_every_prose_write_as_a_breach() {
+        let root = tmp_book("breachmodes");
+        std::fs::create_dir_all(root.join("chapters").join("ch-002")).unwrap();
+        let j = Journal::new(&root);
+        j.record(&root, "chapters/ch-002/prose.md", "a", "b", &ai(), "save", "b1", "")
+            .unwrap();
+
+        for mode in ["assist", "cowrite"] {
+            // 这两个档位即使 ghostwrite_chapters 里写着也不行（档位优先）
+            let auth = BookAuth {
+                writing_mode: mode.into(),
+                ghostwrite_chapters: vec![2],
+            };
+            assert_eq!(
+                find_breaches(&root, &auth, 100).len(),
+                1,
+                "{mode} 档下 AI 写正文一律越界"
+            );
+        }
+    }
+
+    #[test]
+    fn reverting_breaches_restores_the_author_text() {
+        let root = tmp_book("breachrevert");
+        std::fs::create_dir_all(root.join("chapters").join("ch-004")).unwrap();
+        let path = root.join("chapters").join("ch-004").join("prose.md");
+        std::fs::write(&path, "作者原文").unwrap();
+
+        let j = Journal::new(&root);
+        let before = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, "AI 擅自改的").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        j.record(&root, "chapters/ch-004/prose.md", &before, &after, &ai(), "save", "b1", "")
+            .unwrap();
+
+        let auth = BookAuth { writing_mode: "assist".into(), ghostwrite_chapters: vec![] };
+        let breaches = find_breaches(&root, &auth, 100);
+        let (ok, errs) = revert_breaches(&root, &breaches);
+        assert_eq!(ok, 1);
+        assert!(errs.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "作者原文",
+            "越界改动要被撤回到作者原文"
+        );
+    }
+
+    #[test]
+    fn revert_refuses_to_clobber_the_authors_own_edit() {
+        let root = tmp_book("breachconflict");
+        std::fs::create_dir_all(root.join("chapters").join("ch-006")).unwrap();
+        let path = root.join("chapters").join("ch-006").join("prose.md");
+        std::fs::write(&path, "原文").unwrap();
+
+        let j = Journal::new(&root);
+        j.record(&root, "chapters/ch-006/prose.md", "原文", "AI 改的", &ai(), "save", "b1", "")
+            .unwrap();
+        // 文件被作者又改过（与日志里的 after 对不上）
+        std::fs::write(&path, "作者后来手改的").unwrap();
+
+        let auth = BookAuth { writing_mode: "assist".into(), ghostwrite_chapters: vec![] };
+        let breaches = find_breaches(&root, &auth, 100);
+        let (ok, errs) = revert_breaches(&root, &breaches);
+        assert_eq!(ok, 0, "内容对不上时不能强撤");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "作者后来手改的",
+            "作者的手改必须保住"
+        );
+    }
+
     fn write(root: &Path, rel: &str, text: &str) {
         let p = root.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -437,6 +559,81 @@ mod tests {
         let blobs: Vec<_> = std::fs::read_dir(root.join("journal/blobs")).unwrap().collect();
         assert_eq!(blobs.len(), 1, "相同内容只应存一份前像");
     }
+}
+
+/// 一次越界：AI 改了没有代笔授权的章。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Breach {
+    /// 批次号（一次回合/一次采纳）
+    pub batch: String,
+    /// 越界的章号
+    pub chapter: u32,
+    /// 涉及的文件
+    pub path: String,
+    /// 这些改动是哪些 change id（撤销时用）
+    pub change_ids: Vec<String>,
+}
+
+/// 从 `chapters/ch-NNN/prose.md` 这种路径里取出章号。
+pub fn chapter_of_path(path: &str) -> Option<u32> {
+    let dir = path.split('/').find(|seg| seg.starts_with("ch-"))?;
+    let digits: String = dir
+        .strip_prefix("ch-")?
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// 扫最近的改动，找出 AI 越界改正文的批次。
+///
+/// 为什么需要"事后"检查：事前有 `write-policy.ts` 拦工具调用，但 AI 也可能
+/// 绕过 novel-pack 的工具直接写文件（它有 bash/fs）。事前拦不住的时候，
+/// 事后必须能发现——否则"代笔授权"只是一个君子协定。
+///
+/// 判定：AI 改过 `chapters/ch-NNN/prose.md`，而第 NNN 章不在代笔授权里。
+pub fn find_breaches(book_root: &Path, auth: &BookAuth, limit: usize) -> Vec<Breach> {
+    let journal = Journal::new(book_root);
+    let mut out: Vec<Breach> = Vec::new();
+    for c in journal.all().into_iter().take(limit) {
+        // 只看 AI 干的
+        if !matches!(c.actor, Actor::Ai { .. }) {
+            continue;
+        }
+        let Some(ch) = chapter_of_path(&c.path) else { continue };
+        if auth.may_ghostwrite(ch) {
+            continue;
+        }
+        match out.iter_mut().find(|b| b.batch == c.batch && b.chapter == ch) {
+            Some(b) => b.change_ids.push(c.id),
+            None => out.push(Breach {
+                batch: c.batch.clone(),
+                chapter: ch,
+                path: c.path.clone(),
+                change_ids: vec![c.id],
+            }),
+        }
+    }
+    out
+}
+
+/// 撤销所有越界改动（同批次内倒序：同一文件多次改动必须先撤最后一次）。
+pub fn revert_breaches(book_root: &Path, breaches: &[Breach]) -> (usize, Vec<String>) {
+    let journal = Journal::new(book_root);
+    let mut ok = 0usize;
+    let mut errs: Vec<String> = Vec::new();
+    for b in breaches {
+        for id in b.change_ids.iter().rev() {
+            match journal.undo(book_root, id) {
+                Ok(UndoOutcome::Restored) | Ok(UndoOutcome::Removed) => ok += 1,
+                Ok(UndoOutcome::Conflict { .. }) => {
+                    errs.push(format!("第{}章：作者中途改过，未强撤", b.chapter))
+                }
+                Err(e) => errs.push(format!("第{}章：{e}", b.chapter)),
+            }
+        }
+    }
+    (ok, errs)
 }
 
 /// 正文里“有 AI 参与”的段落标记。
@@ -658,6 +855,11 @@ impl BookAuth {
 
     pub fn mode(&self) -> WritingMode {
         WritingMode::from_key(&self.writing_mode)
+    }
+
+    /// 这一章有没有代笔授权（辅助/共写档一律没有）。
+    pub fn may_ghostwrite(&self, chapter: u32) -> bool {
+        self.mode() == WritingMode::Ghostwrite && self.ghostwrite_chapters.contains(&chapter)
     }
 
     /// 切换档位。切回辅助时清掉代笔授权——降级要清权限，不能留着“以后再用”。

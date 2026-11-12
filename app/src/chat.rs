@@ -18,7 +18,12 @@ use crate::theme;
 
 #[derive(Debug, Clone)]
 pub enum ChatEvent {
-    Send(String),
+    /// 发一条消息。`target` = None 时发给主 Agent（默认），
+    /// Some(id) 时让主 Agent 转给对应专属 Agent。
+    SendTo {
+        text: String,
+        target: Option<&'static str>,
+    },
 }
 
 #[derive(Clone)]
@@ -34,6 +39,12 @@ pub struct ChatPanel {
     input: Entity<InputState>,
     busy: bool,
     scroll: ScrollHandle,
+    /// 「对谁说」：None = 主 Agent（默认）；Some(id) = 转给对应专属 Agent。
+    ///
+    /// 为什么做成选择器而不是另开窗口：DSH 的 sdk 协议没有"直接给某个 preset
+    /// 发消息"的方法，子 agent 只能由主 agent 派。所以这里的做法是让主 Agent
+    /// 无条件转交——作者体验上等价于"直接对它说"，实现上仍走官方路径。
+    target: Option<&'static str>,
 }
 
 impl ChatPanel {
@@ -41,7 +52,14 @@ impl ChatPanel {
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("问点什么（可读全书，产出仍只提案）…")
         });
-        Self { focus_handle: cx.focus_handle(), log: Vec::new(), input, busy: false, scroll: ScrollHandle::new() }
+        Self {
+            focus_handle: cx.focus_handle(),
+            log: Vec::new(),
+            input,
+            busy: false,
+            scroll: ScrollHandle::new(),
+            target: None,
+        }
     }
 
     pub fn push(&mut self, msg: ChatMsg, cx: &mut Context<Self>) {
@@ -175,16 +193,70 @@ impl Render for ChatPanel {
             }
         }
 
+        // 「对谁说」：主 Agent（默认）或某个专属 Agent。
+        // 作者说"让关系 Agent 理一下"时不用解释，点一下就行。
+        let mut target_bar = div().flex().items_center().flex_wrap().gap(px(3.)).px(px(6.)).pt(px(4.));
+        target_bar = target_bar.child(
+            div()
+                .text_size(px(9.))
+                .text_color(theme::FAINT())
+                .child("对谁说"),
+        );
+        {
+            let on = self.target.is_none();
+            let cur = self.target;
+            target_bar = target_bar.child(
+                div()
+                    .id("chat-t-main")
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                    .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                    .cursor_pointer()
+                    .text_size(px(9.))
+                    .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                    .child("主 Agent")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let _ = cur;
+                        this.target = None;
+                        cx.notify();
+                    })),
+            );
+        }
+        for (id, label, _) in crate::prompts::AGENT_PRESETS {
+            let on = self.target == Some(*id);
+            target_bar = target_bar.child(
+                div()
+                    .id(SharedString::from(format!("chat-t-{id}")))
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                    .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                    .cursor_pointer()
+                    .text_size(px(9.))
+                    .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                    .child(SharedString::from(*label))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.target = Some(*id);
+                        cx.notify();
+                    })),
+            );
+        }
+
         let send = Button::new("chat-send")
             .primary()
             .xsmall()
             .label(if busy { "思考中…" } else { "发送" })
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(|this, _, _, cx| {
                 let text = this.input.read(cx).value().to_string();
                 if text.trim().is_empty() {
                     return;
                 }
-                cx.emit(ChatEvent::Send(text));
+                cx.emit(ChatEvent::SendTo { text, target: this.target });
             }));
 
         div()
@@ -213,15 +285,21 @@ impl Render for ChatPanel {
                 div()
                     .flex_shrink_0()
                     .flex()
-                    .items_center()
-                    .gap(theme::GAP_SM)
-                    .px(theme::PAD_MD)
-                    .py(theme::GAP_SM)
+                    .flex_col()
                     .border_t_1()
                     .border_color(theme::LINE())
                     .bg(theme::PANEL())
-                    .child(div().flex_1().min_w_0().child(Input::new(&input)))
-                    .child(send),
+                    .child(target_bar)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_SM)
+                            .px(theme::PAD_MD)
+                            .pb(theme::GAP_SM)
+                            .child(div().flex_1().min_w_0().child(Input::new(&input)))
+                            .child(send),
+                    ),
             )
     }
 }
