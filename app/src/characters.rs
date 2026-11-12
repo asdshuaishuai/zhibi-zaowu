@@ -78,6 +78,20 @@ pub struct Character {
     pub locked_fields: Vec<String>,
     #[serde(default)]
     pub notes: String,
+    /// 卡背：这个角色的核心剧情（作者手写的一句话或一小段）。
+    ///
+    /// 与 `arc` 的区别：arc 是"第几章变成什么样"的时间序列，给对账用；
+    /// 这一条是"这个人在故事里到底承担了什么"——翻卡时看到的那段。
+    /// 没有它，卡背就只能显示弧线列表，那不是"核心剧情"。
+    #[serde(default)]
+    pub core_story: String,
+    /// 是否 NPC / 路人：信息可以不完整，但**仍然要有一张卡**。
+    ///
+    /// 为什么要这个字段：作者说"所有角色都要有卡，包括路人甲，
+    /// 只是角色信息可能比较落后"。用这个标记区分"主要角色"与"过场角色"，
+    /// 卡面视觉上降权（细边、淡题签），但功能一样（能写、能翻、能被 AI 补全）。
+    #[serde(default)]
+    pub minor: bool,
 }
 
 impl Character {
@@ -119,7 +133,7 @@ impl Character {
         macro_rules! fill {
             ($($f:ident),*) => { $( if self.$f.trim().is_empty() && !other.$f.trim().is_empty() { self.$f = other.$f.clone(); } )* };
         }
-        fill!(role, faction, age, appearance, personality, motivation, background, voice, status, notes);
+        fill!(role, faction, age, appearance, personality, motivation, background, voice, status, notes, core_story);
         for g in &other.goals {
             if !self.goals.iter().any(|x| x == g) {
                 self.goals.push(g.clone());
@@ -399,6 +413,59 @@ mod tests {
         r.save(&[c]).unwrap();
         assert!(r.find("砚哥").is_some(), "别名也要能找人");
         assert!(r.find("不存在").is_none());
+    }
+
+    #[test]
+    fn core_story_survives_merge_and_is_independent_of_arc() {
+        let mut a = Character::new("沈砚");
+        a.core_story = "全书的主轴：他从复仇者变成守灯人。".into();
+        a.arc.push(ArcPoint {
+            chapter: 12,
+            state: "得知师兄假死".into(),
+            note: String::new(),
+        });
+        let mut b = Character::new("沈砚");
+        // 被合并者也有核心剧情：不覆盖已有（作者手写优先）
+        b.core_story = "另一版说法".into();
+        a.absorb(&b);
+        assert_eq!(a.core_story, "全书的主轴：他从复仇者变成守灯人。");
+        // 核心剧情与弧线是两件事：合并核心剧情不该动弧线
+        assert_eq!(a.arc.len(), 1);
+    }
+
+    #[test]
+    fn minor_characters_round_trip() {
+        let root = book("minor");
+        let r = Roster::new(&root);
+        let mut npc = Character::new("酒肆掌柜");
+        npc.minor = true;
+        npc.role = "路人".into();
+        // 路人卡可以几乎什么都没有——但必须能存能读
+        r.upsert(npc).unwrap();
+        let all = r.all();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].minor, "过场标记要落盘");
+        assert_eq!(all[0].name, "酒肆掌柜");
+        assert!(all[0].core_story.is_empty(), "路人卡允许信息不全");
+    }
+
+    #[test]
+    fn every_person_can_have_a_card_including_minor_roles() {
+        // 作者的要求：所有角色都要有卡，包括路人甲，只是信息可能落后。
+        // 这里验的是"同一套模型、同一个文件、同样的读写"，不区分主要/过场。
+        let root = book("allcards");
+        let r = Roster::new(&root);
+        let mut lead = Character::new("沈砚");
+        lead.core_story = "主线".into();
+        let mut npc = Character::new("更夫");
+        npc.minor = true;
+        r.upsert(lead).unwrap();
+        r.upsert(npc).unwrap();
+        let all = r.all();
+        assert_eq!(all.len(), 2, "主角与路人都在这一个 roster 里");
+        // 都能按名字找到（find 不区分 minor）
+        assert!(r.find("沈砚").is_some());
+        assert!(r.find("更夫").is_some());
     }
 
     #[test]
