@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# 一次性 vendor 运行时：把 dsh（含全部依赖）与 Node 二进制复制到 .vendor/，
-# 之后构建直接把两者打进 .app，不再联网、不再依赖全局 npm。
+# 准备执笔的 DSH 基础运行环境：Node 二进制 + zhibi-runtime（只装 dsh sdk 闭包）。
 #
 # 用法：scripts/vendor_runtime.sh [--force]
-# 产物（.vendor/ 已 gitignore，体积约 1GB，不适合入库）：
-#   .vendor/node/bin/node    与 dsh 匹配的 Node（>=24.9）
-#   .vendor/dsh/             @deepseek-ai/dsh 完整安装（lib + node_modules）
+# 产物（均 gitignore，不入库）：
+#   .vendor/node/bin/node          与 DSH 匹配的 Node（>=24.9）
+#   .vendor/dsh-runtime/           zhibi-runtime 的安装产物（node_modules + 官方 lib）
+#
+# 与旧版区别：不再复制全局 @deepseek-ai/dsh 整包（758MB，含 web/桌面端 bundle），
+# 改为安装 runtime/zhibi-runtime 声明的依赖（约 274MB，不含 web-frontend / client-ui-* /
+# acp / experimental-*），并把官方 lib/*.js 原样拷入。DSH 版本号只在
+# runtime/zhibi-runtime/package.json 里维护一处，升级时只改那里。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENDOR="$ROOT/.vendor"
+RUNTIME_SRC="$ROOT/runtime/zhibi-runtime"
+RUNTIME_OUT="$VENDOR/dsh-runtime"
 NODE_VERSION="24.22.2"
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
+
 mkdir -p "$VENDOR"
 
 # ── 1. Node 运行时（优先本机 nvm，其次 nodejs.org 下载一次）──
@@ -33,29 +40,40 @@ if [ "$FORCE" = 1 ] || [ ! -x "$VENDOR/node/bin/node" ]; then
   chmod +x "$VENDOR/node/bin/node"
 fi
 
-# ── 2. dsh：从本机全局安装复制（无网络）；找不到才提示先装 ──
-if [ "$FORCE" = 1 ] || [ ! -f "$VENDOR/dsh/lib/bin.js" ]; then
-  SRC=""
-  for d in "$HOME"/.nvm/versions/node/*/lib/node_modules/@deepseek-ai/dsh \
-           /usr/local/lib/node_modules/@deepseek-ai/dsh \
-           /opt/homebrew/lib/node_modules/@deepseek-ai/dsh; do
-    [ -f "$d/lib/bin.js" ] && SRC="$d" && break
-  done
-  if [ -z "$SRC" ]; then
-    echo "本机没有全局安装 @deepseek-ai/dsh。先跑一次：" >&2
-    echo "  npm i -g @deepseek-ai/dsh@0.2.2-rc.1" >&2
-    exit 1
-  fi
-  echo "==> vendor dsh：$SRC"
-  rm -rf "$VENDOR/dsh"
-  # dsh 包内自带 node_modules（生产依赖已扁平安装），整包复制即可
-  cp -R "$SRC" "$VENDOR/dsh"
+# ── 2. 运行环境依赖（npm install，不带 devDependencies）──
+echo "==> 安装 zhibi-runtime 依赖"
+if [ "$FORCE" = 1 ] || [ ! -d "$RUNTIME_OUT/node_modules" ]; then
+  rm -rf "$RUNTIME_OUT"
+  mkdir -p "$RUNTIME_OUT"
+  cp "$RUNTIME_SRC/package.json" "$RUNTIME_OUT/package.json"
+  ( cd "$RUNTIME_OUT" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
 fi
 
-if [ ! -f "$VENDOR/dsh/lib/bin.js" ]; then
-  echo "vendor 失败：.vendor/dsh/lib/bin.js 不存在" >&2; exit 1
+# ── 3. 官方 lib/*.js 原样拷入（bin.js 会动态 import 带 hash 的兄弟块，必须整目录）──
+UPSTREAM_LIB="$RUNTIME_SRC/lib"
+if [ ! -d "$UPSTREAM_LIB" ]; then
+  echo "缺少 $UPSTREAM_LIB —— 应从官方 @deepseek-ai/dsh 原样拷贝 lib/ 目录（不含 node_modules）" >&2
+  exit 1
+fi
+rm -rf "$RUNTIME_OUT/lib"
+cp -R "$UPSTREAM_LIB" "$RUNTIME_OUT/lib"
+
+# dsh 自身的 package.json 决定 INSTALL_ANCHOR 解析到的版本号与安装范围；
+# 用官方那份，而不是我们私有的 package.json。
+if [ -f "$RUNTIME_SRC/dsh-upstream-package.json" ]; then
+  cp "$RUNTIME_SRC/dsh-upstream-package.json" "$RUNTIME_OUT/package.json.dsh"
 fi
 
-"$VENDOR/node/bin/node" "$VENDOR/dsh/lib/bin.js" --version 2>&1 | head -1
-du -sh "$VENDOR" 2>/dev/null
+if [ ! -f "$RUNTIME_OUT/lib/bin.js" ]; then
+  echo "vendor 失败：$RUNTIME_OUT/lib/bin.js 不存在" >&2; exit 1
+fi
+
+# ── 4. 冒烟：--help 与 --dump-config 必须都能过 ──
+echo "==> 冒烟"
+DSH_HOME_PROBE=$(mktemp -d)
+DSH_HOME="$DSH_HOME_PROBE" "$VENDOR/node/bin/node" "$RUNTIME_OUT/lib/bin.js" --profile sdk --help >/dev/null
+DSH_HOME="$DSH_HOME_PROBE" "$VENDOR/node/bin/node" "$RUNTIME_OUT/lib/bin.js" --profile sdk --dump-config >/dev/null
+rm -rf "$DSH_HOME_PROBE"
+
+du -sh "$VENDOR/node" "$RUNTIME_OUT" 2>/dev/null
 echo "==> vendor 完成：构建将直接打包进 .app，不再联网"

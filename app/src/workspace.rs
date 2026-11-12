@@ -24,7 +24,7 @@ use crate::chat::{ChatEvent, ChatMsg, ChatPanel};
 use crate::bookinfo::{BookInfoEvent, BookInfoPanel};
 use crate::canvas::{CanvasPanel, OracleEvent, OraclePanel};
 use crate::director::{DirectorEvent, DirectorPanel};
-use crate::dsh::{DshClient, DshEvent, model_route};
+use crate::dsh::{self, AgentMode, DshClient, DshEvent, model_route};
 use crate::editor::{EditorEvent, EditorPanel};
 use crate::inbox::{InboxEvent, InboxPanel};
 use crate::prompts;
@@ -44,6 +44,29 @@ const DOCK_AREA_VERSION: usize = 1;
 #[derive(Debug, Clone)]
 pub enum WorkspaceEvent {
     BackToShelf,
+}
+
+/// 一次待作者裁决的 DSH 审批（来自 `approval/request`）。
+///
+/// 典型来源：创造模式用 `plugin_manager` 装本书专属 bundle（需 danger-full-access）、
+/// 或 AI 在只读档尝试提权。DSH 对无应答一律 fail-closed，所以这些必须由 GUI 回。
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // session_id/tool 用于后续“按 Agent 归属”显示
+pub struct ApprovalRequest {
+    pub id: serde_json::Value,
+    pub session_id: String,
+    pub tool: String,
+    pub reason: String,
+}
+
+/// 一次待作者回答的 `ask_user_question`（来自 `user-question/ask`）。
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // session_id/request_id 用于会话级取消与回放
+pub struct QuestionRequest {
+    pub id: serde_json::Value,
+    pub session_id: String,
+    pub request_id: String,
+    pub questions: serde_json::Value,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -299,6 +322,14 @@ pub struct Workspace {
     workspace_focus: gpui_kit::FocusHandle,
     /// 选区创作请求的原文（应答到达时转成 SelectionDraft 气泡）
     pending_sel: Option<String>,
+    /// 主 Agent 形态（托管 / 极简 / 创造）。切模式 = 换 patch 重启本书的 DSH 进程。
+    agent_mode: dsh::AgentMode,
+    /// 待应答的审批（GUI 渲染成卡片，必须回；不回则 DSH 按拒绝处理）
+    pending_approval: Option<ApprovalRequest>,
+    /// 待应答的提问（`ask_user_question`）
+    pending_question: Option<QuestionRequest>,
+    /// 本轮是否已有任务在跑（拦连点，避免并发污染同一会话）
+    turn_active: bool,
     /// 作品信息（project.json 的 genre/premise/targetChapters/chapterWordTarget）编辑入口
     meta_genre: Entity<InputState>,
     meta_premise: Entity<InputState>,
@@ -814,6 +845,10 @@ impl Workspace {
             client: None,
             initialized: false,
             pending_sel: None,
+            agent_mode: dsh::AgentMode::Managed,
+            pending_approval: None,
+            pending_question: None,
+            turn_active: false,
             meta_genre,
             meta_premise,
             meta_target,
@@ -1077,10 +1112,18 @@ impl Workspace {
         if let Some(client) = &self.client {
             return Ok(client.clone());
         }
-        let (client, rx) = DshClient::spawn(&self.root)?;
+        let mode = self.agent_mode;
+        let (client, rx) = DshClient::spawn(&self.root, mode)?;
         self.trajectory.update(cx, |panel, cx| {
             panel.push(
-                TrajKind::Info("已启动 DSH 运行时（--profile sdk）".into()),
+                TrajKind::Info(format!(
+                    "已启动 DSH 运行时（--profile sdk，{}模式，独立 home）",
+                    match mode {
+                        dsh::AgentMode::Managed => "托管",
+                        dsh::AgentMode::Minimal => "极简",
+                        dsh::AgentMode::Creator => "创造",
+                    }
+                )),
                 cx,
             );
         });
@@ -1090,6 +1133,16 @@ impl Workspace {
                 match event {
                     DshEvent::Notification { method, params } => {
                         let _ = this.update(cx, |ws, cx| ws.on_notification(&method, params, cx));
+                    }
+                    DshEvent::Approval { id, session_id, tool, reason } => {
+                        let _ = this.update(cx, |ws, cx| {
+                            ws.on_approval(id, session_id, tool, reason, cx)
+                        });
+                    }
+                    DshEvent::Question { id, session_id, request_id, questions } => {
+                        let _ = this.update(cx, |ws, cx| {
+                            ws.on_question(id, session_id, request_id, questions, cx)
+                        });
                     }
                     DshEvent::Error(text) => {
                         let _ = this.update(cx, |ws, cx| {
@@ -1114,6 +1167,17 @@ impl Workspace {
     }
 
     fn on_send(&mut self, text: String, cx: &mut Context<Self>) {
+        // 同一会话同时只跑一轮：并发发送会让两轮的工具调用、提案、选区改写互相串台。
+        if self.turn_active || self.dsh_running {
+            self.trajectory.update(cx, |panel, cx| {
+                panel.push(
+                    TrajKind::Info("上一轮还在跑——等它结束，或先停止".into()),
+                    cx,
+                );
+            });
+            return;
+        }
+        self.turn_active = true;
         self.chat.update(cx, |panel, cx| panel.set_busy(true, cx));
         self.trajectory.update(cx, |panel, cx| {
             panel.push(TrajKind::User(text.clone()), cx);
@@ -1122,6 +1186,7 @@ impl Workspace {
         let client = match self.ensure_client(cx) {
             Ok(c) => c,
             Err(e) => {
+                self.turn_active = false;
                 self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
                 self.trajectory.update(cx, |panel, cx| {
                     panel.push(TrajKind::Fail(format!("启动 DSH 失败：{e}")), cx);
@@ -1166,6 +1231,7 @@ impl Workspace {
                     Err(e) => {
                         // 发送失败：结束「思考中」，并让下次发送重建运行时
                         ws.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+                        ws.turn_active = false;
                         ws.client = None;
                         ws.initialized = false;
                         ws.trajectory.update(cx, |panel, cx| {
@@ -1177,6 +1243,130 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// 审批请求：记下来交给 UI 渲染，同时在轨迹里留痕（不论作者怎么选都可见）。
+    ///
+    /// 这里不自动批准。DSH 的 fail-closed 语义正好保证「作者不点 = 不执行」，
+    /// 所以只把卡片摆出来即可，不设超时兜底。
+    /// 切换主 Agent 形态。
+    ///
+    /// DSH 的执行器与 preset 是进程级组合，没法热切；所以：关掉当前进程 → 用新 patch 重启
+    /// → 用 `session/resume` 把原会话接回来。会话历史在 DSH 的 jsonl 里，聊天不丢。
+    fn switch_agent_mode(&mut self, mode: dsh::AgentMode, cx: &mut Context<Self>) {
+        if self.agent_mode == mode {
+            return;
+        }
+        self.agent_mode = mode;
+        let label = match mode {
+            dsh::AgentMode::Managed => "托管",
+            dsh::AgentMode::Minimal => "极简",
+            dsh::AgentMode::Creator => "创造",
+        };
+        // 关旧进程（shutdown 后 stdin 关闭，读线程会发 Error 让 UI 复位）
+        if let Some(client) = self.client.take() {
+            client.shutdown();
+        }
+        self.initialized = false;
+        self.dsh_running = false;
+        self.turn_active = false;
+        self.pending_approval = None;
+        self.pending_question = None;
+        self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+        self.trajectory.update(cx, |panel, cx| {
+            panel.push(
+                TrajKind::Info(format!("已切到{label}模式——运行时将按新组合重启，会话历史保留")),
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    fn on_approval(
+        &mut self,
+        id: Value,
+        session_id: String,
+        tool: String,
+        reason: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.trajectory.update(cx, |panel, cx| {
+            panel.push(
+                TrajKind::Info(format!("待审批 · {tool}：{reason}")),
+                cx,
+            );
+        });
+        self.pending_approval = Some(ApprovalRequest { id, session_id, tool, reason });
+        cx.notify();
+    }
+
+    /// 作者点了审批卡。
+    fn resolve_approval(&mut self, allow: bool, cx: &mut Context<Self>) {
+        let Some(req) = self.pending_approval.take() else {
+            return;
+        };
+        let outcome = if allow { "allowed-once" } else { "rejected" };
+        let what = if allow { "已允许" } else { "已拒绝" };
+        let result = self
+            .client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("运行时已退出"))
+            .and_then(|c| c.answer_approval(&req.id, outcome));
+        self.trajectory.update(cx, |panel, cx| {
+            panel.push(
+                match &result {
+                    Ok(()) => TrajKind::Info(format!("{what}：{}", req.tool)),
+                    Err(e) => TrajKind::Fail(format!("审批应答失败：{e}")),
+                },
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    /// 提问请求：把问题摆出来等作者回答；作者取消也能正常收尾。
+    fn on_question(
+        &mut self,
+        id: Value,
+        session_id: String,
+        request_id: String,
+        questions: Value,
+        cx: &mut Context<Self>,
+    ) {
+        let head = questions
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|q| q.get("question"))
+            .and_then(|q| q.as_str())
+            .unwrap_or("（AI 有问题要问你）")
+            .to_string();
+        self.trajectory.update(cx, |panel, cx| {
+            panel.push(TrajKind::Info(format!("待回答 · {head}")), cx);
+        });
+        self.pending_question = Some(QuestionRequest { id, session_id, request_id, questions });
+        cx.notify();
+    }
+
+    /// 作者回答了提问。`answers` 为 `None` 表示取消（DSH 会结束本轮，不算批准）。
+    fn resolve_question(&mut self, answers: Option<Value>, cx: &mut Context<Self>) {
+        let Some(req) = self.pending_question.take() else {
+            return;
+        };
+        let result = self
+            .client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("运行时已退出"))
+            .and_then(|c| c.answer_question(&req.id, answers));
+        self.trajectory.update(cx, |panel, cx| {
+            panel.push(
+                match &result {
+                    Ok(()) => TrajKind::Info("已回答".into()),
+                    Err(e) => TrajKind::Fail(format!("提问应答失败：{e}")),
+                },
+                cx,
+            );
+        });
+        cx.notify();
     }
 
     fn on_notification(&mut self, method: &str, params: Value, cx: &mut Context<Self>) {
@@ -1193,6 +1383,7 @@ impl Workspace {
                 if !running {
                     // 兜底：空闲态一定结束「思考中…」（turn/end 可能因协议演进缺失）
                     self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+                    self.turn_active = false;
                 }
                 self.trajectory.update(cx, |panel, cx| {
                     panel.push(
@@ -1332,6 +1523,7 @@ impl Workspace {
                 // 无论完成/中止/失败，本轮都结束了——聊天不能继续停在「思考中…」；
                 // 本轮登记的提案也在这里自动刷新进收件箱。
                 self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+                self.turn_active = false;
                 self.inbox.update(cx, |panel, cx| panel.refresh(cx));
                 let reason = data.get("reason");
                 let kind = reason
@@ -1526,6 +1718,9 @@ impl Render for Workspace {
         div()
             .id("zhibi-workspace-root")
             .key_context("zhibi-workspace")
+            // 审批 / 提问浮层挂在根节点上：它们在哪个页面都可能出现，不能只在稿纸页
+            .relative()
+            .children(self.pending_card(cx))
             .on_action(cx.listener(|this, _: &SaveProse, _, cx| {
                 this.save_current(cx);
                 this.trajectory.update(cx, |panel, cx| {
@@ -1614,6 +1809,7 @@ impl Render for Workspace {
                                             .text_color(theme::DIM())
                                             .child(SharedString::from(format!("{words} 字"))),
                                     )
+                                    .child(self.mode_chip(cx))
                                     .child(if dsh_running {
                                         live_chip("DSH 运行中")
                                     } else if dsh_live {
@@ -1743,6 +1939,195 @@ impl Render for Workspace {
 }
 
 impl Workspace {
+    /// 主 Agent 形态的三段切换器（托管 / 极简 / 创造）。
+    ///
+    /// 切换要重启本书的 DSH 进程（执行器与 preset 是进程级组合），所以点之前
+    /// 在轨迹窗写清后果；已完成的对话历史由 DSH 会话日志保留。
+    fn mode_chip(&self, cx: &mut Context<Self>) -> AnyElement {
+        let cur = self.agent_mode;
+        let seg = |label: &'static str, key: &'static str, mode: AgentMode| {
+            let on = cur == mode;
+            div()
+                .id(key)
+                .px(px(9.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                .cursor_pointer()
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                        .child(label),
+                )
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.switch_agent_mode(mode, cx);
+                }))
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .child(seg("托管", "agent-mode-managed", AgentMode::Managed))
+            .child(seg("极简", "agent-mode-minimal", AgentMode::Minimal))
+            .child(seg("创造", "agent-mode-creator", AgentMode::Creator))
+            .into_any_element()
+    }
+
+    /// 待审批 / 待回答的浮层：两者都必须由作者点，否则 DSH 会拒绝或空等。
+    fn pending_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if let Some(req) = &self.pending_approval {
+            let tool = req.tool.clone();
+            let reason = req.reason.clone();
+            let allow = Button::new("approve-yes")
+                .custom(prominent_btn(&*cx))
+                .small()
+                .rounded(theme::RADIUS_BTN_SM)
+                .label("允许一次")
+                .on_click(cx.listener(|this, _, _window, cx| this.resolve_approval(true, cx)));
+            let deny = Button::new("approve-no")
+                .custom(icon_btn(&*cx))
+                .small()
+                .rounded(theme::RADIUS_BTN_SM)
+                .label("拒绝")
+                .on_click(cx.listener(|this, _, _window, cx| this.resolve_approval(false, cx)));
+            return Some(
+                div()
+                    .absolute()
+                    .bottom(px(48.))
+                    .left(px(0.))
+                    .right(px(0.))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w(px(520.))
+                            .rounded(theme::RADIUS_CARD)
+                            .border_1()
+                            .border_color(theme::AMBER())
+                            .bg(theme::PANEL())
+                            .p(theme::PAD_LG)
+                            .flex()
+                            .flex_col()
+                            .gap(theme::GAP_SM)
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_LABEL)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::AMBER())
+                                    .child(SharedString::from(format!("AI 请求：{tool}"))),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::DIM())
+                                    .child(SharedString::from(reason)),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(theme::GAP_SM)
+                                    .child(allow)
+                                    .child(deny),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let req = self.pending_question.as_ref()?;
+        let first = req
+            .questions
+            .as_array()
+            .and_then(|a| a.first())
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let text = first
+            .get("question")
+            .and_then(|q| q.as_str())
+            .unwrap_or("AI 有问题要问你")
+            .to_string();
+        let options: Vec<String> = first
+            .get("options")
+            .and_then(|o| o.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|o| o.get("label").and_then(|l| l.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let qid = first
+            .get("id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("q")
+            .to_string();
+
+        // 选项就地点；没有选项只能取消（自由文本输入留到后续版本）
+        let mut buttons: Vec<AnyElement> = Vec::new();
+        for (ix, label) in options.into_iter().enumerate() {
+            let qid = qid.clone();
+            let label2 = label.clone();
+            buttons.push(
+                Button::new(SharedString::from(format!("q-opt-{ix}")))
+                    .custom(icon_btn(&*cx))
+                    .small()
+                    .rounded(theme::RADIUS_BTN_SM)
+                    .label(SharedString::from(label))
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        let answers = serde_json::json!([{ "id": qid, "selected": [label2] }]);
+                        this.resolve_question(Some(answers), cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        buttons.push(
+            Button::new("q-cancel")
+                .custom(icon_btn(&*cx))
+                .small()
+                .rounded(theme::RADIUS_BTN_SM)
+                .label("取消")
+                .on_click(cx.listener(|this, _, _window, cx| this.resolve_question(None, cx)))
+                .into_any_element(),
+        );
+
+        Some(
+            div()
+                .absolute()
+                .bottom(px(48.))
+                .left(px(0.))
+                .right(px(0.))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(560.))
+                        .rounded(theme::RADIUS_CARD)
+                        .border_1()
+                        .border_color(theme::ACCENT_BORDER())
+                        .bg(theme::PANEL())
+                        .p(theme::PAD_LG)
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_SM)
+                        .child(
+                            div()
+                                .text_size(theme::FONT_LABEL)
+                                .text_color(theme::TEXT())
+                                .child(SharedString::from(text)),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(theme::GAP_SM)
+                                .children(buttons),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// 导航行的标题：稿纸页叫「稿纸」（原型 workspace.html:188 起的 .ym-nav 文案），
     /// 其余沿用页面名（`Mode::label`）。
     fn nav_label(mode: Mode) -> &'static str {

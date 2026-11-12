@@ -42,16 +42,16 @@ elif [ -f ../zhibi/ZhiBi/Sources/Assets.xcassets/AppIcon.appiconset/icon_512x512
   sips -s format icns ../zhibi/ZhiBi/Sources/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png     --out "$APP/Contents/Resources/AppIcon.icns" >/dev/null 2>&1 || true
 fi
 
-# 内嵌运行时：.vendor/{node,dsh}（scripts/vendor_runtime.sh 生成）+ novel-pack
-if [ -x .vendor/node/bin/node ] && [ -f .vendor/dsh/lib/bin.js ]; then
-  echo "==> 打包内嵌运行时（node + dsh）"
+# 内嵌运行时：.vendor/{node,dsh-runtime}（scripts/vendor_runtime.sh 生成）+ novel-pack
+# dsh-runtime 只含 sdk 闭包（约 274MB），不含 web/桌面端 bundle。
+if [ -x .vendor/node/bin/node ] && [ -f .vendor/dsh-runtime/lib/bin.js ]; then
+  echo "==> 打包内嵌运行时（node + dsh sdk runtime）"
   mkdir -p "$APP/Contents/Resources/runtime"
   cp -R .vendor/node "$APP/Contents/Resources/runtime/node"
-  cp -R .vendor/dsh "$APP/Contents/Resources/runtime/dsh"
+  cp -R .vendor/dsh-runtime "$APP/Contents/Resources/runtime/dsh"
   cp -R novel-pack "$APP/Contents/Resources/runtime/novel-pack"
-  # patch 里的绝对路径换成包内相对（运行时由 ZHIBI_PACK_PATCH 覆盖，保留原样也可）
 else
-  echo "!! 未找到 .vendor（先跑 scripts/vendor_runtime.sh）；本次不内嵌 dsh，运行时回退全局命令"
+  echo "!! 未找到 .vendor/dsh-runtime（先跑 scripts/vendor_runtime.sh）；本次不内嵌 dsh，运行时回退全局命令"
 fi
 
 echo "==> ad-hoc 签名"

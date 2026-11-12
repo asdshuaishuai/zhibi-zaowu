@@ -2,3 +2,9 @@
 
 # 内嵌运行时（约 1GB，不入库；scripts/vendor_runtime.sh 一次性生成）
 /.vendor
+
+# DSH 基础运行环境产物（runtime/zhibi-runtime 只提交 package.json + 官方 lib；node_modules 不入库）
+/runtime/zhibi-runtime/node_modules
+/runtime/spike/probe/node_modules
+/runtime/zhibi-runtime/package-lock.json
+/runtime/zhibi-runtime/pnpm-lock.yaml

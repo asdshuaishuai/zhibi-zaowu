@@ -1,0 +1,40 @@
+# Spike: reviewer preset with tools.restrict deny list
+- id: tool-executor-native
+  disabled: true
+- id: tool-executor-ptc
+  disabled: false
+- id: tool-subagent
+  config:
+    provider: spawn
+    toolName: subagent
+    allowedAgentPresets:
+    - reviewer
+    agentPreset: reviewer
+- insert:
+  - id: agent-preset-registry
+    name: '@deepseek-ai/dsh-agent-preset-registry'
+    config:
+      default: reviewer
+  - id: preset-reviewer
+    name: '@deepseek-ai/dsh-agent-preset'
+    config:
+      id: reviewer
+      name: 校审
+      plugins:
+      - id: persona
+        name: '@deepseek-ai/dsh-persona'
+        config:
+          prefix: 你是校审员，只读不改。
+          complete: true
+          includeRuntimeContext: false
+      - id: tool-executor-native
+        name: '@deepseek-ai/dsh-tool-executor-native'
+      - id: readonly-guard
+        name: /Volumes/data/dev/coding/novel/zhibi-next/runtime/spike/probe/index.js
+        config:
+          deny:
+          - bash
+          - write
+          - edit
+          - plugin_manager
+          - workflow
