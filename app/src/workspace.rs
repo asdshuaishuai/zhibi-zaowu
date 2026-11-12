@@ -582,6 +582,9 @@ impl Workspace {
                     });
                     let _ = window;
                 }
+                // 设定页暂不做台账增删（设定是 Markdown 文件，不是 JSON 台账），
+                // 但事件类型是共享的，这里显式忽略而不是漏处理。
+                ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {}
             },
         )
         .detach();
@@ -592,6 +595,10 @@ impl Workspace {
                 ViewEvent::RunCapability(cap) => {
                     let task = prompts::task_for(cap, this.chapter);
                     this.on_send(task, cx);
+                }
+                // 作者亲笔的台账增删改统一走 on_ledger_event（store 的 CRUD 自带日志与撤销）。
+                ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {
+                    this.on_ledger_event(ev, cx);
                 }
             },
         )
@@ -604,6 +611,10 @@ impl Workspace {
                     let task = prompts::task_for(cap, this.chapter);
                     this.on_send(task, cx);
                 }
+                // 作者亲笔的台账增删改统一走 on_ledger_event（store 的 CRUD 自带日志与撤销）。
+                ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {
+                    this.on_ledger_event(ev, cx);
+                }
             },
         )
         .detach();
@@ -614,6 +625,10 @@ impl Workspace {
                 ViewEvent::RunCapability(cap) => {
                     let task = prompts::task_for(cap, this.chapter);
                     this.on_send(task, cx);
+                }
+                // 作者亲笔的台账增删改统一走 on_ledger_event（store 的 CRUD 自带日志与撤销）。
+                ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {
+                    this.on_ledger_event(ev, cx);
                 }
             },
         )
@@ -1745,6 +1760,35 @@ impl Workspace {
                 });
             }
             _ => {}
+        }
+    }
+
+    /// 作者亲笔的台账增删改。
+    ///
+    /// 三条来源（大纲页 / 记忆页 / 伏笔页）走同一份实现：store 的 CRUD 会自己
+    /// 记改动日志，所以撤销入口不需要在这里额外发事件。
+    fn on_ledger_event(&mut self, ev: &ViewEvent, cx: &mut Context<Self>) {
+        let result: Result<String, String> = match ev {
+            ViewEvent::LedgerAdd(which, item) => self
+                .handle
+                .ledger_add(*which, item.clone(), &format!("新建{}", which.label()))
+                .map(|id| format!("已新建{} {id}", which.label())),
+            ViewEvent::LedgerUpdate(which, id, patch) => self
+                .handle
+                .ledger_update(*which, id, patch.clone(), &format!("编辑{}", which.label()))
+                .map(|()| format!("已保存{} {id}", which.label())),
+            ViewEvent::LedgerRemove(which, id) => self
+                .handle
+                .ledger_remove(*which, id, &format!("删除{}", which.label()))
+                .map(|()| format!("已删除{} {id}", which.label())),
+            // 调用方只会传这三种；其余是订阅点共用的宽分支，忽略。
+            _ => return,
+        };
+        match result {
+            Ok(msg) => self.trajectory.update(cx, |panel, cx| panel.push(TrajKind::Info(msg), cx)),
+            Err(e) => self
+                .trajectory
+                .update(cx, |panel, cx| panel.push(TrajKind::Fail(format!("台账操作失败：{e}")), cx)),
         }
     }
 

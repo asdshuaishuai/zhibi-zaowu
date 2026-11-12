@@ -31,6 +31,12 @@ use crate::theme;
 pub enum ViewEvent {
     /// 触发一次 AI 能力（capability 键）
     RunCapability(&'static str),
+    /// 台账新增（种类, 字段）
+    LedgerAdd(crate::store::Ledger, serde_json::Value),
+    /// 台账改一条（种类, id, 字段补丁）
+    LedgerUpdate(crate::store::Ledger, String, serde_json::Value),
+    /// 台账删一条（种类, id）
+    LedgerRemove(crate::store::Ledger, String),
 }
 
 impl EventEmitter<PanelEvent> for CanonPanel {}
@@ -240,6 +246,81 @@ fn empty_hint(title: &str, desc: &str) -> gpui_kit::AnyElement {
 }
 
 /// 面板内容列容器：页面底 BG + 统一栏边距（规则 4/12）。
+/// 台账「逐条管理」的一行：编号 · 标题 · 一个就地微调按钮 · 删除。
+///
+/// 为什么不在 `kit_table` 里做：`Cell` 是纯数据（Text/Dim/Code/Chip），
+/// 塞不进点击回调。表格负责"看全部"，这一栏负责"改单条"。
+fn manage_row<C: EventEmitter<ViewEvent> + 'static>(
+    cx: &mut Context<C>,
+    ledger: crate::store::Ledger,
+    id: &str,
+    title: &str,
+    meta: String,
+    bump: Option<(String, serde_json::Value)>,
+) -> gpui_kit::AnyElement {
+    let mut line = div()
+        .flex()
+        .items_center()
+        .gap(theme::GAP_SM)
+        .py(px(1.))
+        .child(
+            div()
+                .w(px(52.))
+                .flex_shrink_0()
+                .font_family(theme::FAMILY_MONO)
+                .text_size(theme::FONT_MICRO)
+                .text_color(theme::ACCENT())
+                .child(SharedString::from(id.to_string())),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(theme::FONT_MICRO)
+                .text_color(theme::DIM())
+                .text_ellipsis()
+                .child(SharedString::from(title.to_string())),
+        );
+
+    if let Some((label, patch)) = bump {
+        let id_owned = id.to_string();
+        line = line.child(
+            div()
+                .id(SharedString::from(format!("bump-{}-{id}", ledger.file())))
+                .flex_shrink_0()
+                .cursor_pointer()
+                .text_size(theme::FONT_MICRO)
+                .text_color(theme::FAINT())
+                .child(SharedString::from(label))
+                .on_click(cx.listener(move |_this, _, _, cx| {
+                    cx.emit(ViewEvent::LedgerUpdate(ledger, id_owned.clone(), patch.clone()));
+                })),
+        );
+    }
+
+    let id_owned = id.to_string();
+    line.child(
+        div()
+            .id(SharedString::from(format!("del-{}-{id}", ledger.file())))
+            .flex_shrink_0()
+            .cursor_pointer()
+            .text_size(theme::FONT_MICRO)
+            .text_color(theme::FAINT())
+            .child("×")
+            .on_click(cx.listener(move |_this, _, _, cx| {
+                cx.emit(ViewEvent::LedgerRemove(ledger, id_owned.clone()));
+            })),
+    )
+    .child(
+        div()
+            .flex_shrink_0()
+            .text_size(theme::FONT_MICRO)
+            .text_color(theme::FAINT())
+            .child(SharedString::from(meta)),
+    )
+    .into_any_element()
+}
+
 fn panel_col<'a>() -> gpui_kit::Div {
     div()
         .flex()
@@ -501,6 +582,7 @@ impl Render for OutlinePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let lines = self.handle.storylines();
         let events = self.handle.events();
+        let stages = self.handle.stages();
 
         let mut line_rows = Vec::new();
         for l in &lines {
@@ -516,7 +598,7 @@ impl Render for OutlinePanel {
             line_rows.push(row(cells));
         }
         let mut event_rows = Vec::new();
-        for e in events.iter().take(40) {
+        for e in events.iter() {
             let revealed = e
                 .get("revealed")
                 .and_then(|v| v.as_bool())
@@ -530,6 +612,7 @@ impl Render for OutlinePanel {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .chars()
+                        // 单行预览截断（不是条数截断）：表格一行放不下整段
                         .take(60)
                         .collect(),
                 ),
@@ -557,6 +640,33 @@ impl Render for OutlinePanel {
                                 .flex()
                                 .items_center()
                                 .gap(theme::GAP_SM)
+                                // 作者亲笔新建：不经过 AI，直接落台账
+                                .child(cap_btn("outline-add-event", "新建事件", cx).on_click(
+                                    cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ViewEvent::LedgerAdd(
+                                            crate::store::Ledger::Events,
+                                            serde_json::json!({
+                                                "chapter": 0,
+                                                "objectiveFact": "新事件（待写）",
+                                                "revealed": false,
+                                                "happened": false,
+                                                "storylineIDs": []
+                                            }),
+                                        ));
+                                    }),
+                                ))
+                                .child(cap_btn("outline-add-line", "新建故事线", cx).on_click(
+                                    cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ViewEvent::LedgerAdd(
+                                            crate::store::Ledger::Storylines,
+                                            serde_json::json!({
+                                                "name": "新故事线",
+                                                "kind": "",
+                                                "isThroughLine": false
+                                            }),
+                                        ));
+                                    }),
+                                ))
                                 .child(cap_btn("outline-sync", "同步大纲（提案）", cx).on_click(
                                     cx.listener(|_this, _, _, cx| {
                                         cx.emit(ViewEvent::RunCapability("outsync"));
@@ -573,6 +683,35 @@ impl Render for OutlinePanel {
                 .when_true(lines.is_empty(), |d| {
                     d.child(empty_hint("还没有故事线", "新书建框架提案采纳后，这里出现线号 · 名称 · 状态。"))
                 })
+                .when_true(!lines.is_empty(), |d| {
+                    let mut rows = div().flex().flex_col().gap(px(1.));
+                    for l in &lines {
+                        let id = l.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                        let name = l.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        // 故事线没有"章节"可推，删掉仍要能走；meta 显示是否主线
+                        let meta = if l.get("isThroughLine").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            "主线".to_string()
+                        } else {
+                            String::new()
+                        };
+                        rows = rows.child(manage_row(
+                            cx,
+                            crate::store::Ledger::Storylines,
+                            &id,
+                            &name,
+                            meta,
+                            None,
+                        ));
+                    }
+                    d.child(sec_title("逐条管理"))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("「×」删除故事线（可撤销）。名称与状态在事件列表里按线号对照改。"),
+                        )
+                        .child(rows)
+                })
                 .child(
                     div()
                         .flex()
@@ -585,7 +724,159 @@ impl Render for OutlinePanel {
                         .child(kit_table(&["事件", "章", "作者真相", "读者已知"], event_rows))
                         .when_true(events.is_empty(), |d| {
                             d.child(empty_hint("还没有事件", "用「AI 建时间线」提案，从正文抽取作者真相事件。"))
-                        }),
+                        })
+                        .when_true(!events.is_empty(), |d| {
+                            let total = events.len();
+                            // 事件多，只列最近 12 条做就地管理；全量仍在上面表格里。
+                            // 这是"便捷入口"的取舍，不是数据截断——表格不截。
+                            let mut rows = div().flex().flex_col().gap(px(1.));
+                            for e in events.iter().rev().take(12).rev() {
+                                let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                                let fact = e.get("objectiveFact").and_then(|v| v.as_str()).unwrap_or("");
+                                let chapter = e.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0);
+                                let revealed = e.get("revealed").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let meta = if revealed { "读者已知".to_string() } else { "暗线".to_string() };
+                                rows = rows.child(manage_row(
+                                    cx,
+                                    crate::store::Ledger::Events,
+                                    &id,
+                                    fact,
+                                    meta,
+                                    // 就地推章：把事件往后挪一章
+                                    Some((
+                                        format!("第{chapter}章 →"),
+                                        serde_json::json!({ "chapter": chapter + 1 }),
+                                    )),
+                                ));
+                            }
+                            d.child(sec_title("逐条管理"))
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_MICRO)
+                                        .text_color(theme::FAINT())
+                                        .child(format!(
+                                            "最近 12 条（共 {total} 条）：「第N章 →」把事件往后挪一章；「×」删除（可撤销）。"
+                                        )),
+                                )
+                                .child(rows)
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(theme::GAP_MD)
+                                .border_t_1()
+                                .border_color(theme::LINE())
+                                .pt(theme::GAP_GROUP)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap(theme::GAP_MD)
+                                        .child(sec_title("幕（卷）"))
+                                        .child(cap_btn("outline-add-stage", "新建幕", cx).on_click(
+                                            cx.listener(|_this, _, _, cx| {
+                                                // 新幕从第 1 章起、到第 1 章止；作者再改区间
+                                                cx.emit(ViewEvent::LedgerAdd(
+                                                    crate::store::Ledger::Stages,
+                                                    serde_json::json!({
+                                                        "name": "新幕",
+                                                        "theme": "",
+                                                        "chapterStart": 1,
+                                                        "chapterEnd": 1
+                                                    }),
+                                                ));
+                                            }),
+                                        )),
+                                )
+                                .child({
+                                    // 幕是少数几个有天然顺序的台账，按起章排，读起来才对。
+                                    let mut ordered: Vec<&serde_json::Value> = stages.iter().collect();
+                                    ordered.sort_by_key(|v| {
+                                        v.get("chapterStart").and_then(|c| c.as_u64()).unwrap_or(0)
+                                    });
+                                    let rows: Vec<TableRow> = ordered
+                                        .iter()
+                                        .map(|st| {
+                                            let a = st
+                                                .get("chapterStart")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0);
+                                            let b = st
+                                                .get("chapterEnd")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0);
+                                            row(vec![
+                                                Cell::Code(
+                                                    st.get("id")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("?")
+                                                        .to_string(),
+                                                ),
+                                                Cell::Text(
+                                                    st.get("name")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("")
+                                                        .to_string(),
+                                                ),
+                                                Cell::Dim(format!("第{a}–{b}章")),
+                                                Cell::Dim(
+                                                    st.get("theme")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("")
+                                                        .to_string(),
+                                                ),
+                                            ])
+                                        })
+                                        .collect();
+                                    kit_table(&["幕", "卷名", "章节区间", "主题"], rows)
+                                })
+                                .when_true(stages.is_empty(), |d| {
+                                    d.child(empty_hint(
+                                        "还没有幕",
+                                        "幕是卷的骨架：排期板的幕带、世界线的时间刻度都读它。",
+                                    ))
+                                })
+                                .when_true(!stages.is_empty(), |d| {
+                                    let mut rows = div().flex().flex_col().gap(px(1.));
+                                    for st in stages.iter() {
+                                        let id = st
+                                            .get("id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("?")
+                                            .to_string();
+                                        let name =
+                                            st.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                        let a = st
+                                            .get("chapterStart")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        let b =
+                                            st.get("chapterEnd").and_then(|v| v.as_u64()).unwrap_or(0);
+                                        rows = rows.child(manage_row(
+                                            cx,
+                                            crate::store::Ledger::Stages,
+                                            &id,
+                                            name,
+                                            format!("{a}–{b}"),
+                                            // 幕的粒度是卷，一次推一章没意义；推终点更常用
+                                            Some((
+                                                format!("止于{b} →"),
+                                                serde_json::json!({ "chapterEnd": b + 1 }),
+                                            )),
+                                        ));
+                                    }
+                                    d.child(sec_title("逐条管理"))
+                                        .child(
+                                            div()
+                                                .text_size(theme::FONT_MICRO)
+                                                .text_color(theme::FAINT())
+                                                .child("「止于N →」把幕的终点推后一章；「×」删除（可撤销）。"),
+                                        )
+                                        .child(rows)
+                                }),
+                        ),
                 ),
         )
     }
@@ -641,7 +932,7 @@ impl Render for MemoryPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let facts = self.handle.memory_facts();
         let mut rows = Vec::new();
-        for f in facts.iter().take(60) {
+        for f in facts.iter() {
             let public = f.get("publicToReader").and_then(|v| v.as_bool()).unwrap_or(true);
             rows.push(row(vec![
                 Cell::Text(f.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string()),
@@ -829,12 +1120,13 @@ impl Render for CluesPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let clues = self.handle.clues_full();
         let mut rows = Vec::new();
-        for c in clues.iter().take(80) {
+        for c in clues.iter() {
             let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let tone = status_tone(&status);
             let timing = c.get("timing").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let mut cells = vec![
                 Cell::CodeAccent(c.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string()),
+                // 标题列单行预览截断，不隐藏条目
                 Cell::Text(c.get("title").and_then(|v| v.as_str()).unwrap_or("").chars().take(40).collect()),
             ];
             if !status.is_empty() {
@@ -868,15 +1160,67 @@ impl Render for CluesPanel {
                                         .child(SharedString::from(format!("{} 条", clues.len()))),
                                 ),
                         )
-                        .child(cap_btn("clues-inventory", "AI 盘点（提案）", cx).on_click(
-                            cx.listener(|_this, _, _, cx| {
-                                cx.emit(ViewEvent::RunCapability("inventory"));
-                            }),
-                        )),
+                        .child(
+                            div()
+                                .flex()
+                                .gap(theme::GAP_SM)
+                                // 作者亲笔新建：不经过 AI，直接落台账
+                                .child(cap_btn("clues-add", "新建伏笔", cx).on_click(
+                                    cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ViewEvent::LedgerAdd(
+                                            crate::store::Ledger::Clues,
+                                            serde_json::json!({
+                                                "title": "新伏笔",
+                                                "detail": "",
+                                                "status": "待埋",
+                                                "plantedChapter": 0,
+                                                "lastActionChapter": 0
+                                            }),
+                                        ));
+                                    }),
+                                ))
+                                .child(cap_btn("clues-inventory", "AI 盘点（提案）", cx).on_click(
+                                    cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ViewEvent::RunCapability("inventory"));
+                                    }),
+                                )),
+                        ),
                 )
                 .child(kit_table(&["编号", "标题 / 详情", "节奏", "埋于", "最近动作", "状态"], rows))
                 .when_true(clues.is_empty(), |d| {
                     d.child(empty_hint("台账为空", "「AI 盘点伏笔」提案可从正文重建埋点、推进与节奏。"))
+                })
+                // 逐条管理：表格里的行是只读展示，删除/改章放在这里，
+                // 避免在表格单元格里塞交互控件（kit 的 Table 不支持）。
+                .when_true(!clues.is_empty(), |d| {
+                    let mut lines = div().flex().flex_col().gap(px(1.));
+                    for c in clues.iter() {
+                        let id = c.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                        let title = c.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let planted = c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let resolved = c.get("resolvedChapter").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let meta = if resolved > 0 { format!("收于 {resolved}") } else { String::new() };
+                        lines = lines.child(manage_row(
+                            cx,
+                            crate::store::Ledger::Clues,
+                            &id,
+                            &title,
+                            meta,
+                            // 就地微调：埋设章 +1（改章节是最常做的动作）
+                            Some((
+                                format!("埋{planted} →"),
+                                serde_json::json!({ "plantedChapter": planted + 1 }),
+                            )),
+                        ));
+                    }
+                    d.child(sec_title("逐条管理"))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("点「埋N →」把埋设章推后一章；「×」删除（可撤销）。"),
+                        )
+                        .child(lines)
                 }),
         )
     }
@@ -1891,6 +2235,7 @@ impl Focusable for SnapshotsPanel {
 impl Render for SnapshotsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut snap_rows: Vec<TableRow> = Vec::new();
+        // 快照列表只显示最近 40 个（不是台账，是文件快照；更早的靠目录查看）
         for name in self.names.iter().take(40) {
             let n = name.clone();
             // 快照文件名 = 台账码（等宽）；恢复 = 破坏性红（规则 6/10）。

@@ -1117,6 +1117,110 @@ mod tests {
     }
 
     #[test]
+    fn ledger_crud_round_trips_and_logs() {
+        let (_home, _guard) = use_home("ledger-crud");
+        let dir = create_project("台账测试书").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        // 新增
+        let id = h
+            .ledger_add(
+                Ledger::Clues,
+                serde_json::json!({"title": "断刀的来历", "detail": "刀柄有刻痕"}),
+                "新建伏笔",
+            )
+            .unwrap();
+        assert_eq!(h.ledger(Ledger::Clues).unwrap().len(), 1);
+        // 改：只并字段，不整体替换
+        h.ledger_update(
+            Ledger::Clues,
+            &id,
+            serde_json::json!({"plantedChapter": 3}),
+            "补埋设章",
+        )
+        .unwrap();
+        let clue = &h.ledger(Ledger::Clues).unwrap()[0];
+        assert_eq!(clue.get("title").and_then(|v| v.as_str()), Some("断刀的来历"));
+        assert_eq!(clue.get("plantedChapter").and_then(|v| v.as_u64()), Some(3));
+        // 删
+        h.ledger_remove(Ledger::Clues, &id, "删掉").unwrap();
+        assert!(h.ledger(Ledger::Clues).unwrap().is_empty());
+        // 三次写操作都应进日志，且可撤销
+        let logs = crate::journal::Journal::new(&h.root).all();
+        assert!(logs.len() >= 3, "台账增删改都要留痕，实际 {}", logs.len());
+    }
+
+    #[test]
+    fn ledger_delete_is_undoable_from_the_journal() {
+        let (_home, _guard) = use_home("ledger-undo");
+        let dir = create_project("台账撤销书").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        let id = h
+            .ledger_add(
+                Ledger::Clues,
+                serde_json::json!({"title": "灯芯", "plantedChapter": 2}),
+                "新建伏笔",
+            )
+            .unwrap();
+        h.ledger_remove(Ledger::Clues, &id, "误删").unwrap();
+        assert!(h.ledger(Ledger::Clues).unwrap().is_empty());
+
+        // 撤销那次删除：条目回到台账里，字段完整
+        let journal = crate::journal::Journal::new(&h.root);
+        let del = journal
+            .all()
+            .into_iter()
+            .find(|c| c.path == "clues.json" && c.note == "误删")
+            .expect("删除要留痕");
+        let outcome = journal.undo(&h.root, &del.id).unwrap();
+        assert!(matches!(outcome, crate::journal::UndoOutcome::Restored));
+        let back = h.ledger(Ledger::Clues).unwrap();
+        assert_eq!(back.len(), 1, "撤销后条目应回来");
+        assert_eq!(back[0].get("title").and_then(|v| v.as_str()), Some("灯芯"));
+        assert_eq!(back[0].get("plantedChapter").and_then(|v| v.as_u64()), Some(2));
+    }
+
+    #[test]
+    fn ledger_update_never_changes_id() {
+        let (_home, _guard) = use_home("ledger-id");
+        let dir = create_project("台账测试书").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        let id = h
+            .ledger_add(Ledger::Events, serde_json::json!({"objectiveFact": "x"}), "")
+            .unwrap();
+        // 试图改 id：必须被忽略，否则撤销与引用全断
+        h.ledger_update(Ledger::Events, &id, serde_json::json!({"id": "HACKED"}), "")
+            .unwrap();
+        let row = &h.ledger(Ledger::Events).unwrap()[0];
+        assert_eq!(row.get("id").and_then(|v| v.as_str()), Some(id.as_str()));
+    }
+
+    #[test]
+    fn ledger_add_allocates_unique_ids() {
+        let (_home, _guard) = use_home("ledger-ids");
+        let dir = create_project("台账测试书").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        let a = h.ledger_add(Ledger::Clues, serde_json::json!({"title": "甲"}), "").unwrap();
+        let b = h.ledger_add(Ledger::Clues, serde_json::json!({"title": "乙"}), "").unwrap();
+        assert_ne!(a, b, "id 不能重复");
+        assert_eq!(h.ledger(Ledger::Clues).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn ledger_corrupt_file_is_not_overwritten_by_crud() {
+        let (_home, _guard) = use_home("ledger-corrupt");
+        let dir = create_project("台账测试书").unwrap();
+        std::fs::write(dir.join("clues.json"), "{ 坏掉了").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        // 坏文件时新增必须报错，而不是当成空表覆盖
+        assert!(h
+            .ledger_add(Ledger::Clues, serde_json::json!({"title": "x"}), "")
+            .is_err());
+        assert!(std::fs::read_to_string(dir.join("clues.json"))
+            .unwrap()
+            .contains("坏掉了"));
+    }
+
+    #[test]
     fn project_meta_roundtrip_preserves_other_fields() {
         let (home, _guard) = use_home("project-meta");
         let dir = create_project("作品信息").unwrap();
@@ -2895,4 +2999,143 @@ pub fn fmt_thousands(n: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+/// 台账种类。作者能直接增删改的实体就这几类。
+///
+/// 为什么用枚举而不是字符串：调用方写错文件名是静默错误（写到不存在的台账上），
+/// 枚举让它变成编译错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ledger {
+    Storylines,
+    Events,
+    Stages,
+    Clues,
+}
+
+impl Ledger {
+    pub fn file(self) -> &'static str {
+        match self {
+            Ledger::Storylines => "storylines.json",
+            Ledger::Events => "events.json",
+            Ledger::Stages => "stages.json",
+            Ledger::Clues => "clues.json",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Ledger::Storylines => "故事线",
+            Ledger::Events => "事件",
+            Ledger::Stages => "幕",
+            Ledger::Clues => "伏笔",
+        }
+    }
+
+    /// id 前缀：新建时按这个分配，与既有数据风格一致。
+    fn id_prefix(self) -> &'static str {
+        match self {
+            Ledger::Storylines => "L",
+            Ledger::Events => "E",
+            Ledger::Stages => "S",
+            Ledger::Clues => "F",
+        }
+    }
+}
+
+impl ProjectHandle {
+    /// 读一份台账（坏 JSON 报错而不是当空——写路径不能拿空表覆盖用户数据）。
+    pub fn ledger(&self, which: Ledger) -> Result<Vec<serde_json::Value>, String> {
+        self.read_array_checked(which.file())
+    }
+
+    /// 新增一条。自动分配 id 并补常用默认字段；`note` 写进改动日志。
+    pub fn ledger_add(
+        &self,
+        which: Ledger,
+        mut item: serde_json::Value,
+        note: &str,
+    ) -> Result<String, String> {
+        let mut list = self.ledger(which)?;
+        let before = serde_json::to_string(&list).unwrap_or_default();
+        // id 去重：已有同 id 就换下一个
+        let mut seq = list.len() + 1;
+        let id = loop {
+            let cand = format!("{}{:02}", which.id_prefix(), seq);
+            if !list.iter().any(|x| x.get("id").and_then(|v| v.as_str()) == Some(&cand)) {
+                break cand;
+            }
+            seq += 1;
+        };
+        let obj = item.as_object_mut().ok_or("新增条目必须是 JSON 对象")?;
+        obj.entry("id".to_string()).or_insert(serde_json::json!(id));
+        let final_id = obj.get("id").and_then(|v| v.as_str()).unwrap_or(&id).to_string();
+        list.push(item);
+        self.save_array(which.file(), &list)?;
+        let after = serde_json::to_string(&list).unwrap_or_default();
+        self.log_ledger(which, &before, &after, note);
+        Ok(final_id)
+    }
+
+    /// 改一条：把 `patch` 里的字段并进去（不整体替换，避免丢掉未在表单上的字段）。
+    pub fn ledger_update(
+        &self,
+        which: Ledger,
+        id: &str,
+        patch: serde_json::Value,
+        note: &str,
+    ) -> Result<(), String> {
+        let mut list = self.ledger(which)?;
+        let before = serde_json::to_string(&list).unwrap_or_default();
+        let idx = list
+            .iter()
+            .position(|x| x.get("id").and_then(|v| v.as_str()) == Some(id))
+            .ok_or_else(|| format!("{} 里没有 id={id}", which.label()))?;
+        if let (Some(dst), Some(src)) = (list[idx].as_object_mut(), patch.as_object()) {
+            for (k, v) in src {
+                // id 不允许被改：它是撤销与引用的锚
+                if k == "id" {
+                    continue;
+                }
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        self.save_array(which.file(), &list)?;
+        let after = serde_json::to_string(&list).unwrap_or_default();
+        self.log_ledger(which, &before, &after, note);
+        Ok(())
+    }
+
+    /// 删一条。
+    pub fn ledger_remove(&self, which: Ledger, id: &str, note: &str) -> Result<(), String> {
+        let mut list = self.ledger(which)?;
+        let before = serde_json::to_string(&list).unwrap_or_default();
+        let len = list.len();
+        list.retain(|x| x.get("id").and_then(|v| v.as_str()) != Some(id));
+        if list.len() == len {
+            return Err(format!("{} 里没有 id={id}", which.label()));
+        }
+        self.save_array(which.file(), &list)?;
+        let after = serde_json::to_string(&list).unwrap_or_default();
+        self.log_ledger(which, &before, &after, note);
+        Ok(())
+    }
+
+    /// 台账写入统一记日志。日志失败不阻断——台账已经安全落盘了。
+    fn log_ledger(&self, which: Ledger, before: &str, after: &str, note: &str) {
+        if before == after {
+            return;
+        }
+        let _ = crate::journal::Journal::new(&self.root).record(
+            &self.root,
+            which.file(),
+            before,
+            after,
+            &crate::journal::Actor::Author,
+            "edit",
+            &format!("b{}", crate::journal::now_millis()),
+            note,
+        );
+    }
+
 }
