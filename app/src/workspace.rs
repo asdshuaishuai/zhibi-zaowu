@@ -511,15 +511,31 @@ impl Workspace {
             window,
             |this, _, ev: &SettingsEvent, _window, cx| match ev {
                 SettingsEvent::Persist(cfg) => {
-                    // 整份设置来自表单（含模型、推理强度、写作档位、开关），
-                    // 直接写盘；模型相关项下次启动运行时生效。
-                    let msg = match crate::store::save_settings(cfg) {
-                        Ok(()) => "设置已保存（模型相关项下次启动运行时生效）".to_string(),
-                        Err(e) => format!("保存失败：{e}"),
-                    };
-                    this.trajectory.update(cx, |panel, cx| {
-                        panel.push(TrajKind::Info(msg), cx);
-                    });
+                    // 整份设置来自表单（含模型、推理强度、写作档位、插件开关），
+                    // 直接写盘。这些项都要重新生成 patch 才生效。
+                    match crate::store::save_settings(cfg) {
+                        Ok(()) => {
+                            // 进程还开着，但跑的是旧 patch：不重启的话作者会以为
+                            // 刚关掉的联网已经生效，实际这一轮还能联网。
+                            // 所以这里直接重启（对话不丢，靠 session/resume 接回），
+                            // 而不是只丢一句"下次生效"让作者自己去猜什么时候算下次。
+                            let was_running = this.client.is_some();
+                            if was_running {
+                                this.restart_runtime(cx);
+                            }
+                            let msg = if was_running {
+                                "设置已保存；运行时已重启，新设置即刻生效（对话历史保留）"
+                            } else {
+                                "设置已保存（运行时未启动，下次发送时按新设置启动）"
+                            };
+                            this.trajectory.update(cx, |panel, cx| {
+                                panel.push(TrajKind::Info(msg.to_string()), cx);
+                            });
+                        }
+                        Err(e) => this.trajectory.update(cx, |panel, cx| {
+                            panel.push(TrajKind::Fail(format!("保存失败：{e}")), cx);
+                        }),
+                    }
                 }
                 SettingsEvent::SaveBookPreset { name, persona, takeover } => {
                     // 空 persona = 作者清空了输入框 = 删除（"删除即恢复默认"）
