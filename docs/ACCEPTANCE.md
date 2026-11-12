@@ -2,7 +2,7 @@
 
 构建：`./scripts/build_app.sh` → `open target/release/执笔造物.app`
 （`.app` 已内置 Node + DSH，目标机无需安装；真实模型在「设置」里配 API Key 或账号）。
-双端测试：`./scripts/test-all.sh`（Rust 178 项 + novel-pack 4 项）。
+双端测试：`./scripts/test-all.sh`（Rust 179 项 + novel-pack 4 项）。
 逐项打勾即验收；「期望」为验收标准，不符请记现象。
 
 ## A. 书架（首页）

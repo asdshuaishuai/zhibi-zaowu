@@ -258,8 +258,51 @@ pub fn create_project(title: &str) -> Result<PathBuf, String> {
         ])).unwrap(),
     )?;
     write_atomic(&dir.join("canvas.json"), "{}")?;
+    // 创作法典：DSH 的 agent-instructions 会读 cwd 下的 AGENTS.md 并作为
+    // 项目级指令注入（cwd = 书目录）。计划里"persona 与规则来自本书 AGENTS.md
+    // （创作法典、铁律、授权章节）"指的就是这个文件——不建它，那些铁律只存在于
+    // 我们的界面文案里，模型完全看不到。
+    //
+    // 写一次就不覆盖：作者之后会改它（这正是它存在的意义）。
+    if !dir.join("AGENTS.md").exists() {
+        write_atomic(&dir.join("AGENTS.md"), DEFAULT_AGENTS_MD)?;
+    }
     Ok(dir)
 }
+
+/// 新书的创作法典。
+///
+/// 只写"模型必须知道、又无法从数据里推断"的约束。具体的字段格式、提案形状
+/// 在各技能里，这里不重复——重复了就会两处不一致。
+pub const DEFAULT_AGENTS_MD: &str = r#"# 创作法典
+
+你是这本书的写作助手。作者写正文，你理账。
+
+## 铁律
+
+1. **正文只由作者落笔。** 除非作者明确授权某一章代笔，否则不要写、不要改
+   任何 `chapters/ch-*/prose.md`。
+2. **一切产出都是提案。** 设定、伏笔、骨架、草稿、改动建议，一律通过
+   `propose_*` 工具登记，由作者在收件箱里裁决。不要直接写台账 JSON。
+3. **有据才说。** 引用要落到具体章节或设定文件；查不到就写"未找到依据"，
+   不要用常识补一个看起来合理的答案。
+4. **不评文风。** 校审只查客观错误（连续性、设定违背、伏笔合同、物理不可能、
+   动机断裂）。"这段写得不够好"不是问题，"第 7 章说他死了，第 12 章他又出场"
+   才是。
+
+## 术语
+
+- **世界线**：剧情的时间轴。已写进正文的部分是正典（固化），之后是开放的 if 空间。
+- **画布**：人物、设定、道具、事件之间的关联网。它不是时间轴。
+- **预言书**：写 if 假设的地方。这里的推演不改正典。
+- **章节排期**：工作进度安排，与世界线无关。
+
+## 写作档位（由本书配置决定，不要绕过）
+
+- 辅助档：只能提案，不能写台账。
+- 共写档：可以写台账，不能写正文。
+- 代笔档：只有作者逐章授权的那几章可以写正文。
+"#;
 
 fn safe_file_name(s: &str) -> String {
     let cleaned: String = s
@@ -489,6 +532,29 @@ mod tests {
         assert!(cfg.subagent_enabled, "老配置缺键时必须默认允许子 agent");
         assert_eq!(cfg.idle_recycle_min, 30);
         assert_eq!(cfg.max_runtime_procs, 2, "老配置缺键时必须给进程数上限");
+    }
+
+    #[test]
+    fn new_project_gets_an_agents_md_with_the_rules() {
+        // DSH 的 agent-instructions 读 cwd（= 书目录）下的 AGENTS.md 注入项目指令。
+        // 不建这个文件，界面上的铁律就只是界面文案，模型看不到。
+        let (home, _guard) = use_home("agents-md");
+        let dir = create_project("法典测试").unwrap();
+        let path = dir.join("AGENTS.md");
+        assert!(path.exists(), "新建书必须带 AGENTS.md");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("正文只由作者落笔"));
+        assert!(text.contains("propose_"));
+        assert!(text.contains("世界线"), "术语分歧是模型最容易搞错的地方");
+        // 已存在时不能被覆盖：作者会改它（这里直接验证"只在缺失时写"的契约）
+        assert!(!dir.join("AGENTS.md").with_extension("md.bak").exists());
+        std::fs::write(&path, "作者改过的法典").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "作者改过的法典",
+            "写完后仍可被作者改"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
