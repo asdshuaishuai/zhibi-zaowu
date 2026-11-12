@@ -111,6 +111,18 @@ impl Character {
         }
     }
 
+    /// 一句话身份：「主角 · 断刀客」，用于按钮与指令里指认这个人。
+    pub fn roles_line(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if !self.role.trim().is_empty() {
+            parts.push(&self.role);
+        }
+        if !self.faction.trim().is_empty() {
+            parts.push(&self.faction);
+        }
+        parts.join(" · ")
+    }
+
     pub fn is_locked(&self, field: &str) -> bool {
         self.locked_fields.iter().any(|f| f == field)
     }

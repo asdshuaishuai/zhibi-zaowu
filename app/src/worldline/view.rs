@@ -59,8 +59,6 @@ pub enum WorldlineEvent {
     Archive(String),
     /// 删除
     Remove(String),
-    /// 跳到预言书，针对某条线推演
-    Simulate(String),
     /// 改一个节点的字段（章号 / 标题 / 状态）
     NodePatch {
         line: String,
@@ -69,6 +67,12 @@ pub enum WorldlineEvent {
     },
     /// 删一个节点
     NodeRemove { line: String, node: String },
+    /// 派活给某个专属 Agent（能力表驱动）
+    Delegate {
+        agent: &'static str,
+        key: &'static str,
+        target: Option<String>,
+    },
     /// 改线的名字 / 假设
     UpdateMeta {
         line: String,
@@ -579,7 +583,6 @@ impl Render for WorldlinePanel {
                     Kind::WhatIf => "假设线：如果某件事不一样会怎样。还没定。",
                 };
                 let forks_here = forks_at(&lines, l.fork_chapter());
-                let lid = l.id.clone();
                 let l2 = l.id.clone();
                 let l3 = l.id.clone();
                 let l4 = l.id.clone();
@@ -660,14 +663,33 @@ impl Render for WorldlinePanel {
                             .flex()
                             .flex_wrap()
                             .gap(theme::GAP_SM)
-                            .child(
-                                Button::new("wl-sim")
-                                    .xsmall()
-                                    .label("在预言书推演")
-                                    .on_click(cx.listener(move |_this, _, _, cx| {
-                                        cx.emit(WorldlineEvent::Simulate(lid.clone()));
-                                    })),
-                            )
+                            // 针对这条线的 Agent 操作（能力表驱动）
+                            .children({
+                                let desc = format!("世界线 {}「{}」（分叉于第{}章）", l.id, l.name, l.fork_chapter());
+                                let mut bar = div().flex().gap(theme::GAP_SM);
+                                for aid in ["worldline", "oracle"] {
+                                    let Some(spec) = crate::capabilities::agent(aid) else { continue };
+                                    for op in spec.targeted {
+                                        if op.target_kind != crate::capabilities::TargetKind::Line {
+                                            continue;
+                                        }
+                                        let d = desc.clone();
+                                        bar = bar.child(
+                                            Button::new(SharedString::from(op.key))
+                                                .xsmall()
+                                                .label(op.label)
+                                                .on_click(cx.listener(move |_this, _, _, cx| {
+                                                    cx.emit(WorldlineEvent::Delegate {
+                                                        agent: aid,
+                                                        key: op.key,
+                                                        target: Some(d.clone()),
+                                                    });
+                                                })),
+                                        );
+                                    }
+                                }
+                                vec![bar.into_any_element()]
+                            })
                             .when(!l.is_base(), |d| {
                                 d.child(
                                     Button::new("wl-fork")
@@ -855,9 +877,16 @@ impl Render for WorldlinePanel {
                                             .text_color(theme::ACCENT())
                                             .child("推演")
                                             .on_click(cx.listener({
-                                                let lid = l.id.clone();
+                                                let ndesc = format!(
+                                                    "世界线 {}「{}」的第{}章节点「{}」",
+                                                    l.id, l.name, ch, n.label
+                                                );
                                                 move |_t, _, _, cx| {
-                                                    cx.emit(WorldlineEvent::Simulate(lid.clone()));
+                                                    cx.emit(WorldlineEvent::Delegate {
+                                                        agent: "worldline",
+                                                        key: "wl-from-node",
+                                                        target: Some(ndesc.clone()),
+                                                    });
                                                 }
                                             })),
                                     )
@@ -1481,6 +1510,27 @@ impl Render for WorldlinePanel {
                                 )
                             })),
                     )
+                    // 模块一键能力：整理节点（能力表驱动）
+                    .children({
+                        let mut bar = div().flex().gap(px(4.));
+                        if let Some(spec) = crate::capabilities::agent("worldline") {
+                            for cap in spec.bulk {
+                                bar = bar.child(
+                                    Button::new(SharedString::from(cap.key))
+                                        .xsmall()
+                                        .label(cap.label)
+                                        .on_click(cx.listener(move |_t, _, _, cx| {
+                                            cx.emit(WorldlineEvent::Delegate {
+                                                agent: "worldline",
+                                                key: cap.key,
+                                                target: None,
+                                            });
+                                        })),
+                                );
+                            }
+                        }
+                        vec![bar.into_any_element()]
+                    })
                     .when_some(self.message.clone(), |d, m| {
                         d.child(
                             div()

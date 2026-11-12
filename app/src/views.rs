@@ -31,6 +31,13 @@ use crate::theme;
 pub enum ViewEvent {
     /// 触发一次 AI 能力（capability 键）
     RunCapability(&'static str),
+    /// 派活给某个专属 Agent。`target` = None 表示模块级一键能力；
+    /// Some(desc) 表示针对某个指定对象（desc 是给人看的对象描述）。
+    Delegate {
+        agent: &'static str,
+        key: &'static str,
+        target: Option<String>,
+    },
     /// 台账新增（种类, 字段）
     LedgerAdd(crate::store::Ledger, serde_json::Value),
     /// 台账改一条（种类, id, 字段补丁）
@@ -667,16 +674,28 @@ impl Render for OutlinePanel {
                                         ));
                                     }),
                                 ))
-                                .child(cap_btn("outline-sync", "同步大纲（提案）", cx).on_click(
-                                    cx.listener(|_this, _, _, cx| {
-                                        cx.emit(ViewEvent::RunCapability("outsync"));
-                                    }),
-                                ))
-                                .child(cap_btn("outline-audit", "全书连贯性审查", cx).on_click(
-                                    cx.listener(|_this, _, _, cx| {
-                                        cx.emit(ViewEvent::RunCapability("audit"));
-                                    }),
-                                )),
+                                // 一键能力由能力表驱动：大纲对账 / 伏笔盘点 / 设定归类
+                                // 各归它的 Agent，页面不写死"这是谁的活"。
+                                .children({
+                                    let mut bar = div().flex().flex_wrap().gap(theme::GAP_SM);
+                                    for aid in ["outline", "reviewer"] {
+                                        let Some(spec) = crate::capabilities::agent(aid) else { continue };
+                                        for cap in spec.bulk {
+                                            bar = bar.child(
+                                                cap_btn(cap.key, cap.label, cx).on_click(
+                                                    cx.listener(move |_this, _, _, cx| {
+                                                        cx.emit(ViewEvent::Delegate {
+                                                            agent: aid,
+                                                            key: cap.key,
+                                                            target: None,
+                                                        });
+                                                    }),
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    vec![bar.into_any_element()]
+                                }),
                         ),
                 )
                 .child(kit_table(&["线", "名称", "状态"], line_rows))
@@ -1179,11 +1198,30 @@ impl Render for CluesPanel {
                                         ));
                                     }),
                                 ))
-                                .child(cap_btn("clues-inventory", "AI 盘点（提案）", cx).on_click(
-                                    cx.listener(|_this, _, _, cx| {
-                                        cx.emit(ViewEvent::RunCapability("inventory"));
-                                    }),
-                                )),
+                                // 伏笔盘点属于大纲伏笔 Agent 的一键能力
+                                .children({
+                                    let mut bar = div().flex().gap(theme::GAP_SM);
+                                    for aid in ["outline"] {
+                                        let Some(spec) = crate::capabilities::agent(aid) else { continue };
+                                        for cap in spec.bulk {
+                                            if !cap.key.contains("clues") {
+                                                continue;
+                                            }
+                                            bar = bar.child(
+                                                cap_btn(cap.key, cap.label, cx).on_click(
+                                                    cx.listener(move |_this, _, _, cx| {
+                                                        cx.emit(ViewEvent::Delegate {
+                                                            agent: aid,
+                                                            key: cap.key,
+                                                            target: None,
+                                                        });
+                                                    }),
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    vec![bar.into_any_element()]
+                                }),
                         ),
                 )
                 .child(kit_table(&["编号", "标题 / 详情", "节奏", "埋于", "最近动作", "状态"], rows))
@@ -1262,6 +1300,11 @@ pub enum CharacterEvent {
     Migrate,
     /// 锁定/解锁某字段
     ToggleLock(String),
+    /// 派活给人物 Agent：一键能力（target=None）或针对某个人物（target=Some(描述)）
+    Delegate {
+        key: &'static str,
+        target: Option<String>,
+    },
 }
 
 pub struct CharactersPanel {
@@ -1849,7 +1892,28 @@ impl Render for CharactersPanel {
                                 }
                             },
                         )),
-                    );
+                    )
+                    // 针对这个人的操作：选中沈砚 → 只补沈砚，不顺带动别人。
+                    .children(crate::capabilities::agent("character").map(|a| {
+                        let mut bar = div().flex().gap(theme::GAP_SM);
+                        for op in a.targeted {
+                            if op.target_kind != crate::capabilities::TargetKind::Character {
+                                continue;
+                            }
+                            let desc = crate::prompts::describe_character(&c);
+                            bar = bar.child(
+                                cap_btn(op.key, op.label, cx).on_click(cx.listener(
+                                    move |_this, _, _, cx| {
+                                        cx.emit(CharacterEvent::Delegate {
+                                            key: op.key,
+                                            target: Some(desc.clone()),
+                                        });
+                                    },
+                                )),
+                            );
+                        }
+                        bar.into_any_element()
+                    }));
 
                 div()
                     .flex()
@@ -1903,6 +1967,30 @@ impl Render for CharactersPanel {
                         Tone::Green,
                     ))
                 })
+                // 模块一键能力：由能力表驱动，不在这里写死按钮。
+                // 加一个 Agent 能力只需改 capabilities.rs，页面自动出现。
+                .children(crate::capabilities::agent("character").map(|a| {
+                    let mut bar = div().flex().flex_wrap().gap(theme::GAP_SM).items_center();
+                    bar = bar.child(
+                        div()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::FAINT())
+                            .child(SharedString::from(a.duty)),
+                    );
+                    for cap in a.bulk {
+                        bar = bar.child(
+                            cap_btn(cap.key, cap.label, cx).on_click(cx.listener(
+                                move |_this, _, _, cx| {
+                                    cx.emit(CharacterEvent::Delegate {
+                                        key: cap.key,
+                                        target: None,
+                                    });
+                                },
+                            )),
+                        );
+                    }
+                    bar.into_any_element()
+                }))
                 .child(
                     div()
                         .flex()

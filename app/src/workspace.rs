@@ -628,6 +628,9 @@ impl Workspace {
                     });
                     let _ = window;
                 }
+                ViewEvent::Delegate { agent, key, target } => {
+                    this.delegate(agent, key, target.clone(), cx);
+                }
                 // 设定页暂不做台账增删（设定是 Markdown 文件，不是 JSON 台账），
                 // 但事件类型是共享的，这里显式忽略而不是漏处理。
                 ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {}
@@ -641,6 +644,9 @@ impl Workspace {
                 ViewEvent::RunCapability(cap) => {
                     let task = prompts::task_for(cap, this.chapter);
                     this.on_send(task, cx);
+                }
+                ViewEvent::Delegate { agent, key, target } => {
+                    this.delegate(agent, key, target.clone(), cx);
                 }
                 // 作者亲笔的台账增删改统一走 on_ledger_event（store 的 CRUD 自带日志与撤销）。
                 ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {
@@ -657,6 +663,9 @@ impl Workspace {
                     let task = prompts::task_for(cap, this.chapter);
                     this.on_send(task, cx);
                 }
+                ViewEvent::Delegate { agent, key, target } => {
+                    this.delegate(agent, key, target.clone(), cx);
+                }
                 // 作者亲笔的台账增删改统一走 on_ledger_event（store 的 CRUD 自带日志与撤销）。
                 ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {
                     this.on_ledger_event(ev, cx);
@@ -671,6 +680,9 @@ impl Workspace {
                 ViewEvent::RunCapability(cap) => {
                     let task = prompts::task_for(cap, this.chapter);
                     this.on_send(task, cx);
+                }
+                ViewEvent::Delegate { agent, key, target } => {
+                    this.delegate(agent, key, target.clone(), cx);
                 }
                 // 作者亲笔的台账增删改统一走 on_ledger_event（store 的 CRUD 自带日志与撤销）。
                 ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {
@@ -695,17 +707,11 @@ impl Workspace {
             .detach();
 
         cx.subscribe_in(&chat, window, |this, _, ev: &ChatEvent, _window, cx| match ev {
-            ChatEvent::SendTo { text, target } => {
-                // 界面显示作者原话；真正发出去的是"转交给 X"的指令。
-                // 两者分开：作者看到自己写的话，AI 收到可执行的派活指令。
+            ChatEvent::Send(text) => {
                 this.chat.update(cx, |panel, cx| {
                     panel.push(ChatMsg { role: "user".into(), text: text.clone() }, cx)
                 });
-                let outgoing = match target {
-                    Some(agent) => crate::prompts::direct_agent_task(agent, text),
-                    None => text.clone(),
-                };
-                this.on_send(outgoing, cx);
+                this.on_send(text.clone(), cx);
             }
         })
         .detach();
@@ -832,6 +838,9 @@ impl Workspace {
                                 .update(cx, |p, cx| p.set_message(format!("新增失败：{e}"), cx)),
                         }
                     }
+                    WE::Delegate { agent, key, target } => {
+                        this.delegate(agent, key, target.clone(), cx);
+                    }
                     WE::UpdateMeta { line, name, premise } => {
                         match store.update_line_meta(line, name.clone(), premise.clone()) {
                             Ok(()) => this
@@ -900,14 +909,6 @@ impl Workspace {
                                 p.set_message(format!("关联失败：{e}"), cx)
                             }),
                         }
-                    }
-                    WE::Simulate(id) => {
-                        // 跳到预言书并选中该线：推演是那一页的事
-                        let id = id.clone();
-                        this.oracle_view.update(cx, |panel, cx| {
-                            panel.select_line(id, cx);
-                        });
-                        this.switch_center(Mode::Oracle, window, cx);
                     }
                 }
             },
@@ -1024,7 +1025,14 @@ impl Workspace {
                         );
                     }
                 };
+                // 派活不走「提示消息」这条路：它要发到 AI 会话里，不是页面反馈。
+                if let CharacterEvent::Delegate { key, target } = ev {
+                    this.delegate("character", key, target.clone(), cx);
+                    return;
+                }
                 let msg = match ev {
+                    // 上面已提前 return；这里显式列出，避免以后加分支时漏处理
+                    CharacterEvent::Delegate { .. } => None,
                     CharacterEvent::Create(name) => {
                         let name = name.trim().to_string();
                         if name.is_empty() {
@@ -1868,6 +1876,50 @@ impl Workspace {
     ///
     /// 这里不自动批准。DSH 的 fail-closed 语义正好保证「作者不点 = 不执行」，
     /// 所以只把卡片摆出来即可，不设超时兜底。
+    /// 派活给某个专属 Agent。
+    ///
+    /// 两条路走同一个入口，区别只在有没有指定对象：
+    /// - `target = None`：模块级一键能力（人物页「全量补全」）——已经点名了 preset，
+    ///   主 Agent 只负责转交与汇总。
+    /// - `target = Some(desc)`：针对某个指定对象（「补全沈砚」）——描述带上对象，
+    ///   子 Agent 不用自己再查一遍才知道在说谁。
+    ///
+    /// 为什么页面要写死路由：作者点了「补全沈砚」，意图已经明确。这时再让主 Agent
+    /// 自己挑 Agent，它可能挑错、可能自己干了、也可能反过来问作者——三次都算失败。
+    fn delegate(
+        &mut self,
+        agent: &'static str,
+        key: &'static str,
+        target: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let task = match target {
+            Some(desc) => crate::capabilities::targeted_task(agent, key, &desc),
+            None => crate::capabilities::bulk_task(agent, key),
+        };
+        match task {
+            Some(t) => {
+                // 轨迹里写清派给了谁：作者点了按钮之后要能确认"它真的去做了"，
+                // 而不是只有一句"已交给 AI"。
+                let label = crate::capabilities::agent(agent).map(|a| a.label).unwrap_or(agent);
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(
+                        TrajKind::Info(format!("已派给「{label}」Agent（轨迹窗可见全程）")),
+                        cx,
+                    )
+                });
+                self.on_send(t, cx);
+            }
+            // key 写错时宁可不发，也不要发一条主 Agent 看不懂的指令
+            None => self.trajectory.update(cx, |panel, cx| {
+                panel.push(
+                    TrajKind::Fail(format!("内部错误：未知能力 {agent}/{key}")),
+                    cx,
+                )
+            }),
+        }
+    }
+
     /// 空闲回收：闲置超过设置里 `idleRecycleMin` 分钟就关掉进程。
     ///
     /// 三条保护，避免把作者正在用的进程杀掉：

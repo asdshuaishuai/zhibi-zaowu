@@ -5,6 +5,7 @@ mod account;
 mod app_root;
 mod bookinfo;
 mod canvas;
+mod capabilities;
 mod characters;
 #[cfg(test)]
 mod conformance;

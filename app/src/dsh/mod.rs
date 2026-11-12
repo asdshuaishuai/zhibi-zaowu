@@ -586,20 +586,33 @@ impl DshClient {
             lines.push("  disabled: false".into());
         }
 
-        // 接管：book 存在且作者打开了 takeover，就给主 Agent 加一段系统提示。
-        // 只改 personaPrefix 一段话，不动任何挂载行——这是"覆盖层"里最轻的一档，
-        // 删掉 book preset 立刻恢复，不会留下半套配置。
+        // 主 Agent 的系统提示：派活路由表。
+        //
+        // 主 Agent 收到「把第 12 章的人物关系捋一下」，要自己判断派给谁。
+        // 判断依据必须是明确的"什么任务 → 派给谁"，不能靠模型从 Agent 名字猜。
+        // 这段不进 patch 的话，主 Agent 会倾向于自己硬做（它有全部工具），
+        // 结果就是"专属 Agent 形同虚设"。
+        lines.push("- id: system-prompt".into());
+        lines.push("  config:".into());
+        lines.push("    personaPrefix: >-".into());
+        for line in crate::capabilities::routing_hint().lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            lines.push(format!("      {}", line.trim_end()));
+        }
+
+        // 接管：book 存在且作者打开了 takeover，就把"先派给它"追加到同一段提示里。
+        //
+        // 必须和上面的路由表合并成**一条** `- id: system-prompt`：patch 是
+        // 按 id 覆盖的，写两段后面那段会把前面整段吃掉（路由表就没了）。
         if let Some(b) = &book {
             if b.takeover {
-                // 一段单行文字：折叠标量里不能留换行——空行会被 YAML 当段落分隔，
-                // 生成的 personaPrefix 会变成以两个换行开头的怪东西（spike 踩过）。
                 let line = format!(
-                    "本书有一位专属助手「{}」（subagent agentPreset=book）。凡涉及本书写作的任务——人物、关系、世界线、预言、大纲伏笔、校审——先派给它；只有纯工具性的杂活（读文件、列目录）你自己做。",
+                    "本书另有一位专属助手「{}」（subagent agentPreset=book）：上面列出的所有写作任务\
+                     都优先派给它，它了解本书的术语与口味；只有纯工具性的杂活你自己做。",
                     b.name
                 );
-                lines.push("- id: system-prompt".into());
-                lines.push("  config:".into());
-                lines.push("    personaPrefix: >-".into());
                 lines.push(format!("      {line}"));
             }
         }
