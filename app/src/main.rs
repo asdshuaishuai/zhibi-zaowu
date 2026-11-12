@@ -6,6 +6,9 @@ mod app_root;
 mod bookinfo;
 mod canvas;
 mod characters;
+#[cfg(test)]
+mod conformance;
+mod conformance_helpers;
 mod chat;
 mod director;
 mod dsh;

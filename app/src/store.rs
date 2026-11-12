@@ -273,6 +273,13 @@ fn safe_file_name(s: &str) -> String {
     if t.is_empty() { "未命名作品".into() } else { t.to_string() }
 }
 
+/// 一致性夹具用的转发：`safe_file_name` 是私有的，但双端测试必须调被测实现
+/// 本身（复制一份规则就失去意义了）。只在测试构建里存在。
+#[cfg(test)]
+pub fn safe_file_name_for_test(s: &str) -> String {
+    safe_file_name(s)
+}
+
 pub fn chapter_dir_name(n: u32) -> String {
     format!("ch-{n:03}")
 }

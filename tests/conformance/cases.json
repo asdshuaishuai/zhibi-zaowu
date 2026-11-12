@@ -1,0 +1,42 @@
+{
+  "_comment": "执笔双端一致性夹具。Rust（app/src/conformance.rs）与 novel-pack（test/conformance.test.mjs）各跑一遍同一份数据。改这里就要两端的实现都跟着改——这正是它存在的意义。",
+  "safeFileName": [
+    { "in": "沈砚传", "out": "沈砚传" },
+    { "in": "a/b\\c", "out": "a_b_c" },
+    { "in": "标题: 副标题", "out": "标题_ 副标题" },
+    { "in": " 空格包裹 ", "out": "空格包裹" },
+    { "in": "带*星号?和\"引号\"", "out": "带_星号_和_引号_" },
+    { "in": "", "out": "未命名作品" },
+    { "in": "   ", "out": "未命名作品" },
+    { "in": "含\n换行\t制表", "out": "含_换行_制表" },
+    { "in": "竖线|与尖括号<>", "out": "竖线_与尖括号__" }
+  ],
+  "chapterDirName": [
+    { "n": 1, "out": "ch-001" },
+    { "n": 42, "out": "ch-042" },
+    { "n": 999, "out": "ch-999" },
+    { "n": 1000, "out": "ch-1000" }
+  ],
+  "writePolicy": [
+    { "mode": "assist", "chapter": 1, "ledger": false, "prose": false,
+      "why": "辅助档：AI 只能提案，台账与正文都不能直写" },
+    { "mode": "cowrite", "chapter": 1, "ledger": true, "prose": false,
+      "why": "共写档：台账可写，正文仍归作者" },
+    { "mode": "ghostwrite", "chapter": 3, "ghostwriteChapters": [3], "ledger": true, "prose": true,
+      "why": "代笔档 + 该章已授权：可以直写正文" },
+    { "mode": "ghostwrite", "chapter": 4, "ghostwriteChapters": [3], "ledger": true, "prose": false,
+      "why": "代笔档但该章未授权：只能写台账" },
+    { "mode": "ghostwrite", "chapter": 1, "ghostwriteChapters": [], "ledger": true, "prose": false,
+      "why": "代笔档但一章都没授权：正文仍然不行（授权必须显式）" },
+    { "mode": "assist", "chapter": 9, "ghostwriteChapters": [9], "ledger": false, "prose": false,
+      "why": "档位优先于逐章授权：辅助档即使授权了该章也不能直写" }
+  ],
+  "intervalCovers": [
+    { "from": 5, "to": 20, "chapter": 4, "covers": false, "why": "还没拜师" },
+    { "from": 5, "to": 20, "chapter": 5, "covers": true, "why": "含起点" },
+    { "from": 5, "to": 20, "chapter": 19, "covers": true },
+    { "from": 5, "to": 20, "chapter": 20, "covers": false, "why": "不含终点" },
+    { "from": 5, "to": 0, "chapter": 999, "covers": true, "why": "to=0 表示开放终点" },
+    { "from": 0, "to": 0, "chapter": 1, "covers": true, "why": "两端开放 = 一直成立" }
+  ]
+}
