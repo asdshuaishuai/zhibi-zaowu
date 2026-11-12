@@ -2241,15 +2241,52 @@ impl ProjectHandle {
 
 // ───────────────────────── 应用设置 / 导出 / 快照 ─────────────────────────
 
-#[derive(Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+/// 应用设置。字段只增不改名：旧 settings.json 里没有的键用默认值补齐，
+/// 已有的键保持，所以升级不会让作者丢配置。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
-    #[serde(default)]
+    /// OpenAI 兼容端点（局域网/自建代理）；空 = 走 DeepSeek 官方路由。
     pub base_url: String,
-    #[serde(default)]
     pub model: String,
-    #[serde(default)]
     pub provider: String,
+    /// 推理强度：low / medium / high（空 = 用 DSH 默认）。
+    pub reasoning_effort: String,
+    /// 单次输出上限（0 = 用 DSH 默认）。
+    pub max_tokens: u32,
+    /// 默认写作档位：assist=辅助 / cowrite=共写 / ghostwrite=代笔。
+    pub writing_mode: String,
+    /// 每日字数目标（0 = 不设目标）。
+    pub daily_goal: u32,
+    /// 允许 AI 联网检索（创造模式查资料时用）。
+    pub web_enabled: bool,
+    /// 允许 AI 派子 agent。
+    pub subagent_enabled: bool,
+    /// 空闲回收 DSH 进程的分钟数（0 = 不回收）。
+    pub idle_recycle_min: u32,
+}
+
+impl AppSettings {
+    /// 推理强度合法值；空串表示交给 DSH 默认。
+    pub fn effort(&self) -> Option<&str> {
+        match self.reasoning_effort.trim() {
+            "low" => Some("low"),
+            "medium" => Some("medium"),
+            "high" => Some("high"),
+            _ => None,
+        }
+    }
+
+    /// 写作档位；非法值一律回落到辅助（最保守）。
+    /// M3 的档位闸门读它决定 AI 能写到哪一步。
+    #[allow(dead_code)]
+    pub fn writing_mode(&self) -> &'static str {
+        match self.writing_mode.trim() {
+            "cowrite" => "cowrite",
+            "ghostwrite" => "ghostwrite",
+            _ => "assist",
+        }
+    }
 }
 
 pub fn settings_path() -> PathBuf {

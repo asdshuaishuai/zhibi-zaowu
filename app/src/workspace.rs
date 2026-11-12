@@ -471,23 +471,29 @@ impl Workspace {
             &settings_view,
             window,
             |this, _, ev: &SettingsEvent, _window, cx| match ev {
-                SettingsEvent::Save {
-                    base_url,
-                    model,
-                    provider,
-                } => {
-                    let cfg = crate::store::AppSettings {
-                        base_url: base_url.clone(),
-                        model: model.clone(),
-                        provider: provider.clone(),
-                    };
-                    let msg = match crate::store::save_settings(&cfg) {
-                        Ok(()) => "设置已保存".to_string(),
+                SettingsEvent::Persist(cfg) => {
+                    // 整份设置来自表单（含模型、推理强度、写作档位、开关），
+                    // 直接写盘；模型相关项下次启动运行时生效。
+                    let msg = match crate::store::save_settings(cfg) {
+                        Ok(()) => "设置已保存（模型相关项下次启动运行时生效）".to_string(),
                         Err(e) => format!("保存失败：{e}"),
                     };
                     this.trajectory.update(cx, |panel, cx| {
                         panel.push(TrajKind::Info(msg), cx);
                     });
+                }
+                SettingsEvent::RefreshAccount => {
+                    // 余额查询走网络，不能卡住 UI：后台线程算完再回填
+                    let home = crate::dsh::home_dir(&this.root);
+                    let weak = this.settings_view.clone();
+                    cx.spawn(async move |_, cx| {
+                        let snap = cx
+                            .background_executor()
+                            .spawn(async move { crate::account::fetch_balance(&home) })
+                            .await;
+                        let _ = weak.update(cx, |panel, cx| panel.set_account(snap, cx));
+                    })
+                    .detach();
                 }
                 SettingsEvent::Test(base_url) => {
                     let base_url = base_url.clone();
@@ -1729,11 +1735,23 @@ async fn initialize_with(
     weak: &gpui_kit::WeakEntity<Workspace>,
     cx: &mut AsyncApp,
 ) -> Result<()> {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| ".".into());
-    let (provider, model) = model_route();
-    let result = client.initialize(&cwd, &provider, &model).await?;
+    // cwd 必须是书目录：DSH 的 workspace-write 边界、项目内 AGENTS.md 与技能目录
+    // 都按它解析。用 GUI 进程的 cwd 会让沙箱边界完全错位。
+    let (root, settings) = weak
+        .update(cx, |ws, _| (ws.root.clone(), crate::store::load_settings()))
+        .map_err(|_| anyhow::anyhow!("工作区已关闭"))?;
+    let cwd = root.display().to_string();
+    let home = crate::dsh::home_dir(&root);
+    let (provider, model) = model_route(&settings, &home);
+    let result = client
+        .initialize(
+            &cwd,
+            &provider,
+            &model,
+            settings.effort(),
+            Some(settings.max_tokens),
+        )
+        .await?;
     let name = result
         .get("serverInfo")
         .and_then(|s| s.get("name"))

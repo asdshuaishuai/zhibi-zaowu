@@ -727,18 +727,28 @@ impl DshClient {
     /// 同时打开两个能力（缺了就无法渲染审批卡与提问弹窗）：
     /// - `approvalRequests`：让服务端把审批发给客户端（创造模式装 bundle、越权写入都要它）；
     /// - `capabilities.userQuestions`：让 `ask_user_question` 走客户端弹窗。
-    pub async fn initialize(&self, cwd: &str, provider: &str, model: &str) -> Result<Value> {
-        self.call(
-            "initialize",
-            json!({
-                "cwd": cwd,
-                "provider": provider,
-                "model": model,
-                "approvalRequests": true,
-                "capabilities": { "userQuestions": true },
-            }),
-        )
-        .await
+    pub async fn initialize(
+        &self,
+        cwd: &str,
+        provider: &str,
+        model: &str,
+        reasoning: Option<&str>,
+        max_tokens: Option<u32>,
+    ) -> Result<Value> {
+        let mut params = json!({
+            "cwd": cwd,
+            "provider": provider,
+            "model": model,
+            "approvalRequests": true,
+            "capabilities": { "userQuestions": true },
+        });
+        if let Some(r) = reasoning {
+            params["reasoningEffort"] = json!(r);
+        }
+        if let Some(t) = max_tokens.filter(|t| *t > 0) {
+            params["maxTokens"] = json!(t);
+        }
+        self.call("initialize", params).await
     }
 
     /// 会话级查询：未知 id 会惰性创建 session + agent。
@@ -782,9 +792,36 @@ impl DshClient {
 
 /// M1 模型路由：sdk server 只对 `deepseek-official` 做兜底适配器挂载；
 /// 自定义 OpenAI 兼容端点在 M3 由 novel-pack 挂适配器后走环境变量覆盖。
-pub fn model_route() -> (String, String) {
-    let provider = std::env::var("ZHIBI_PROVIDER").unwrap_or_else(|_| "deepseek-official".into());
-    let model = std::env::var("ZHIBI_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
+/// 模型路由：环境变量优先（便于测试与临时切换），否则读设置里保存的值。
+///
+/// 之前只读环境变量，导致设置页填了模型却完全不起作用——这是本次修正的点。
+/// 有账号凭据时默认走 `deepseek-account` 路由（能用账号额度），否则退回 API Key 路由。
+pub fn model_route(settings: &crate::store::AppSettings, home: &std::path::Path) -> (String, String) {
+    if let (Ok(p), Ok(m)) = (
+        std::env::var("ZHIBI_PROVIDER"),
+        std::env::var("ZHIBI_MODEL"),
+    ) {
+        return (p, m);
+    }
+    let provider = if !settings.provider.trim().is_empty() {
+        settings.provider.trim().to_string()
+    } else if std::fs::read_to_string(home.join(".credentials.yaml"))
+        .map(|t| t.contains("deepseek-account-platform"))
+        .unwrap_or(false)
+    {
+        // 有账号 grant：用账号路由，额度走账号钱包
+        "deepseek-account".to_string()
+    } else {
+        "deepseek-official".to_string()
+    };
+    let model = if !settings.model.trim().is_empty() {
+        settings.model.trim().to_string()
+    } else if provider == "deepseek-account" {
+        // 账号路由只接受它自己列举的模型；这个是官方账号路由的稳定默认
+        "deepseek-v4-flash".to_string()
+    } else {
+        "deepseek-chat".to_string()
+    };
     (provider, model)
 }
 

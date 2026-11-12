@@ -1,6 +1,7 @@
 //! 执笔造物 —— 跨端 AI 小说/剧本创作工作台（GPUI 前端 + 内嵌 DSH agent 底座）。
 //! 两层结构：书架首页（与内容严格分层，参考旧版执笔）→ 打开作品进三栏工作区。
 
+mod account;
 mod app_root;
 mod bookinfo;
 mod canvas;

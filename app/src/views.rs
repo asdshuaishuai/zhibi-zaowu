@@ -1103,8 +1103,11 @@ impl ComponentPanel for CharactersPanel {
 
 #[derive(Debug, Clone)]
 pub enum SettingsEvent {
-    Save { base_url: String, model: String, provider: String },
+    /// 保存整份设置
+    Persist(crate::store::AppSettings),
     Test(String),
+    /// 刷新账号余额
+    RefreshAccount,
 }
 
 pub struct SettingsPanel {
@@ -1112,6 +1115,19 @@ pub struct SettingsPanel {
     base_url: Entity<gpui_kit::component::input::InputState>,
     model: Entity<gpui_kit::component::input::InputState>,
     provider: Entity<gpui_kit::component::input::InputState>,
+    /// 推理强度：low / medium / high（空 = 交给 DSH 默认）
+    effort: Entity<gpui_kit::component::input::InputState>,
+    /// 默认写作档位：assist / cowrite / ghostwrite
+    writing_mode: Entity<gpui_kit::component::input::InputState>,
+    /// 每日字数目标（0 = 不设）
+    daily_goal: Entity<gpui_kit::component::input::InputState>,
+    /// 允许联网 / 允许子 agent
+    web_enabled: bool,
+    subagent_enabled: bool,
+    /// 账号快照（余额、登录状态）；None = 还没查过
+    account: Option<crate::account::AccountSnapshot>,
+    /// 余额正在查
+    account_busy: bool,
     status: String,
     testing: bool,
 }
@@ -1134,13 +1150,79 @@ impl SettingsPanel {
                 .placeholder("provider 路由（如 deepseek-official）")
                 .default_value(if cfg.provider.is_empty() { "deepseek-official".into() } else { cfg.provider })
         });
-        Self { focus_handle: cx.focus_handle(), base_url, model, provider, status: String::new(), testing: false }
+        let effort = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("推理强度：low / medium / high（留空用默认）")
+                .default_value(cfg.reasoning_effort)
+        });
+        let writing_mode = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("assist / cowrite / ghostwrite")
+                .default_value(if cfg.writing_mode.is_empty() {
+                    "assist".into()
+                } else {
+                    cfg.writing_mode
+                })
+        });
+        let daily_goal = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("每日字数目标（0 = 不设）")
+                .default_value(if cfg.daily_goal == 0 {
+                    String::new()
+                } else {
+                    cfg.daily_goal.to_string()
+                })
+        });
+        let web_enabled = cfg.web_enabled;
+        let subagent_enabled = cfg.subagent_enabled;
+        Self {
+            focus_handle: cx.focus_handle(),
+            base_url,
+            model,
+            provider,
+            effort,
+            writing_mode,
+            daily_goal,
+            web_enabled,
+            subagent_enabled,
+            account: None,
+            account_busy: false,
+            status: String::new(),
+            testing: false,
+        }
     }
 
     pub fn set_result(&mut self, ok: bool, msg: String, cx: &mut Context<Self>) {
         self.testing = false;
         self.status = if ok { format!("✓ {msg}") } else { format!("✕ {msg}") };
         cx.notify();
+    }
+
+    /// 余额查询回来（后台线程做完后回填）。
+    pub fn set_account(&mut self, snap: crate::account::AccountSnapshot, cx: &mut Context<Self>) {
+        self.account_busy = false;
+        self.account = Some(snap);
+        cx.notify();
+    }
+
+    /// 保存时把手上的全部设置一起交给宿主。
+    fn snapshot_values(&self, cx: &App) -> crate::store::AppSettings {
+        let mut cfg = crate::store::load_settings();
+        cfg.base_url = self.base_url.read(cx).value().to_string();
+        cfg.model = self.model.read(cx).value().to_string();
+        cfg.provider = self.provider.read(cx).value().to_string();
+        cfg.reasoning_effort = self.effort.read(cx).value().to_string();
+        cfg.writing_mode = self.writing_mode.read(cx).value().to_string();
+        cfg.daily_goal = self
+            .daily_goal
+            .read(cx)
+            .value()
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        cfg.web_enabled = self.web_enabled;
+        cfg.subagent_enabled = self.subagent_enabled;
+        cfg
     }
 }
 
@@ -1151,6 +1233,69 @@ impl Focusable for SettingsPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
+}
+
+/// 开关行：点击整行切换。用文字「开 / 关」而不是画一个假的 switch，
+/// 因为库里没有现成的 switch 组件，画一个像但不能拖的控件比文字更误导。
+fn toggle_row<F>(
+    id: &'static str,
+    label: &'static str,
+    on: bool,
+    cx: &mut Context<SettingsPanel>,
+    toggle: F,
+) -> gpui_kit::AnyElement
+where
+    F: Fn(&mut SettingsPanel, &mut Context<SettingsPanel>) + 'static,
+{
+    let toggle = std::rc::Rc::new(toggle);
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(theme::GAP_MD)
+        .py(px(4.))
+        .cursor_pointer()
+        .child(
+            div()
+                .w(px(28.))
+                .text_size(theme::FONT_MICRO)
+                .text_color(if on { theme::GREEN() } else { theme::FAINT() })
+                .child(if on { "开" } else { "关" }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_size(theme::FONT_LABEL)
+                .text_color(theme::TEXT())
+                .child(label),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| toggle(this, cx)))
+        .into_any_element()
+}
+
+/// 模式说明行：左侧模式名，右侧一句人话。
+fn mode_line(name: &'static str, detail: &'static str) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .items_start()
+        .gap(theme::GAP_MD)
+        .child(
+            div()
+                .w(px(40.))
+                .flex_shrink_0()
+                .text_size(theme::FONT_LABEL)
+                .text_color(theme::ACCENT())
+                .child(name),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_size(theme::FONT_MICRO)
+                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                .text_color(theme::DIM())
+                .child(detail),
+        )
+        .into_any_element()
 }
 
 /// 表单行：标签 DIM；输入框覆写库主题为 PANEL2 底 + LINE 1px 描边 + 按钮圆角（规则 4/5）。
@@ -1184,8 +1329,71 @@ impl Render for SettingsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.status.clone();
         let testing = self.testing;
+        // 账号卡：余额是作者最关心的“还能用多久”
+        let account_card = {
+            let (line, tone) = match &self.account {
+                None => ("未查询".to_string(), Tone::Neutral),
+                Some(a) => {
+                    if let Some(err) = &a.error {
+                        (err.clone(), Tone::Amber)
+                    } else if a.signed_in {
+                        let bonus = if a.bonus.is_empty() || a.bonus == "0" {
+                            String::new()
+                        } else {
+                            format!("（赠金 {}）", a.bonus)
+                        };
+                        (
+                            format!("余额 ¥{}{bonus} · 累计消费 ¥{}", a.balance, a.spent),
+                            Tone::Green,
+                        )
+                    } else {
+                        ("未登录".to_string(), Tone::Amber)
+                    }
+                }
+            };
+            let busy = self.account_busy;
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme::GAP_MD)
+                .p(theme::PAD_LG)
+                .bg(theme::PANEL())
+                .border_1()
+                .border_color(theme::LINE())
+                .rounded(theme::RADIUS_CARD)
+                .child(chip(SharedString::from(line), tone))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_MD)
+                        .child(
+                            cap_btn(
+                                "account-refresh",
+                                if busy { "查询中…" } else { "刷新余额" },
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.account_busy = true;
+                                cx.notify();
+                                cx.emit(SettingsEvent::RefreshAccount);
+                            })),
+                        )
+                        .when_true(busy, |d| d.child(chip("正在查询", Tone::Blue))),
+                )
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                        .text_color(theme::FAINT())
+                        .child("账号凭据与 DSH 共用一份（在 DSH 里登录一次即可）。只读余额，不代替登录。"),
+                )
+        };
+
         panel_root("settings-scroll").child(
             panel_col()
+                .child(sec_title("账号与余额"))
+                .child(account_card)
                 .child(sec_title("模型服务（OpenAI 兼容端点）"))
                 .child(
                     div()
@@ -1199,7 +1407,8 @@ impl Render for SettingsPanel {
                         .rounded(theme::RADIUS_CARD)
                         .child(field("Base URL", &self.base_url))
                         .child(field("模型 ID", &self.model))
-                        .child(field("Provider", &self.provider)),
+                        .child(field("Provider", &self.provider))
+                        .child(field("推理强度", &self.effort)),
                 )
                 .child(
                     div()
@@ -1207,10 +1416,8 @@ impl Render for SettingsPanel {
                         .gap(theme::GAP_MD)
                         .items_center()
                         .child(primary_btn("settings-save", "保存", cx).on_click(cx.listener(|this, _, _, cx| {
-                            let base_url = this.base_url.read(cx).value().to_string();
-                            let model = this.model.read(cx).value().to_string();
-                            let provider = this.provider.read(cx).value().to_string();
-                            cx.emit(SettingsEvent::Save { base_url, model, provider });
+                            // 整份交出去：模型、推理强度、写作档位、日目标、开关一次写盘
+                            cx.emit(SettingsEvent::Persist(this.snapshot_values(cx)));
                         })))
                         .child(
                             cap_btn("settings-test", if testing { "测试中…" } else { "测试连接" }, cx)
@@ -1248,6 +1455,81 @@ impl Render for SettingsPanel {
                             )),
                     )
                 })
+                .child(sec_title("写作"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_MD)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(field("默认写作档位", &self.writing_mode))
+                        .child(field("每日字数目标", &self.daily_goal))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("assist 只提案 · cowrite 可写台账 · ghostwrite 还可写授权章节的正文"),
+                        ),
+                )
+                .child(sec_title("AI 权限"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_SM)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(toggle_row(
+                            "settings-web",
+                            "允许联网检索",
+                            self.web_enabled,
+                            cx,
+                            |this, cx| {
+                                this.web_enabled = !this.web_enabled;
+                                cx.notify();
+                            },
+                        ))
+                        .child(toggle_row(
+                            "settings-subagent",
+                            "允许派子 agent（人物/关系/世界线等专属 Agent）",
+                            self.subagent_enabled,
+                            cx,
+                            |this, cx| {
+                                this.subagent_enabled = !this.subagent_enabled;
+                                cx.notify();
+                            },
+                        )),
+                )
+                .child(sec_title("Agent 模式与插件"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_SM)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(mode_line("托管", "PTC 执行器，主 Agent 可指挥 6 个专属 Agent；长任务用 goal/plan/todo"))
+                        .child(mode_line("极简", "只读 + 提案工具，不派子 agent；纯粹的人机共创"))
+                        .child(mode_line("创造", "官方 Cordis 工具，可为本书造专属 Agent（装进本书的 DSH_HOME）"))
+                        .child(
+                            div()
+                                .mt(theme::PAD_SM)
+                                .text_size(theme::FONT_MICRO)
+                                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                                .text_color(theme::FAINT())
+                                .child("模式切换在标题栏右侧。切换会重启本书的 AI 运行时，会话历史保留。"),
+                        ),
+                )
                 .child(
                     div()
                         .text_size(theme::FONT_LABEL)
