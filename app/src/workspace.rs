@@ -428,7 +428,7 @@ impl Workspace {
         let journal_view = cx.new(|cx| JournalPanel::new(window, cx, handle.clone()));
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
         let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
-        let canvas_view = cx.new(|cx| CanvasPanel::new(cx, handle.clone()));
+        let canvas_view = cx.new(|cx| CanvasPanel::new(window, cx, handle.clone()));
         let director_view = cx.new(|cx| DirectorPanel::new(cx, handle.clone(), chapter));
         let oracle_view = cx.new(|cx| OraclePanel::new(window, cx, handle.clone()));
         let bookinfo_view = cx.new(|cx| BookInfoPanel::new(window, cx, handle.clone()));

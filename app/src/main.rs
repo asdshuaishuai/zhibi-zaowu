@@ -13,6 +13,7 @@ mod editor;
 mod inbox;
 mod journal;
 mod prompts;
+mod relations;
 mod shelf;
 mod store;
 mod theme;

@@ -106,6 +106,25 @@ pub struct CanvasPanel {
     /// 节点按下已消费本次点击：Shift 取消选中时 drag=None，不能让事件继续冒泡去开框选
     absorb_click: bool,
     reader: bool,
+    /// 「此刻看第几章」——关系维按它过滤区间，画的是“这一章时他们的关系”。
+    chapter: u32,
+    /// 最新成稿章（滑块的右端）。
+    last_chapter: u32,
+    /// 关系编辑表单：对方人名 / 关系标签 / 起始章（终点留空=至今）
+    rel_to: Entity<InputState>,
+    rel_label: Entity<InputState>,
+    rel_from: Entity<InputState>,
+}
+
+/// 侧板里的小节标题（比 sec_title 更紧凑，面板已经很小）。
+fn sec_label_mini(text: &'static str) -> gpui_kit::AnyElement {
+    div()
+        .pt(theme::GAP_SM)
+        .text_size(theme::FONT_MICRO)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::FAINT())
+        .child(text)
+        .into_any_element()
 }
 
 fn s(v: &serde_json::Value, key: &str) -> String {
@@ -113,7 +132,10 @@ fn s(v: &serde_json::Value, key: &str) -> String {
 }
 
 impl CanvasPanel {
-    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        let rel_to = cx.new(|c| InputState::new(window, c).placeholder("对方人名"));
+        let rel_label = cx.new(|c| InputState::new(window, c).placeholder("关系：师从/敌对/结义…"));
+        let rel_from = cx.new(|c| InputState::new(window, c).placeholder("起始章"));
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             dim: Dim::Overview,
@@ -128,6 +150,11 @@ impl CanvasPanel {
             stage_origin: Rc::new(RefCell::new(None)),
             absorb_click: false,
             reader: false,
+            chapter: 1,
+            last_chapter: 1,
+            rel_to,
+            rel_label,
+            rel_from,
         };
         this.refresh();
         this
@@ -154,6 +181,14 @@ impl CanvasPanel {
             );
         }
         self.reader = state.get("reader").and_then(|r| r.as_bool()).unwrap_or(false);
+        // 滑块上限 = 最新成稿章（不含未来）；关系维按 chapter 过滤区间
+        self.last_chapter = self.handle.next_chapter_number().saturating_sub(1).max(1);
+        if self.chapter == 0 {
+            self.chapter = 1;
+        }
+        if self.chapter > self.last_chapter {
+            self.chapter = self.last_chapter;
+        }
 
         let mut nodes: Vec<CNode> = Vec::new();
         let mut edges: Vec<CEdge> = Vec::new();
@@ -371,23 +406,58 @@ impl CanvasPanel {
                 }
             }
             Dim::Relations => {
-                // 人名↔人名谓词边（两端均经别名表归一）
-                for f in &facts {
-                    let Some(a) = resolve(&s(f, "subject")) else { continue };
-                    let Some(b) = resolve(&s(f, "object")) else { continue };
-                    if a == b {
-                        continue;
-                    }
+                // 读 relations.json 的区间模型，按「当前查看章」过滤。
+                //
+                // 为什么不再从 facts 推：facts 只有起点、没有终点，也存不下“同一人
+                // 不同章不同关系”。章节滑块的意义就是“此刻他们是什么关系”。
+                let chapter = self.chapter;
+                let web = crate::relations::Web::new(&self.handle.root);
+                let mut live = web.at_chapter(chapter);
+                // 首次使用：没有 relations.json 但有 facts 时迁移一次（不覆盖已有）
+                if live.is_empty() && web.all().is_empty() {
+                    let people: Vec<String> = nodes
+                        .iter()
+                        .filter(|n| n.kind == "character")
+                        .map(|n| n.label.clone())
+                        .collect();
+                    let _ = web.migrate_from_facts(&facts, &people);
+                    live = web.at_chapter(chapter);
+                }
+                for rel in &live {
                     let (Some(fi), Some(ti)) = (
-                        nodes.iter().position(|n| n.kind == "character" && n.label == a),
-                        nodes.iter().position(|n| n.kind == "character" && n.label == b),
+                        nodes
+                            .iter()
+                            .position(|n| n.kind == "character" && n.label == rel.from),
+                        nodes
+                            .iter()
+                            .position(|n| n.kind == "character" && n.label == rel.to),
                     ) else {
                         continue;
                     };
-                    let pred = s(f, "predicate");
-                    let has = edges.iter().any(|x| x.from == fi && x.to == ti && x.label == pred);
-                    if !has {
-                        edges.push(CEdge { from: fi, to: ti, kind: "influence", hidden: false, label: pred });
+                    if fi == ti {
+                        continue;
+                    }
+                    // 一段区间一条边：同期并存的多段关系（如“师门”+“敌对”）都要画出来
+                    for iv in rel.active_at(chapter) {
+                        let hidden = !iv.public_to_reader;
+                        let kind = match rel.kind.as_str() {
+                            "敌对" => "hostile",
+                            "亲缘" | "情爱" => "kin",
+                            "师承" => "mentor",
+                            _ => "influence",
+                        };
+                        let dup = edges
+                            .iter()
+                            .any(|e| e.from == fi && e.to == ti && e.label == iv.label);
+                        if !dup {
+                            edges.push(CEdge {
+                                from: fi,
+                                to: ti,
+                                kind,
+                                hidden,
+                                label: iv.label.clone(),
+                            });
+                        }
                     }
                 }
                 // 中心辐射：出度最大者居中，其余圆周。
@@ -991,6 +1061,183 @@ impl Render for CanvasPanel {
                     .text_color(theme::TEXT())
                     .child(sel_title.unwrap_or_else(|| "选择一个节点".into())),
             )
+            // 关系维：选中一个人时，给出「与谁、什么关系、从第几章起」的就地编辑，
+            // 以及该人参与的关系史（含已结束的区间）与删除入口。
+            .when(self.dim == Dim::Relations && self.sel.len() == 1, |d| {
+                let me = self.nodes[self.sel[0]].label.clone();
+                let web = crate::relations::Web::new(&self.handle.root);
+                let mine: Vec<crate::relations::Relation> = web
+                    .all()
+                    .into_iter()
+                    .filter(|r| r.from == me || r.to == me)
+                    .collect();
+                let mut hist = div().flex().flex_col().gap(px(2.)).pt(theme::GAP_SM);
+                if mine.is_empty() {
+                    hist = hist.child(
+                        div()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::FAINT())
+                            .child("还没有关系记录"),
+                    );
+                }
+                for r in mine.iter().take(8) {
+                    let other = if r.from == me { r.to.clone() } else { r.from.clone() };
+                    let span = r
+                        .intervals
+                        .iter()
+                        .map(|i| {
+                            let end = if i.to_chapter == 0 {
+                                "今".to_string()
+                            } else {
+                                i.to_chapter.to_string()
+                            };
+                            format!("{}·{}-{}", i.label, i.from_chapter, end)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("；");
+                    let rid = r.id.clone();
+                    hist = hist.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::DIM())
+                                    .text_ellipsis()
+                                    .child(SharedString::from(format!("{other}：{span}"))),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("rel-del-{rid}")))
+                                    .cursor_pointer()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::FAINT())
+                                    .child("×")
+                                    .on_click(cx.listener({
+                                        let rid = rid.clone();
+                                        move |this, _, _, cx| {
+                                            let web = crate::relations::Web::new(&this.handle.root);
+                                            // 先留前像再删：撤销要能逐字写回原来的关系表
+                                            let before = std::fs::read_to_string(
+                                                this.handle.root.join("relations.json"),
+                                            )
+                                            .unwrap_or_default();
+                                            match web.remove(&rid) {
+                                                Ok(()) => {
+                                                    let after = std::fs::read_to_string(
+                                                        this.handle.root.join("relations.json"),
+                                                    )
+                                                    .unwrap_or_default();
+                                                    let _ = crate::journal::Journal::new(&this.handle.root)
+                                                        .record(
+                                                            &this.handle.root,
+                                                            "relations.json",
+                                                            &before,
+                                                            &after,
+                                                            &crate::journal::Actor::Author,
+                                                            "remove",
+                                                            &format!("b{}", crate::journal::now_millis()),
+                                                            "删除关系",
+                                                        );
+                                                }
+                                                Err(e) => eprintln!("删除关系失败：{e}"),
+                                            }
+                                            this.refresh();
+                                            cx.notify();
+                                        }
+                                    })),
+                            ),
+                    );
+                }
+                d.child(sec_label_mini("关系史"))
+                    .child(hist)
+                    .child(sec_label_mini("新增关系"))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(div().child(Input::new(&self.rel_to)))
+                            .child(div().child(Input::new(&self.rel_label)))
+                            .child(div().child(Input::new(&self.rel_from)))
+                            .child(
+                                div()
+                                    .id("rel-add")
+                                    .mt(px(2.))
+                                    .px(px(8.))
+                                    .py(px(2.))
+                                    .rounded(px(5.))
+                                    .bg(theme::ACCENT_SOFT())
+                                    .border_1()
+                                    .border_color(theme::ACCENT_BORDER())
+                                    .cursor_pointer()
+                                    .child(
+                                        div()
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(theme::ACCENT())
+                                            .child("建立关系"),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let to = this.rel_to.read(cx).value().trim().to_string();
+                                        let label = this.rel_label.read(cx).value().trim().to_string();
+                                        let from: u32 = this
+                                            .rel_from
+                                            .read(cx)
+                                            .value()
+                                            .trim()
+                                            .parse()
+                                            .unwrap_or(0);
+                                        let me = match this.sel.last() {
+                                            Some(&i) => this.nodes[i].label.clone(),
+                                            None => return,
+                                        };
+                                        if to.is_empty() || label.is_empty() {
+                                            return;
+                                        }
+                                        let web = crate::relations::Web::new(&this.handle.root);
+                                        let before = std::fs::read_to_string(
+                                            this.handle.root.join("relations.json"),
+                                        )
+                                        .unwrap_or_default();
+                                        let iv = crate::relations::Interval {
+                                            from_chapter: from,
+                                            to_chapter: 0,
+                                            label: label.clone(),
+                                            // 作者亲手建的关系默认读者可见；暗线由 AI 提案或后续编辑标记
+                                            public_to_reader: true,
+                                            evidence: String::new(),
+                                        };
+                                        let kind = crate::relations::classify(&label);
+                                        match web.add_interval(&me, &to, &kind, iv) {
+                                            Ok(_) => {
+                                                let after = std::fs::read_to_string(
+                                                    this.handle.root.join("relations.json"),
+                                                )
+                                                .unwrap_or_default();
+                                                let _ = crate::journal::Journal::new(&this.handle.root)
+                                                    .record(
+                                                        &this.handle.root,
+                                                        "relations.json",
+                                                        &before,
+                                                        &after,
+                                                        &crate::journal::Actor::Author,
+                                                        "edit",
+                                                        &format!("b{}", crate::journal::now_millis()),
+                                                        "新增关系",
+                                                    );
+                                            }
+                                            Err(e) => eprintln!("建立关系失败：{e}"),
+                                        }
+                                        this.refresh();
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+            })
             .child(div().pt(theme::GAP_MD).when(rows.is_empty(), |d| {
                 d.child(
                     div()
@@ -1065,6 +1312,75 @@ impl Render for CanvasPanel {
                         cx.notify();
                     })),
             )
+            // 章节滑块：只在关系维出现。关系会随剧情演变，
+            // “此刻他们是什么关系”必须能按章回看。
+            .when(self.dim == Dim::Relations, |d| {
+                let ch = self.chapter;
+                let last = self.last_chapter;
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(5.))
+                        .bg(theme::PANEL2())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .child(
+                            div()
+                                .id("rel-ch-prev")
+                                .cursor_pointer()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(if ch > 1 { theme::TEXT() } else { theme::FAINT() })
+                                .child("◀")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.chapter > 1 {
+                                        this.chapter -= 1;
+                                        this.refresh();
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(
+                            div()
+                                .font_family(theme::FAMILY_MONO)
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::ACCENT())
+                                .child(SharedString::from(format!("第{ch}/{last}章"))),
+                        )
+                        .child(
+                            div()
+                                .id("rel-ch-next")
+                                .cursor_pointer()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(if ch < last { theme::TEXT() } else { theme::FAINT() })
+                                .child("▶")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.chapter < this.last_chapter {
+                                        this.chapter += 1;
+                                        this.refresh();
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("rel-ch-now")
+                                .cursor_pointer()
+                                .ml(px(2.))
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("现在")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.chapter = this.last_chapter;
+                                    this.refresh();
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .when(!self.sel.is_empty(), |d| {
                 d.child(
                     Button::new("clear-sel")
