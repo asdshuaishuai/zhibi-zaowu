@@ -232,6 +232,67 @@ fn pack_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+/// 本书专属 Agent 的规格（作者在创造模式里定下来的）。
+///
+/// 存成 `DSH_HOME/zhibi-book.preset.json` —— 不写进 DSH 的 package.json，
+/// 因为那是 plugin_manager 的地盘，两边同时写会互相覆盖。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BookPreset {
+    /// 显示名（作者起的名，如"沈砚本书助理"）
+    #[serde(default = "default_book_name")]
+    pub name: String,
+    /// 人格与规则（作者写或 AI 起草）
+    #[serde(default)]
+    pub persona: String,
+    /// 额外不可用的工具（在默认 deny 清单之外再加）
+    #[serde(default)]
+    pub deny_extra: Vec<String>,
+    /// 是否接管主 Agent 的默认派活对象。
+    ///
+    /// 关掉时：主 Agent 仍按内置 6 个专属 Agent 分工，book 只是其中之一。
+    /// 打开时：主 Agent 的系统提示要求"凡属写作任务一律先派 book"，
+    /// 作者要的效果是"这本书有自己的助手"，而不是"多一个选项"。
+    /// 采纳的是覆盖层方式里最轻的一种——只改 persona 一段话，不插行不改配置。
+    #[serde(default)]
+    pub takeover: bool,
+}
+
+fn default_book_name() -> String {
+    "本书专属".into()
+}
+
+impl BookPreset {
+    fn path(home: &std::path::Path) -> std::path::PathBuf {
+        home.join("zhibi-book.preset.json")
+    }
+
+    /// 读本书专属 Agent。没有/读坏都返回 None——"没有"是正常状态，
+    /// 坏文件也不该让整本书启动不了。
+    pub fn load(home: &std::path::Path) -> Option<Self> {
+        let text = std::fs::read_to_string(Self::path(home)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    pub fn save(&self, home: &std::path::Path) -> Result<(), String> {
+        std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        std::fs::write(Self::path(home), json).map_err(|e| e.to_string())
+    }
+
+    /// 删掉 = 恢复默认托管/极简。这是"删除即恢复"的落点。
+    pub fn remove(home: &std::path::Path) -> Result<(), String> {
+        match std::fs::remove_file(Self::path(home)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+fn read_book_preset(home: &std::path::Path) -> Option<BookPreset> {
+    BookPreset::load(home).filter(|b| !b.persona.trim().is_empty())
+}
+
 /// 把 novel-pack 附带的技能（`skills/*.md`）同步到本书 `DSH_HOME/skills`。
 ///
 /// 为什么同步而不是让 DSH 直接读包目录：技能根是 DSH 的既定约定
@@ -390,12 +451,56 @@ impl DshClient {
         // 找不到就不写这一行（专属 Agent 会退回“继承全部工具”，由校审 persona 兜底，
         // 并在轨迹里提示），绝不写一个无效路径让整个预设加载失败。
         let guard_path = pack_guard_path().map(|p| p.display().to_string());
-        let presets = zhibi_presets();
+        let mut presets = zhibi_presets();
+        // 本书专属 Agent：作者在创造模式里造出来的 preset。
+        // 一旦存在就排在最前（order 0），但**不夺权**——主 Agent 仍是主 Agent，
+        // 它只是多了一个可以派活的子 Agent（见 takeover 段）。
+        let book = read_book_preset(home);
+        if let Some(b) = &book {
+            // deny 清单：默认七项 + 作者额外勾的。Box::leak 在这里是可接受的：
+            // 每个进程每种模式生成一次 patch，泄漏量是常量级的几十字节。
+            let mut deny: Vec<&'static str> = vec![
+                "bash",
+                "write",
+                "edit",
+                "plugin_manager",
+                "workflow",
+                "web_fetch",
+                "web_search",
+            ];
+            for d in &b.deny_extra {
+                let leaked: &'static str = Box::leak(d.clone().into_boxed_str());
+                if !deny.contains(&leaked) {
+                    deny.push(leaked);
+                }
+            }
+            presets.insert(
+                0,
+                PresetSpec {
+                    id: "book",
+                    label: Box::leak(b.name.clone().into_boxed_str()),
+                    order: 0,
+                    persona: Box::leak(b.persona.clone().into_boxed_str()),
+                    deny: Box::leak(deny.into_boxed_slice()),
+                },
+            );
+        }
         let preset_ids: Vec<&str> = presets.iter().map(|p| p.id).collect();
 
         let mut lines: Vec<String> = vec![
             "# 由执笔生成：主 Agent 形态与专属 Agent 预设。改这里不会生效，改 app/src/dsh/agent_patch.rs。"
                 .into(),
+            // 技能根收窄到本书 DSH_HOME：DSH 默认还会扫 `~/.agents/skills` 与
+            // `~/.dsh/skills`，那里通常是开发者的通用技能（flutter、cloudbase…），
+            // 跟写小说毫无关系。实测一整本书的 system prompt 会因此多出几十条
+            // 无关技能条目，白占上下文、还干扰模型挑技能。
+            // includeDefaultRoots:false 关掉项目/user 两个默认根，
+            // 再由 customSkillDirs 指回本书 DSH_HOME/skills。
+            "- id: skill-filesystem".into(),
+            "  config:".into(),
+            "    includeDefaultRoots: false".into(),
+            "    customSkillDirs:".into(),
+            format!("      - '{}'", home.join("skills").display()),
         ];
 
         match mode {
@@ -430,9 +535,49 @@ impl DshClient {
         }
 
         if mode == AgentMode::Creator {
-            // 官方创造模式的两个依赖：Cordis 主机侧运行器 + inspect 提供者。
-            lines.push("- id: cordis-host-runner".into());
+            // 创造模式 = 官方 tool-cordis 那套东西，一行都不能少：
+            //
+            // 1. cordis-host-runner：提供 `cordisInspect` 服务（运行时 API 查询）。
+            // 2. cordis-inspect-providers：把 Host 侧的 inspect provider 注册进去。
+            //    这一行必须挂在 host 平面，不能放进 preset——registry 拒绝重复
+            //    注册，放进 preset 会在第二个 agent 起来时炸。
+            // 3. 每本书专属 preset（book）里挂 tool-cordis，让那个 Agent 能查 API。
+            //
+            // 这三行是"用官方能力"，不是自造一套创造工具。
+            // cordis-host-runner 在 dsh-base 里**不存在**，所以必须 insert 新行，
+            // 不能用 `- id: cordis-host-runner / disabled: false` ——那样是改一个
+            // 不存在的行，patch 静默不生效（spike 实测：cordisInspect 服务永远
+            // pending，工具全部挂不上）。
+            lines.push("- insert:".into());
+            lines.push("    - id: cordis-host-runner".into());
+            lines.push("      name: '@deepseek-ai/dsh-cordis-host-runner'".into());
+            lines.push("      config:".into());
+            lines.push("        vmTimeoutMs: 5000".into());
+            // provider 注册必须在 host 平面：registry 拒绝重复注册，
+            // 放进 preset 会在第二个 agent 起来时炸。
+            lines.push("    - id: cordis-inspect-providers".into());
+            lines.push("      name: '@deepseek-ai/dsh-tool-cordis/host'".into());
+            // 创造模式要能真的把新 Agent 持久化，工具化管理器必须开着
+            lines.push("- id: tool-plugin-manager".into());
             lines.push("  disabled: false".into());
+        }
+
+        // 接管：book 存在且作者打开了 takeover，就给主 Agent 加一段系统提示。
+        // 只改 personaPrefix 一段话，不动任何挂载行——这是"覆盖层"里最轻的一档，
+        // 删掉 book preset 立刻恢复，不会留下半套配置。
+        if let Some(b) = &book {
+            if b.takeover {
+                // 一段单行文字：折叠标量里不能留换行——空行会被 YAML 当段落分隔，
+                // 生成的 personaPrefix 会变成以两个换行开头的怪东西（spike 踩过）。
+                let line = format!(
+                    "本书有一位专属助手「{}」（subagent agentPreset=book）。凡涉及本书写作的任务——人物、关系、世界线、预言、大纲伏笔、校审——先派给它；只有纯工具性的杂活（读文件、列目录）你自己做。",
+                    b.name
+                );
+                lines.push("- id: system-prompt".into());
+                lines.push("  config:".into());
+                lines.push("    personaPrefix: >-".into());
+                lines.push(format!("      {line}"));
+            }
         }
 
         // 预设注册表 + 每个专属 Agent 一行。
@@ -449,6 +594,12 @@ impl DshClient {
             lines.push(format!("        name: {}", p.label));
             lines.push(format!("        order: {}", p.order));
             lines.push("        plugins:".into());
+            // 创造模式里，本书专属 Agent 自己也要能查 API——
+            // 否则作者改完一轮，想再改就得回到主 Agent，来回切换很别扭。
+            if mode == AgentMode::Creator && p.id == "book" {
+                lines.push("          - id: tool-cordis".into());
+                lines.push("            name: '@deepseek-ai/dsh-tool-cordis'".into());
+            }
             lines.push("          - id: persona".into());
             lines.push("            name: '@deepseek-ai/dsh-persona'".into());
             lines.push("            config:".into());
@@ -889,15 +1040,23 @@ fn str_at(v: &Value, key: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 每次给一个全新的临时 home。
+    ///
+    /// 必须清空：测试里会往 home 写 book preset，复用目录会让上一次的
+    /// preset 串进下一次（"没创建就出现 book"就是这么踩到的）。
     fn tmp_home(tag: &str) -> std::path::PathBuf {
         let p = std::env::temp_dir().join(format!("zhibi-mode-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
     }
 
     fn make_patch(mode: AgentMode, tag: &str) -> String {
-        let home = tmp_home(tag);
-        let patch = DshClient::mode_patch(std::path::Path::new("/tmp/book"), mode, &home)
+        make_patch_with(mode, &tmp_home(tag))
+    }
+
+    fn make_patch_with(mode: AgentMode, home: &std::path::Path) -> String {
+        let patch = DshClient::mode_patch(std::path::Path::new("/tmp/book"), mode, home)
             .expect("应生成 patch");
         std::fs::read_to_string(patch).unwrap()
     }
@@ -928,7 +1087,145 @@ mod tests {
     fn creator_mode_adds_cordis_runner() {
         let yml = make_patch(AgentMode::Creator, "creator");
         assert!(yml.contains("- id: tool-executor-ptc\n  disabled: false"));
-        assert!(yml.contains("- id: cordis-host-runner\n  disabled: false"));
+        // cordis-host-runner 在 dsh-base 里不存在，必须是 insert 行。
+        // 写成 "- id: cordis-host-runner / disabled: false" 会静默不生效
+        //（spike 实测：cordisInspect 永远 pending）。
+        assert!(yml.contains("    - id: cordis-host-runner"));
+        assert!(yml.contains("      name: '@deepseek-ai/dsh-cordis-host-runner'"));
+        // provider 注册必须挂在 host 平面
+        assert!(yml.contains("    - id: cordis-inspect-providers"));
+        assert!(yml.contains("'@deepseek-ai/dsh-tool-cordis/host'"));
+        // 创造模式要能真把新 Agent 持久化
+        assert!(yml.contains("- id: tool-plugin-manager\n  disabled: false"));
+    }
+
+    /// 手工 spike 用：把创造模式的真实 patch 导出到固定路径，
+    /// 好让外部脚本拿 DSH 真跑一遍（`cargo test dump_creator_patch -- --ignored`）。
+    #[test]
+    #[ignore]
+    fn dump_creator_patch_for_spike() {
+        let home = tmp_home("dump-creator");
+        BookPreset {
+            name: "沈砚助理".into(),
+            persona: "你熟悉本书一切设定，优先用本书术语回答。".into(),
+            deny_extra: vec![],
+            takeover: true,
+        }
+        .save(&home)
+        .unwrap();
+        let yml = make_patch_with(AgentMode::Creator, &home);
+        std::fs::write("/tmp/zhibi-creator.patch.yml", yml).unwrap();
+    }
+
+    #[test]
+    fn book_preset_appears_in_the_list_once_created() {
+        let home = tmp_home("book");
+        // 没创建时不该有 book
+        let before = std::fs::read_to_string(
+            DshClient::mode_patch(std::path::Path::new("/tmp/book"), AgentMode::Managed, &home)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!before.contains("id: book"), "没创建就出现 book 是错的");
+
+        BookPreset {
+            name: "沈砚助理".into(),
+            persona: "你熟悉本书一切设定，优先用本书术语回答。".into(),
+            deny_extra: vec![],
+            takeover: false,
+        }
+        .save(&home)
+        .unwrap();
+
+        let yml = make_patch_with(AgentMode::Managed, &home);
+        assert!(yml.contains("id: book"));
+        assert!(yml.contains("name: 沈砚助理"), "作者起的名字要出现");
+        // 未开启接管：主 Agent 的系统提示不能被改
+        assert!(!yml.contains("先派给它"), "takeover=false 时不该改主 Agent 提示");
+        // 但 book 必须进允许列表，主 Agent 才能派活
+        assert!(yml.contains("      - book"));
+    }
+
+    #[test]
+    fn takeover_rewrites_the_main_agent_persona() {
+        let home = tmp_home("takeover");
+        BookPreset {
+            name: "沈砚助理".into(),
+            persona: "x".into(),
+            deny_extra: vec![],
+            takeover: true,
+        }
+        .save(&home)
+        .unwrap();
+        let yml = make_patch_with(AgentMode::Managed, &home);
+        assert!(yml.contains("system-prompt"), "接管要改主 Agent 的系统提示");
+        assert!(yml.contains("先派给它"), "接管要写清派活规则");
+        assert!(yml.contains("沈砚助理"));
+    }
+
+    #[test]
+    fn empty_book_preset_is_ignored() {
+        // persona 是空的 = 作者还没写完，不该生效（否则会把主 Agent 的提示改坏）
+        let home = tmp_home("book-empty");
+        BookPreset { name: "半成品".into(), persona: "  ".into(), deny_extra: vec![], takeover: true }
+            .save(&home)
+            .unwrap();
+        let yml = make_patch_with(AgentMode::Managed, &home);
+        assert!(!yml.contains("id: book"));
+        assert!(!yml.contains("先派给它"));
+    }
+
+    #[test]
+    fn removing_the_book_preset_restores_defaults() {
+        let home = tmp_home("book-remove");
+        BookPreset { name: "临时".into(), persona: "p".into(), deny_extra: vec![], takeover: true }
+            .save(&home)
+            .unwrap();
+        assert!(make_patch_with(AgentMode::Managed, &home).contains("id: book"));
+        BookPreset::remove(&home).unwrap();
+        let yml = make_patch_with(AgentMode::Managed, &home);
+        assert!(!yml.contains("id: book"), "删除 book 必须完全恢复默认");
+        assert!(!yml.contains("先派给它"));
+    }
+
+    #[test]
+    fn book_preset_can_deny_extra_tools() {
+        let home = tmp_home("book-deny");
+        BookPreset {
+            name: "严格".into(),
+            persona: "p".into(),
+            deny_extra: vec!["web_search".into(), "todo".into()],
+            takeover: false,
+        }
+        .save(&home)
+        .unwrap();
+        let yml = make_patch_with(AgentMode::Managed, &home);
+        assert!(yml.contains("                - web_search"));
+        assert!(yml.contains("                - todo"));
+    }
+
+    #[test]
+    fn creator_mode_gives_the_book_preset_cordis_tools() {
+        let home = tmp_home("book-cordis");
+        BookPreset { name: "创造中".into(), persona: "p".into(), deny_extra: vec![], takeover: false }
+            .save(&home)
+            .unwrap();
+        let yml = make_patch_with(AgentMode::Creator, &home);
+        // book 段里要出现 tool-cordis；内置 6 个不该有
+        let book_start = yml.find("preset-book").expect("应有 book 预设");
+        let tail = &yml[book_start..];
+        let book_end = tail.find("- id: preset-").unwrap_or(tail.len());
+        assert!(
+            tail[..book_end].contains("dsh-tool-cordis"),
+            "创造模式下 book 自己也要能查 API"
+        );
+        // 托管模式的 book 不带 cordis
+        let managed_home = tmp_home("book-cordis-managed");
+        BookPreset { name: "创造中".into(), persona: "p".into(), deny_extra: vec![], takeover: false }
+            .save(&managed_home)
+            .unwrap();
+        let m = make_patch_with(AgentMode::Managed, &managed_home);
+        assert!(!m.contains("dsh-tool-cordis"), "非创造模式不该出现 cordis");
     }
 
     #[test]

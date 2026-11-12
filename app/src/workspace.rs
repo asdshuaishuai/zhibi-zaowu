@@ -424,6 +424,11 @@ impl Workspace {
         let clues_view = cx.new(|cx| CluesPanel::new(cx, handle.clone()));
         let characters_view = cx.new(|cx| CharactersPanel::new(window, cx, handle.clone()));
         let settings_view = cx.new(|cx| SettingsPanel::new(window, cx));
+        // 这本书可能已经有专属 Agent（上次创造模式的产物）：开局回填，作者一进设置就看到
+        settings_view.update(cx, |panel, cx| {
+            let preset = crate::dsh::BookPreset::load(&crate::dsh::home_dir(&root));
+            panel.load_book_preset(preset, window, cx);
+        });
         let snapshots_view = cx.new(|cx| SnapshotsPanel::new(cx, handle.clone(), chapter));
         let journal_view = cx.new(|cx| JournalPanel::new(window, cx, handle.clone()));
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
@@ -488,6 +493,38 @@ impl Workspace {
                     let msg = match crate::store::save_settings(cfg) {
                         Ok(()) => "设置已保存（模型相关项下次启动运行时生效）".to_string(),
                         Err(e) => format!("保存失败：{e}"),
+                    };
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(TrajKind::Info(msg), cx);
+                    });
+                }
+                SettingsEvent::SaveBookPreset { name, persona, takeover } => {
+                    // 空 persona = 作者清空了输入框 = 删除（"删除即恢复默认"）
+                    let home = crate::dsh::home_dir(&this.root);
+                    let msg = if persona.trim().is_empty() {
+                        match crate::dsh::BookPreset::remove(&home) {
+                            Ok(()) => "已删除本书专属 Agent，回到默认托管/极简".to_string(),
+                            Err(e) => format!("删除失败：{e}"),
+                        }
+                    } else {
+                        let preset = crate::dsh::BookPreset {
+                            name: name.clone(),
+                            persona: persona.clone(),
+                            deny_extra: Vec::new(),
+                            takeover: *takeover,
+                        };
+                        match preset.save(&home) {
+                            Ok(()) => {
+                                // 主 Agent 形态变了 → 必须重启运行时，否则 patch 不生效
+                                this.restart_runtime(cx);
+                                format!(
+                                    "已保存「{}」{}；运行时已重启",
+                                    preset.name,
+                                    if *takeover { "（已接管默认派活）" } else { "" }
+                                )
+                            }
+                            Err(e) => format!("保存失败：{e}"),
+                        }
                     };
                     this.trajectory.update(cx, |panel, cx| {
                         panel.push(TrajKind::Info(msg), cx);
@@ -1709,6 +1746,24 @@ impl Workspace {
                 cx,
             );
         });
+        cx.notify();
+    }
+
+    /// 同模式下的运行时重启（改 patch 内容后调用，例如存了本书专属 Agent）。
+    ///
+    /// 与 switch_agent_mode 的区别：模式没变，但生成的 patch 变了，
+    /// 必须让进程重新读一遍。会话历史同样靠 session/resume 接回。
+    fn restart_runtime(&mut self, cx: &mut Context<Self>) {
+        if let Some(client) = self.client.take() {
+            client.shutdown();
+        }
+        self.initialized = false;
+        self.dsh_running = false;
+        self.turn_active = false;
+        self.session_attached = false;
+        self.pending_approval = None;
+        self.pending_question = None;
+        self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
         cx.notify();
     }
 

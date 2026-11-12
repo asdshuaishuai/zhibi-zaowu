@@ -1749,6 +1749,8 @@ pub enum SettingsEvent {
     Test(String),
     /// 刷新账号余额
     RefreshAccount,
+    /// 保存本书专属 Agent（空 persona = 删除，恢复默认）
+    SaveBookPreset { name: String, persona: String, takeover: bool },
 }
 
 pub struct SettingsPanel {
@@ -1771,11 +1773,22 @@ pub struct SettingsPanel {
     account_busy: bool,
     status: String,
     testing: bool,
+    /// 本书专属 Agent：名字与人格（空 = 还没有 / 已删除）
+    ed_book_name: Entity<gpui_kit::component::input::InputState>,
+    ed_book_persona: Entity<gpui_kit::component::input::InputState>,
+    book_takeover: bool,
 }
 
 impl SettingsPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let cfg = crate::store::load_settings();
+        // 本书专属 Agent 存在 DSH_HOME（按书隔离），设置页打开时读一遍回填。
+        // 面板不持有 root，所以由宿主在构造后调用 load_book_preset 注入。
+        let book_name = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).placeholder("这本书的助手叫什么（如：沈砚助理）"));
+        let book_persona = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("它是什么样的人、熟悉什么、该怎么说话（留空 = 删除，恢复默认）")
+        });
         let base_url = cx.new(|cx| {
             gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder("http://192.168.x.x:port/v1")
@@ -1830,7 +1843,34 @@ impl SettingsPanel {
             account_busy: false,
             status: String::new(),
             testing: false,
+            ed_book_name: book_name,
+            ed_book_persona: book_persona,
+            book_takeover: false,
         }
+    }
+
+    /// 回填本书专属 Agent（宿主在构造后调用）。
+    ///
+    /// 做成独立方法而不是构造参数：设置页先于书打开也可能被构造，
+    /// 那时还不知道是哪本书；等宿主确定了书再来注入。
+    pub fn load_book_preset(
+        &mut self,
+        preset: Option<crate::dsh::BookPreset>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (name, persona, takeover) = match preset {
+            Some(b) => (b.name, b.persona, b.takeover),
+            None => (String::new(), String::new(), false),
+        };
+        self.ed_book_name.update(cx, |st, cx| {
+            st.set_value(&name, window, cx);
+        });
+        self.ed_book_persona.update(cx, |st, cx| {
+            st.set_value(&persona, window, cx);
+        });
+        self.book_takeover = takeover;
+        cx.notify();
     }
 
     pub fn set_result(&mut self, ok: bool, msg: String, cx: &mut Context<Self>) {
@@ -2169,6 +2209,77 @@ impl Render for SettingsPanel {
                                 .line_height(relative(theme::LINE_HEIGHT_BODY))
                                 .text_color(theme::FAINT())
                                 .child("模式切换在标题栏右侧。切换会重启本书的 AI 运行时，会话历史保留。"),
+                        ),
+                )
+                // —— 本书专属 Agent ——
+                //
+                // 只有一本书一个，存在本书 DSH_HOME 里；删除它就是"恢复默认"。
+                // 放在模式卡片下面而不是单独一页：它是模式的一部分（创造模式的产物）。
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_SM)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(
+                            div()
+                                .flex()
+                                .items_baseline()
+                                .gap(theme::GAP_SM)
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_LABEL)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme::TEXT())
+                                        .child("本书专属 Agent"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_MICRO)
+                                        .text_color(theme::FAINT())
+                                        .child("在「创造」模式里和 AI 一起定；清空人格即删除并恢复默认"),
+                                ),
+                        )
+                        .child(field("名字", &self.ed_book_name))
+                        .child(field("人格与规则", &self.ed_book_persona))
+                        .child(toggle_row(
+                            "让它接管默认派活",
+                            "打开后主 Agent 把写作任务优先派给它；关闭时它只是第 7 个可选 Agent",
+                            self.book_takeover,
+                            cx,
+                            |this, cx| {
+                                this.book_takeover = !this.book_takeover;
+                                cx.notify();
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .child(
+                                    Button::new("save-book-preset")
+                                        .primary()
+                                        .xsmall()
+                                        .label("保存并重启运行时")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let name = this.ed_book_name.read(cx).value().trim().to_string();
+                                            let persona =
+                                                this.ed_book_persona.read(cx).value().trim().to_string();
+                                            cx.emit(SettingsEvent::SaveBookPreset {
+                                                name: if name.is_empty() {
+                                                    "本书专属".into()
+                                                } else {
+                                                    name
+                                                },
+                                                persona,
+                                                takeover: this.book_takeover,
+                                            });
+                                        })),
+                                ),
                         ),
                 )
                 .child(
