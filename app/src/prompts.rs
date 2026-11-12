@@ -47,8 +47,9 @@ pub fn task_for(capability: &str, chapter: u32) -> String {
             BASIS_RULE
         ),
         // 纯输出能力不产提案，不加依据要求。
-        "continue" => "只输出下一句续写（不超过 60 字），紧贴上文语气与在场人物。不要调用工具，不要解释，只给那一句。".into(),
-        "branches" => "给 3 个故事走向，每个 80-150 字，分别以【A】【B】【C】开头标记，各自标注情绪标签。不要调用工具，不要写正文之外的说明。".into(),
+        // 轻交互走结构化工具：前端直接读工具参数渲染卡片，不再解析文本。
+        "continue" => "续写：读出正文最后一段，用 offer_continuation 给出紧接的下一句（不超过 60 字，贴合语气与在场人物）。只调用这一个工具，不要解释。".into(),
+        "branches" => "给 3 个故事走向：每个 80-150 字正文，带一句话走向名与情绪标签，并注明牵动哪些伏笔/设定。用 offer_branches 一次提交。不要写正文之外的说明。".into(),
         _ => "读项目现状，给出下一步建议。".into(),
     }
 }
@@ -80,7 +81,7 @@ pub fn selection_instruction(kind: &str, selected: &str) -> String {
         _ => "改写",
     };
     format!(
-        "{verb}。只输出改写后的文本本身，不要解释、不要引号、不要调用工具。\n\n原文：\n{selected}"
+        "{verb}。用 offer_rewrite 提交：original 逐字复制下面要改的那一段，replacement 是你改写后的文本（不要引号、不要解释）。\n\n原文：\n{selected}"
     )
 }
 

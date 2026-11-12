@@ -753,6 +753,17 @@ impl DshClient {
         .await
     }
 
+    /// 接回一个已持久化的会话（进程重启、切模式之后用）。
+    ///
+    /// 实测：新进程 resume 后上下文完整——上一轮说过的词还记得。会话历史在 DSH 的
+    /// jsonl 里，所以切模式重启不会丢对话。
+    ///
+    /// 会话不存在（第一次启动）会被拒；调用方应把它当成“不需要 resume”，不是错误。
+    pub async fn session_resume(&self, session_id: &str) -> Result<Value> {
+        self.call("session/resume", json!({ "sessionId": session_id }))
+            .await
+    }
+
     /// 结束运行时（M2 接退出流程；M1 仅保留 API）。
     #[allow(dead_code)]
     pub fn shutdown(&self) {

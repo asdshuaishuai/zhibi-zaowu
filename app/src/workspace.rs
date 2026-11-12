@@ -320,8 +320,8 @@ pub struct Workspace {
     focus: bool,
     dock_hidden: bool,
     workspace_focus: gpui_kit::FocusHandle,
-    /// 选区创作请求的原文（应答到达时转成 SelectionDraft 气泡）
-    pending_sel: Option<String>,
+    /// 选区创作时的原文。采纳改写前用它校验“原文还在”，防止把建议套到别处。
+    selected_original: Option<String>,
     /// 主 Agent 形态（托管 / 极简 / 创造）。切模式 = 换 patch 重启本书的 DSH 进程。
     agent_mode: dsh::AgentMode,
     /// 待应答的审批（GUI 渲染成卡片，必须回；不回则 DSH 按拒绝处理）
@@ -330,6 +330,10 @@ pub struct Workspace {
     pending_question: Option<QuestionRequest>,
     /// 本轮是否已有任务在跑（拦连点，避免并发污染同一会话）
     turn_active: bool,
+    /// 本书的 DSH 会话 id。跨进程重启保持同一个 id，切模式后用 session/resume 接回历史。
+    session_id: String,
+    /// 新进程已经接过一次会话（避免每次发送都 resume）
+    session_attached: bool,
     /// 作品信息（project.json 的 genre/premise/targetChapters/chapterWordTarget）编辑入口
     meta_genre: Entity<InputState>,
     meta_premise: Entity<InputState>,
@@ -341,6 +345,13 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(root: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let handle = Rc::new(ProjectHandle::open(&root).expect("项目打开失败"));
+        // 会话 id 按书目录名定，跨进程重启保持不变（切模式后靠它 resume）
+        let session_id = format!(
+            "zhibi-{}",
+            root.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "main".into())
+        );
         let mut chapters = handle.chapters();
         // 默认落到最近一章（有正文的最后一章），没有则建第 1 章
         let chapter = chapters
@@ -690,10 +701,27 @@ impl Workspace {
             window,
             |this, _, ev: &TrajEvent, window, cx| match ev {
                 TrajEvent::AdoptSelection(text) => {
+                    // 采纳前校验原文还在：工具给了 original，作者可能在等待期间改了稿。
+                    // 直接把建议套到当前光标/选区上会把文字塞进不相干的位置。
+                    let doc = this.prose.read(cx).value().to_string();
+                    let original = this.selected_original.clone().unwrap_or_default();
+                    if !original.trim().is_empty() && !doc.contains(&original) {
+                        this.trajectory.update(cx, |panel, cx| {
+                            panel.push(
+                                TrajKind::Fail(
+                                    "原文已被改动，这条改写建议作废（请重新生成）".into(),
+                                ),
+                                cx,
+                            );
+                        });
+                        this.selected_original = None;
+                        return;
+                    }
                     let _ = this.handle.snapshot_prose(this.chapter);
                     this.prose.update(cx, |state, cx| {
                         state.replace(text.as_str(), window, cx);
                     });
+                    this.selected_original = None;
                     this.save_current(cx);
                     this.trajectory.update(cx, |panel, cx| {
                         panel.push(TrajKind::Info("选区已替换（快照已存）".into()), cx);
@@ -740,12 +768,8 @@ impl Workspace {
                 EditorEvent::AdoptBranch(ix) => {
                     if let Some(body) = this.branches.get(*ix).cloned() {
                         let _ = this.handle.snapshot_prose(this.chapter);
-                        // 去掉【X】标记行，取走向正文
-                        let content = body
-                            .splitn(2, '】')
-                            .nth(1)
-                            .map(|t| t.trim_start_matches(['\n', ' ', '\r']).to_string())
-                            .unwrap_or(body.clone());
+                        // branches 里存的就是走向正文（工具参数直接给），无需再剥前缀
+                        let content = body.clone();
                         let cur = this.prose.read(cx).value().to_string();
                         let sep = if cur.is_empty() || cur.ends_with('\n') { "" } else { "\n\n" };
                         let next = format!("{cur}{sep}{content}");
@@ -783,7 +807,7 @@ impl Workspace {
                         });
                         return;
                     }
-                    this.pending_sel = Some(selected.clone());
+                    this.selected_original = Some(selected.clone());
                     let task = prompts::selection_instruction(kind, &selected);
                     this.on_send(task, cx);
                 }
@@ -844,8 +868,10 @@ impl Workspace {
             chapter,
             client: None,
             initialized: false,
-            pending_sel: None,
+            selected_original: None,
             agent_mode: dsh::AgentMode::Managed,
+            session_id,
+            session_attached: false,
             pending_approval: None,
             pending_question: None,
             turn_active: false,
@@ -1196,13 +1222,7 @@ impl Workspace {
         };
 
         let weak = cx.weak_entity();
-        let session_id = format!(
-            "zhibi-{}",
-            self.root
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "main".into())
-        );
+        let session_id = self.session_id.clone();
         let query_text = text;
         cx.spawn(async move |_, cx| {
             let need_init = weak.update(cx, |ws, _| !ws.initialized).unwrap_or(false);
@@ -1222,6 +1242,32 @@ impl Workspace {
                 // 只有 initialize 成功才算完成进程级握手
                 let _ = weak.update(cx, |ws, _| ws.initialized = true);
             }
+
+            // 新进程接手：若本书已有历史会话，先 resume 再接回（切模式、崩溃重启都走这里）。
+            // 会话不存在属正常（第一次用这本书），不算错误，也不提示。
+            let need_resume = weak
+                .update(cx, |ws, _| !ws.session_attached)
+                .unwrap_or(false);
+            if need_resume {
+                match client.session_resume(&session_id).await {
+                    Ok(_) => {
+                        let _ = weak.update(cx, |ws, cx| {
+                            ws.session_attached = true;
+                            ws.trajectory.update(cx, |panel, cx| {
+                                panel.push(
+                                    TrajKind::Info("已接回本书的历史会话".into()),
+                                    cx,
+                                )
+                            });
+                        });
+                    }
+                    Err(_) => {
+                        // 首次使用（没有历史）——静默，不打扰作者
+                        let _ = weak.update(cx, |ws, _| ws.session_attached = true);
+                    }
+                }
+            }
+
             let r = client.session_query(&session_id, &query_text).await;
             let _ = weak.update(cx, |ws, cx| {
                 match r {
@@ -1249,6 +1295,38 @@ impl Workspace {
     ///
     /// 这里不自动批准。DSH 的 fail-closed 语义正好保证「作者不点 = 不执行」，
     /// 所以只把卡片摆出来即可，不设超时兜底。
+    /// 停止当前回合。
+    ///
+    /// sdk 协议没有 `session/abort`，所以只能杀掉该书进程并让下次发送重建——
+    /// 会话历史在 DSH 的 jsonl 里，重建后 `session/resume` 会把它接回来，对话不丢。
+    /// 只影响本书，不动其他书的进程。
+    fn stop_turn(&mut self, cx: &mut Context<Self>) {
+        if !self.turn_active && !self.dsh_running {
+            self.trajectory.update(cx, |panel, cx| {
+                panel.push(TrajKind::Info("当前没有在跑的任务".into()), cx);
+            });
+            return;
+        }
+        if let Some(client) = self.client.take() {
+            client.shutdown();
+        }
+        self.initialized = false;
+        self.dsh_running = false;
+        self.turn_active = false;
+        self.pending_approval = None;
+        self.pending_question = None;
+        // 下次发送时重建进程并 resume 同一会话
+        self.session_attached = false;
+        self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
+        self.trajectory.update(cx, |panel, cx| {
+            panel.push(
+                TrajKind::Info("已停止本轮（运行时将按需重建，会话历史保留）".into()),
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
     /// 切换主 Agent 形态。
     ///
     /// DSH 的执行器与 preset 是进程级组合，没法热切；所以：关掉当前进程 → 用新 patch 重启
@@ -1270,6 +1348,8 @@ impl Workspace {
         self.initialized = false;
         self.dsh_running = false;
         self.turn_active = false;
+        // 新进程要重新接回会话：session_id 不变，历史在 DSH 的 jsonl 里
+        self.session_attached = false;
         self.pending_approval = None;
         self.pending_question = None;
         self.chat.update(cx, |panel, cx| panel.set_busy(false, cx));
@@ -1432,6 +1512,100 @@ impl Workspace {
         }
     }
 
+    /// 三个轻交互工具的参数直接落成 UI 状态。
+    ///
+    /// 这是“不再解析模型文本”的落点：分支卡、改写建议、续写都由工具参数给出，
+    /// 前端只读参数，不猜格式，也不会把普通聊天里出现的符号误判成卡片。
+    fn on_card_tool(&mut self, name: &str, args: &Value, cx: &mut Context<Self>) {
+        match name {
+            "offer_branches" => {
+                let branches: Vec<String> = args
+                    .get("branches")
+                    .and_then(|b| b.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|b| {
+                                // 只存正文：标签/情绪由工具参数单独给出，
+                                // 采纳时不需要再从字符串里剥前缀。
+                                b.get("text")
+                                    .and_then(|t| t.as_str())
+                                    .map(|t| t.to_string())
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if branches.is_empty() {
+                    return;
+                }
+                let n = branches.len();
+                self.branches = branches.clone();
+                self.editor.update(cx, |panel, cx| panel.set_branches(branches, cx));
+                self.chat.update(cx, |panel, cx| {
+                    panel.push(
+                        ChatMsg {
+                            role: "assistant".into(),
+                            text: "给了几个走向——在稿纸下方选一个，或换一批。".into(),
+                        },
+                        cx,
+                    );
+                });
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(
+                        TrajKind::Info(format!("{n} 个走向已就绪，稿纸下方可选")),
+                        cx,
+                    );
+                });
+            }
+            "offer_rewrite" => {
+                let original = args
+                    .get("original")
+                    .and_then(|o| o.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let replacement = args
+                    .get("replacement")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let kind = args.get("kind").and_then(|k| k.as_str()).unwrap_or("rewrite");
+                if original.trim().is_empty() || replacement.trim().is_empty() {
+                    return;
+                }
+                // 记下原文，采纳时校验（作者可能在等待期间改了稿）
+                self.selected_original = Some(original.clone());
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(
+                        TrajKind::SelectionDraft {
+                            original,
+                            text: replacement,
+                        },
+                        cx,
+                    );
+                });
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(
+                        TrajKind::Info(format!("改写建议（{kind}）已就绪，可就地采纳")),
+                        cx,
+                    );
+                });
+            }
+            "offer_continuation" => {
+                let text = args
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if text.trim().is_empty() {
+                    return;
+                }
+                self.trajectory.update(cx, |panel, cx| {
+                    panel.push(TrajKind::Text(text), cx);
+                });
+            }
+            _ => {}
+        }
+    }
+
     fn on_session_event(&mut self, event: &Value, cx: &mut Context<Self>) {
         let kind = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let data = event.get("data").cloned().unwrap_or(Value::Null);
@@ -1451,6 +1625,13 @@ impl Workspace {
                     .and_then(|a| a.as_str())
                     .unwrap_or("")
                     .to_string();
+
+                // 轻交互卡片：参数是结构化的，直接在这里落成 UI 状态。
+                // 这是替代“解析模型文本猜意图”的地方——工具参数不会误判。
+                if let Ok(args) = serde_json::from_str::<Value>(&raw) {
+                    self.on_card_tool(&name, &args, cx);
+                }
+
                 let args: String = raw.chars().take(160).collect();
                 let call_id = data
                     .get("callId")
@@ -1488,32 +1669,11 @@ impl Workspace {
                 let text = assistant_text_full(&data);
                 if text.is_empty() {
                     None
-                } else if text.contains('【') && (text.contains("A】") || text.contains("B】")) {
-                    // 分支卡：解析【A】【B】【C】段落
-                    let branches: Vec<String> = text
-                        .split('【')
-                        .filter(|seg| !seg.trim().is_empty())
-                        .map(|seg| format!("【{seg}").trim_end().to_string())
-                        .collect();
-                    self.branches = branches.clone();
-                    let n = branches.len();
-                    self.editor.update(cx, |panel, cx| panel.set_branches(branches, cx));
-                    self.chat.update(cx, |panel, cx| {
-                        panel.set_busy(false, cx);
-                        panel.push(ChatMsg { role: "assistant".into(), text: "给了几个走向——在稿纸下方选一个，或换一批。".into() }, cx);
-                    });
-                    self.show_toast("走向已就绪", cx);
-                    Some(TrajKind::Info(format!("{n} 个走向已就绪，稿纸下方可选")))
-                } else if let Some(original) = self.pending_sel.take() {
-                    self.chat.update(cx, |panel, cx| {
-                        panel.set_busy(false, cx);
-                        panel.push(ChatMsg { role: "assistant".into(), text: text.clone() }, cx);
-                    });
-                    Some(TrajKind::SelectionDraft { original, text })
                 } else {
+                    // 走向/改写/续写这些结构化产出走 offer_* 工具，不走文本。
+                    // 这里的纯文本就是对话本身。
                     let t = text.clone();
                     self.chat.update(cx, |panel, cx| {
-                        panel.set_busy(false, cx);
                         panel.push(ChatMsg { role: "assistant".into(), text: t }, cx);
                     });
                     Some(TrajKind::Text(text))
@@ -1871,6 +2031,21 @@ impl Render for Workspace {
                                 });
                             })),
                     )
+                    // 停止只在真的在跑时出现：没有可停的就不要摆一个按不动的按钮
+                    .children(if dsh_running {
+                        Some(
+                            Button::new("stop-turn")
+                                .custom(icon_btn(&*cx))
+                                .small()
+                                .rounded(theme::RADIUS_BTN_SM)
+                                .label("停止")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.stop_turn(cx);
+                                })),
+                        )
+                    } else {
+                        None
+                    })
                     .left(
                         Button::new("export-status")
                             .custom(icon_btn(&*cx))

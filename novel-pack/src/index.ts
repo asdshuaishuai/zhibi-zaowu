@@ -847,6 +847,84 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
           return result.message
         }),
     ),
+    // —— 轻交互卡片：结构化产出，GUI 直接读参数，不再靠解析模型文本 ——
+    //
+    // 为什么用工具而不是“让模型输出【A】【B】【C】”：前端原来靠
+    // contains('【') && contains("A】") 猜这是不是分支卡，普通聊天里出现同样的字符
+    // 就会被误判。工具参数是结构化的，不会误判，也自带 callId 能与那一轮轨迹对上。
+
+    textTool(
+      'offer_branches',
+      '给作者 3 个故事走向候选。每项 80-150 字正文，并标注走向名、情绪标签与牵动的伏笔/设定。作者点选后由宿主并入正文——你不是在写正文。',
+      {
+        branches: {
+          type: 'array',
+          description: '走向数组（建议 3 个）',
+          required: true,
+          items: {
+            type: 'object',
+            properties: {
+              label: str('一句话走向名，如「复仇线」'),
+              mood: str('情绪标签，如 压抑/昂扬/温情', false),
+              text: str('这个走向的正文（80-150 字）'),
+              touches: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '牵动的伏笔编号或设定名',
+                required: false,
+              },
+            },
+            required: ['label', 'text'],
+          },
+        },
+        chapter: num('所属章节号', false),
+      },
+      (args) =>
+        guard(async () => {
+          const branches = Array.isArray(args.branches) ? args.branches : []
+          if (branches.length === 0) return '没有可展示的走向。'
+          const names = branches.map((b: any) => b.label).join(' / ')
+          return `已展示 ${branches.length} 个走向（${names}），等作者点选。`
+        }),
+    ),
+
+    textTool(
+      'offer_rewrite',
+      '给作者一段改写建议。original 必须逐字引自正文，宿主会做原文校验——对不上就不替换。只提交这一处，不要顺手改别处。',
+      {
+        original: str('原文（逐字摘自正文）'),
+        replacement: str('改写后的文本'),
+        kind: {
+          type: 'string',
+          description: 'deepen=拉深 / expand=扩写 / condense=缩写 / rewrite=改写 / deslop=去AI味',
+          required: false,
+        },
+        chapter: num('所属章节号', false),
+      },
+      (args) =>
+        guard(async () => {
+          const original = String(args.original ?? '')
+          const replacement = String(args.replacement ?? '')
+          if (!original.trim() || !replacement.trim()) return '原文或改写为空，未登记。'
+          const kind = String(args.kind ?? 'rewrite')
+          return `已给出改写建议（${kind}）：${original.length} 字 → ${replacement.length} 字，等作者采纳。`
+        }),
+    ),
+
+    textTool(
+      'offer_continuation',
+      '给作者一句续写（紧接正文最后一段，不超过 60 字）。作者采纳才落盘；不要调用其他工具，不要解释。',
+      {
+        text: str('续写的那一句'),
+        chapter: num('所属章节号', false),
+      },
+      (args) =>
+        guard(async () => {
+          const text = String(args.text ?? '')
+          if (!text.trim()) return '续写为空，未展示。'
+          return `已给出续写（${text.length} 字），等作者采纳。`
+        }),
+    ),
   ]
 
   for (const t of tools) {

@@ -1,8 +1,11 @@
 // 完整事件追踪：node chat.mjs <bin.js> <cwd> <patch|-> <seconds> <prompt>
 import { spawn } from 'node:child_process'
-const [binjs, cwd, patch, secs, prompt] = process.argv.slice(2)
+const [binjs, cwd, patchArg, secs, prompt] = process.argv.slice(2)
 const args = [binjs, '--profile', 'sdk']
-if (patch && patch !== '-') args.push('--patch', patch)
+// patchArg 支持用 ',' 分隔多个 patch，按顺序叠加（后者覆盖前者）
+if (patchArg && patchArg !== '-') {
+  for (const p of patchArg.split(',')) args.push('--patch', p)
+}
 const p = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'inherit'], env: process.env })
 let id = 0
 const pending = new Map()

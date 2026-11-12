@@ -68,3 +68,14 @@
 | 20 | 每书 DSH_HOME 稳定且互相隔离 | **通过**（单元测试 `home_dir_is_isolated_per_book_and_stable`；用进程内缓存防 `HOME` 漂移） |
 
 `cargo test` 30 项全绿（新增 6 项：模式 patch 内容、guard 覆盖、稳定性、home 隔离）。
+
+## M1 收尾验证
+
+| # | 项 | 结果 |
+|---|---|---|
+| 21 | `session/resume` 跨进程接回历史 | **通过**：进程 A 让模型记住「青锋」，进程 B resume 后追问，答「青锋」 |
+| 22 | `offer_branches` 结构化卡片工具 | **通过**：模型真实调用，返回 3 个走向名（冒雨直闯长街 / 石桥遇旧识 / 走出十步回头） |
+| 23 | novel-pack 工具总数 | 24 → **27**（+offer_branches/offer_rewrite/offer_continuation） |
+| 24 | 前端文本猜意图 | **已清除**：`【A】` 解析、`pending_sel` 全部删除；改写采纳改为校验原文仍在 |
+
+sdk 协议没有 `session/abort`，所以「停止」= 杀进程 + 下次发送时 resume（已实现并实测可行）。
