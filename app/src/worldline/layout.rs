@@ -57,6 +57,9 @@ pub struct TreeNode {
     pub archived: bool,
     pub forecast: bool,
     pub node_count: usize,
+    /// 这条线算不算"已经定下来的世界"（正典 / 已扶正）。
+    /// 画树上用来分实线（定的）与虚线（可能）。
+    pub settled: bool,
 }
 
 /// 树布局结果。
@@ -274,6 +277,7 @@ pub fn tree_full(lines: &[Line], horizon_hint: u32, base_solid: u32) -> Tree {
                     archived: line.is_archived(),
                     forecast: line.kind == Kind::Forecast,
                     node_count: line.nodes.len(),
+                    settled: line.is_base() || line.kind == Kind::Fixed,
                 });
                 cursor = end;
                 stack.pop();
