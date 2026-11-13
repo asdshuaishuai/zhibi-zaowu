@@ -1389,16 +1389,17 @@ impl Render for WorldlinePanel {
                             let h = bounds.size.height.as_f32();
                             let p = |x: f32, y: f32| point(px(ox + x), px(oy + y));
                             let pad_x = 56.0f32;
-                            let pad_top = 44.0f32;
-                            let pad_bottom = 64.0f32;
                             let x_of = |nx: f32| {
                                 pad_x + nx.clamp(0., 1.) * (w - pad_x * 2.)
                             };
-                            let layers = max_depth.max(1) as f32;
-                            let gap = (h - pad_top - pad_bottom) / (layers + 0.6);
-                            let y_of = |depth: usize| {
-                                h - pad_bottom - depth as f32 * gap
+                            // 深度 → 纵向占比（0=最底，1=最顶）。同一公式也用于
+                            // 标签浮层的 top(relative(..))——两边必须同源，
+                            // 否则画出来的圆和浮层标签各在一处（真的踩过）。
+                            let layers = (max_depth as f32 + 1.0).max(2.0);
+                            let y_frac_of = |depth: usize| {
+                                1.0 - (depth as f32 + 0.5) / layers
                             };
+                            let y_of = |depth: usize| y_frac_of(depth) * h;
 
                             // 每棵子树一个颜色（depth=1 的那条根分支决定整支的色），
                             // 正典主干永远是最亮的那根。作者认树靠的是颜色连贯。
@@ -1542,10 +1543,9 @@ impl Render for WorldlinePanel {
                         .id(SharedString::from(format!("tree-node-{}", n.id)))
                         .absolute()
                         .left(relative(n.x.clamp(0., 1.)))
-                        .bottom(relative(
-                            1.0 - (n.depth as f32 / (max_depth.max(1) as f32 + 0.6)),
-                        ))
-                        .mb(px(58.))
+                        .top(relative(1.0 - (n.depth as f32 + 0.5) / (max_depth as f32 + 1.0).max(2.0)))
+                        .ml(px(-40.))
+                        .mt(px(14.))
                         .ml(px(-40.))
                         .w(px(80.))
                         .text_center()
