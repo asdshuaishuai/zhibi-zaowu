@@ -1900,7 +1900,7 @@ impl ProjectHandle {
                 }
                 let roster = crate::characters::Roster::new(&self.root);
                 let mut list = roster.all_checked()?;
-                let mut touched: Vec<String> = Vec::new();
+                let mut touched: Vec<(String, Vec<String>)> = Vec::new();
                 for raw in incoming {
                     let mut c: crate::characters::Character = match serde_json::from_value(raw) {
                         Ok(c) => c,
@@ -1921,7 +1921,7 @@ impl ProjectHandle {
                             let changed = list[i].apply_proposal(&c);
                             if changed > 0 {
                                 applied += 1;
-                                touched.push(list[i].name.clone());
+                                touched.push((list[i].name.clone(), list[i].aliases.clone()));
                             } else {
                                 skipped.push(format!("「{name}」没有可补的字段（已写或已锁）"));
                             }
@@ -1931,19 +1931,22 @@ impl ProjectHandle {
                             c.name = name.clone();
                             c.extra = Default::default();
                             // 新档案本身就是"从无到有"，无论字段多少都算一条入库
+                            let aliases = c.aliases.clone();
                             list.push(c);
                             applied += 1;
-                            touched.push(name);
+                            touched.push((name, aliases));
                         }
                     }
                 }
                 if applied > 0 {
                     self.snapshot_ledger_files(&["characters.json", "memory.json"])?;
                     roster.save(&list)?;
-                    // 新建的人物要立刻出现在画布/关系图上：画布的人物节点来自
-                    // memory.aliases，不是 characters.json。不同步的话作者新建完
+                    // 人物与别名要立刻出现在画布/关系图上：画布的人物节点来自
+                    // memory.aliases，不是 characters.json。不同步的话作者/AI 新建完
                     // 在画布上找不到这个人，关系也挂不上。
-                    self.upsert_alias_names(&touched)?;
+                    for (name, aliases) in &touched {
+                        self.sync_alias_entry(name, aliases)?;
+                    }
                 }
             }
             "clues" => {
