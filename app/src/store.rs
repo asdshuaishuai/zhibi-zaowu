@@ -2989,7 +2989,41 @@ impl ProjectHandle {
         write_atomic(&path, &lines.join("\n"))
     }
 
+    /// 删除一篇知识库文档（作者动作，journal 留痕可撤销）。
+    pub fn delete_imported_doc(&self, name: &str) -> Result<(), String> {
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err("非法文件名".into());
+        }
+        let path = self.root.join("imports").join(name);
+        if !path.exists() {
+            return Err(format!("imports/ 里没有 {name}"));
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        let _ = crate::journal::Journal::new(&self.root).record(
+            &self.root,
+            &format!("imports/{name}"),
+            &text,
+            "",
+            &crate::journal::Actor::Author,
+            "remove",
+            &format!("b{}", crate::journal::now_millis()),
+            &format!("删除知识库文档：{name}"),
+        );
+        self.rebuild_import_index()
+    }
+
+    /// 读一篇知识库文档的原文（预览 / 校验存在性）。
+    pub fn read_imported_doc(&self, name: &str) -> Result<String, String> {
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err("非法文件名".into());
+        }
+        std::fs::read_to_string(self.root.join("imports").join(name))
+            .map_err(|e| format!("读不出来：{e}"))
+    }
+
     /// imports/ 里现有几篇待提取材料（0 = 没有，不值得派 AI）。
+    /// 返回**文件名**（含 .md）——删除与预览都按名字寻址。
     pub fn imported_docs(&self) -> Vec<String> {
         let dir = self.root.join("imports");
         let mut out: Vec<String> = std::fs::read_dir(&dir)
@@ -3000,7 +3034,7 @@ impl ProjectHandle {
                         p.extension().and_then(|e| e.to_str()) == Some("md")
                             && p.file_name().map(|n| n.to_string_lossy() != "INDEX.md").unwrap_or(true)
                     })
-                    .map(|p| p.display().to_string())
+                    .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .collect()
             })
             .unwrap_or_default();

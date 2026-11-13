@@ -120,6 +120,18 @@ pub const SELECTION_BUTTONS: &[(&str, &str)] = &[
     ("去AI味", "deslop"),
 ];
 
+/// 知识库单篇拆分任务书：只处理一篇，拆完源文档保留。
+pub fn knowledge_split_task(doc: &str) -> String {
+    format!(
+        "知识库拆分：书目录 imports/{doc} 是作者导入的一篇原始材料。\n\
+         先 `skill zhibi-import-extract` 加载规程并照做，本次**只处理这一篇**：\n\
+         通读后按内容拆分提取（人物/关系/设定/伏笔/大纲），逐类分派给对应专属 Agent\n\
+         （subagent，agentPreset=character/relations/outline），全部产出走提案。铁律：\n\
+         只提取不创作；矛盾不上秤（两条都出并注明冲突）；源文档保留在知识库\n\
+         不删除、不改写。完成后汇总拆出了哪些类、各多少条提案。{BASIS_RULE}"
+    )
+}
+
 /// 设定提取任务书：读 imports/ 里的作者导入材料，提取分类后分派各专属 Agent。
 ///
 /// 这是"老书搬进执笔"的主链路：作者把散落的世界观/人物/大纲文档导进来，

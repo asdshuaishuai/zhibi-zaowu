@@ -33,7 +33,7 @@ use crate::theme;
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
 use crate::views::{
     CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel,
-    CharacterEvent, JournalEvent, JournalPanel, MemoryPanel,
+    CharacterEvent, JournalEvent, JournalPanel, KnowledgeEvent, MemoryPanel,
     OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent,
 };
 
@@ -83,6 +83,7 @@ pub enum Mode {
     Snapshots,
     Journal,
     Import,
+    Knowledge,
     Graph,
     Canvas,
     Director,
@@ -107,6 +108,7 @@ impl Mode {
             "snapshots" | "快照" => Mode::Snapshots,
             "journal" | "改动记录" => Mode::Journal,
             "import" | "导入" => Mode::Import,
+            "knowledge" | "知识库" => Mode::Knowledge,
             "graph" | "图谱" => Mode::Graph,
             "canvas" | "画板" | "剧情画板" => Mode::Canvas,
             // 中文"世界线"以前映射到排期板（Director）——那是错的：
@@ -133,6 +135,7 @@ impl Mode {
             Mode::Snapshots => "快照",
             Mode::Journal => "改动记录",
             Mode::Import => "导入旧稿",
+            Mode::Knowledge => "知识库",
             Mode::Graph => "记忆图谱",
             Mode::Canvas => "剧情画板",
             Mode::Director => "章节排期",
@@ -157,6 +160,7 @@ impl Mode {
             // 没有历史/撤销图标时用 Camera 的语义邻居：这里借用 ListTree 表示“流水”
             Mode::Journal => IconName::ListTree,
             Mode::Import => IconName::FolderInput,
+            Mode::Knowledge => IconName::BookOpen,
             Mode::Graph => IconName::Network,
             Mode::Canvas => IconName::Waypoints,
             Mode::Director => IconName::Kanban,
@@ -168,7 +172,7 @@ impl Mode {
 }
 
 /// 侧栏导航顺序（与原实现一致，只是改为数据表以便统一出行）。
-const NAV: [Mode; 16] = [
+const NAV: [Mode; 17] = [
     Mode::Editor,
     Mode::Outline,
     Mode::Canon,
@@ -184,6 +188,7 @@ const NAV: [Mode; 16] = [
     Mode::Graph,
     Mode::Snapshots,
     Mode::Import,
+    Mode::Knowledge,
     Mode::Settings,
 ];
 
@@ -309,6 +314,7 @@ pub struct Workspace {
     snapshots_view: Entity<SnapshotsPanel>,
     journal_view: Entity<JournalPanel>,
     import_view: Entity<ImportPanel>,
+    knowledge_view: Entity<crate::views::KnowledgePanel>,
     graph_view: Entity<GraphPanel>,
     canvas_view: Entity<CanvasPanel>,
     director_view: Entity<DirectorPanel>,
@@ -457,6 +463,7 @@ impl Workspace {
         let snapshots_view = cx.new(|cx| SnapshotsPanel::new(cx, handle.clone(), chapter));
         let journal_view = cx.new(|cx| JournalPanel::new(window, cx, handle.clone()));
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
+        let knowledge_view = cx.new(|cx| crate::views::KnowledgePanel::new(window, cx, handle.clone()));
         let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
         let canvas_view = cx.new(|cx| CanvasPanel::new(window, cx, handle.clone()));
         let director_view = cx.new(|cx| DirectorPanel::new(cx, handle.clone(), chapter));
@@ -570,6 +577,102 @@ impl Workspace {
                     })
                     .detach();
                 }
+            },
+        )
+        .detach();
+
+        // 知识库：导入 / 全量提取 / 单篇拆分 / 删除
+        cx.subscribe_in(
+            &knowledge_view,
+            window,
+            |this, _, ev: &KnowledgeEvent, _window, cx| match ev {
+                KnowledgeEvent::ImportSettings(path) => {
+                    if path.trim().is_empty() {
+                        this.knowledge_view.update(cx, |panel, cx| {
+                            panel.set_result("先填设定文档目录".into(), cx);
+                        });
+                        return;
+                    }
+                    let path = std::path::PathBuf::from(path);
+                    let root = this.handle.root.clone();
+                    let title = this.handle.title.clone();
+                    let knowledge_view = this.knowledge_view.clone();
+                    let traj = this.trajectory.clone();
+                    cx.spawn(async move |_, cx| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move {
+                                let h = ProjectHandle { root, title };
+                                h.import_settings_docs(&path)
+                            })
+                            .await;
+                        let _ = cx.update(|cx| {
+                            let msg = match result {
+                                Ok(r) => {
+                                    let mut m = format!(
+                                        "已归档 {} 篇（约 {} 字）到知识库。",
+                                        r.count, r.chars
+                                    );
+                                    if !r.skipped.is_empty() {
+                                        m.push_str(&format!(" 跳过 {} 篇（内容相同）。", r.skipped.len()));
+                                    }
+                                    m.push_str(" 可逐篇「AI 拆分」，或「总 Agent 全量提取」。");
+                                    m
+                                }
+                                Err(e) => format!("导入失败：{e}"),
+                            };
+                            knowledge_view.update(cx, |panel, cx| panel.set_result(msg.clone(), cx));
+                            traj.update(cx, |panel, cx| panel.push(TrajKind::Info(msg), cx));
+                        });
+                    })
+                    .detach();
+                }
+                KnowledgeEvent::Extract => {
+                    let docs = this.handle.imported_docs();
+                    if docs.is_empty() {
+                        this.knowledge_view.update(cx, |panel, cx| {
+                            panel.set_result("知识库为空——先导入材料".into(), cx);
+                        });
+                        return;
+                    }
+                    let n = docs.len();
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(
+                            TrajKind::Info(format!(
+                                "知识库全量提取：{n} 篇，已交给总 Agent（提取 → 分派专属 Agent → 全部走提案）"
+                            )),
+                            cx,
+                        );
+                    });
+                    this.on_send(prompts::import_extract_task(n), cx);
+                }
+                KnowledgeEvent::Split(doc) => {
+                    // 只处理这一篇：字数带上，模型能规划读取轮次
+                    let chars = this
+                        .handle
+                        .read_imported_doc(doc)
+                        .map(|t| t.chars().count())
+                        .unwrap_or(0);
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(
+                            TrajKind::Info(format!(
+                                "知识库拆分：{doc}（约 {chars} 字），已交给总 Agent（只处理这一篇）"
+                            )),
+                            cx,
+                        );
+                    });
+                    this.on_send(prompts::knowledge_split_task(doc), cx);
+                }
+                KnowledgeEvent::Delete(doc) => match this.handle.delete_imported_doc(doc) {
+                    Ok(()) => {
+                        this.knowledge_view.update(cx, |panel, cx| {
+                            panel.set_result(format!("已删除 {doc}（改动记录里可撤销）"), cx)
+                        });
+                    }
+                    Err(e) => this.knowledge_view.update(cx, |panel, cx| {
+                        panel.set_result(format!("删除失败：{e}"), cx)
+                    }),
+                },
             },
         )
         .detach();
@@ -1554,6 +1657,7 @@ impl Workspace {
             snapshots_view,
             journal_view,
             import_view,
+            knowledge_view,
             graph_view,
             canvas_view,
             director_view,
@@ -1758,6 +1862,10 @@ impl Workspace {
                 panel_handle(self.journal_view.clone())
             }
             Mode::Import => panel_handle(self.import_view.clone()),
+            Mode::Knowledge => {
+                self.knowledge_view.update(cx, |panel, _cx| panel.refresh());
+                panel_handle(self.knowledge_view.clone())
+            }
             Mode::Graph => panel_handle(self.graph_view.clone()),
             Mode::Canvas => {
                 self.canvas_view.update(cx, |panel, _cx| panel.refresh());

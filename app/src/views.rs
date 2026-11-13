@@ -3640,3 +3640,281 @@ impl ComponentPanel for JournalPanel {
             .child("改动记录")
     }
 }
+
+
+/* ───────────────────────── 知识库（导入材料存放 + AI 拆分） ───────────────────────── */
+
+/// 知识库事件。导入材料存放在书的 imports/，这里只做"管理 + 派 AI"。
+#[derive(Debug, Clone)]
+pub enum KnowledgeEvent {
+    /// 导入一个目录的设定文档（原样归档进 imports/）
+    ImportSettings(String),
+    /// 全量提取：总 Agent 通读 imports/ 并分派各专属 Agent
+    Extract,
+    /// 单篇拆分：让总 Agent 只处理这一篇
+    Split(String),
+    /// 删除一篇（作者动作，journal 留痕）
+    Delete(String),
+}
+
+pub struct KnowledgePanel {
+    focus_handle: FocusHandle,
+    handle: Rc<ProjectHandle>,
+    /// 导入目录输入
+    path: Entity<gpui_kit::component::input::InputState>,
+    docs: Vec<String>,
+    selected: Option<String>,
+    preview: String,
+    result: String,
+}
+
+impl KnowledgePanel {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        let path = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("设定文档目录（.md/.txt）")
+        });
+        let mut this = Self {
+            focus_handle: cx.focus_handle(),
+            handle,
+            path,
+            docs: Vec::new(),
+            selected: None,
+            preview: String::new(),
+            result: String::new(),
+        };
+        this.refresh();
+        this
+    }
+
+    pub fn refresh(&mut self) {
+        self.docs = self.handle.imported_docs();
+        // 选中的被删了就清掉预览
+        if let Some(sel) = &self.selected {
+            if !self.docs.contains(sel) {
+                self.selected = None;
+                self.preview = String::new();
+            }
+        }
+        if let Some(sel) = &self.selected {
+            self.preview = self
+                .handle
+                .read_imported_doc(sel)
+                .unwrap_or_else(|e| format!("（读不出来：{e}）"));
+        }
+    }
+
+    pub fn set_result(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.result = msg;
+        self.refresh();
+        cx.notify();
+    }
+
+    fn set_selected(&mut self, name: String, cx: &mut Context<Self>) {
+        self.selected = Some(name.clone());
+        self.preview = self
+            .handle
+            .read_imported_doc(&name)
+            .unwrap_or_else(|e| format!("（读不出来：{e}）"));
+        cx.notify();
+    }
+}
+
+impl EventEmitter<PanelEvent> for KnowledgePanel {}
+impl EventEmitter<KnowledgeEvent> for KnowledgePanel {}
+
+impl Focusable for KnowledgePanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for KnowledgePanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let result = self.result.clone();
+        let preview_head: String = self.preview.chars().take(2400).collect();
+        let truncated = self.preview.chars().count() > 2400;
+        let sel = self.selected.clone();
+
+        // 右栏（选中才出现）。先在 render 顶层构造：when_some 在这个文件里
+        // 没进作用域，且闭包里要 emit 事件，早构造早省心。
+        let right_pane: Option<gpui_kit::AnyElement> = sel.clone().map(|name| {
+            let name2 = name.clone();
+            let name3 = name.clone();
+            div()
+                .flex()
+                .items_center()
+                .gap(theme::GAP_MD)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_ellipsis()
+                        .text_size(theme::FONT_LABEL)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::TEXT())
+                        .child(SharedString::from(name.clone())),
+                )
+                .child(
+                    primary_btn("kb-split", "AI 拆分此文档", cx).on_click(cx.listener({
+                        let name = name2.clone();
+                        move |_this, _, _, cx| {
+                            cx.emit(KnowledgeEvent::Split(name.clone()));
+                        }
+                    })),
+                )
+                .child(
+                    danger_btn(name3.clone(), "删除", cx).on_click(cx.listener(move |_this, _, _, cx| {
+                        cx.emit(KnowledgeEvent::Delete(name3.clone()));
+                    })),
+                )
+                .into_any_element()
+        });
+        let preview_pane: gpui_kit::AnyElement = div()
+            .id("kb-preview")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p(theme::PAD_MD)
+            .rounded(theme::RADIUS_PANEL)
+            .bg(theme::PROSE_BG())
+            .border_1()
+            .border_color(theme::LINE())
+            .text_size(theme::FONT_LABEL)
+            .line_height(relative(theme::LINE_HEIGHT_BODY))
+            .text_color(theme::DIM())
+            .child(SharedString::from(if preview_head.is_empty() {
+                "（选中一篇查看内容）".to_string()
+            } else if truncated {
+                format!("{}\n\n……（预览截断，全文 {} 字）", preview_head, self.preview.chars().count())
+            } else {
+                preview_head.clone()
+            }))
+            .into_any_element();
+
+        panel_root("knowledge-scroll").child(
+            panel_col()
+                .child(sec_title("知识库 —— 导入材料的存放与 AI 拆分"))
+                .child(
+                    div()
+                        .text_size(theme::FONT_META)
+                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                        .text_color(theme::DIM())
+                        .child("这里存放作者导入的原始设定材料。总 Agent 可以逐篇拆分：
+                            人物/关系/设定/伏笔/大纲各归各类，全部走提案，材料本身不会被改写。"),
+                )
+                // 导入 + 全量提取
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_MD)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(field("导入目录", &self.path))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(theme::GAP_MD)
+                                .child(
+                                    primary_btn("kb-import", "归档到书", cx).on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            let p = this.path.read(cx).value().to_string();
+                                            cx.emit(KnowledgeEvent::ImportSettings(p));
+                                        }),
+                                    ),
+                                )
+                                .child(
+                                    primary_btn("kb-extract", "总 Agent 全量提取", cx).on_click(
+                                        cx.listener(|_this, _, _, cx| {
+                                            cx.emit(KnowledgeEvent::Extract);
+                                        }),
+                                    ),
+                                ),
+                        )
+                        .when_true(!result.is_empty(), |d| {
+                            d.child(chip(SharedString::from(result.clone()), Tone::Green))
+                        }),
+                )
+                // 主体：左列表 + 右预览
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .gap(theme::GAP_GROUP)
+                        .child(
+                            div()
+                                .id("kb-doc-list")
+                                .w(px(220.))
+                                .flex_shrink_0()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .children(self.docs.is_empty().then(|| {
+                                    div()
+                                        .text_size(theme::FONT_META)
+                                        .text_color(theme::FAINT())
+                                        .child("还没有导入的材料——上方填目录归档")
+                                        .into_any_element()
+                                }))
+                                .children(self.docs.iter().map(|name| {
+                                    let on = sel.as_deref() == Some(name.as_str());
+                                    div()
+                                        .id(SharedString::from(format!("kb-doc-{name}")))
+                                        .px(theme::PAD_SM)
+                                        .py(px(4.))
+                                        .rounded(px(5.))
+                                        .cursor_pointer()
+                                        .text_size(theme::FONT_LABEL)
+                                        .text_ellipsis()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                                        .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                                        .child(SharedString::from(name.clone()))
+                                        .on_click(cx.listener({
+                                            let name = name.clone();
+                                            move |this, _, _, cx| {
+                                                this.set_selected(name.clone(), cx);
+                                            }
+                                        }))
+                                        .into_any_element()
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .min_h_0()
+                                .flex()
+                                .flex_col()
+                                .gap(theme::GAP_SM)
+                                .children(right_pane.into_iter())
+                                .child(preview_pane),
+                        ),
+                ),
+        )
+    }
+}
+
+impl BasePanel for KnowledgePanel {
+    fn panel_name(&self) -> &'static str {
+        "knowledge-view"
+    }
+}
+impl ComponentPanel for KnowledgePanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("知识库")
+    }
+}
