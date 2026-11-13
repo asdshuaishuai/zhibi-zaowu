@@ -1343,11 +1343,6 @@ impl Render for WorldlinePanel {
         // 对比视图：选两条线，看共同祖先之后各自差在哪。
         // 对比属于世界线的第二种看法（时间轴回答"有哪些世界"，对比回答"差在哪"），
         // 所以不另开页，用页头的两个小页签切。
-        // —— （世界树形态已下线：分层树表达不出"固化是一条、没固化是多种可能"）——
-        //
-        // 与时间轴的分工：时间轴说"哪些章定了、之后有什么"，
-        // 树说"这些 if 是从谁身上分出来的"。血缘用 parentId，所以有环或
-        // 父节点不存在时会在 layout::tree 里被升成独立的树，不会消失。
         let compare_el: Option<gpui_kit::AnyElement> = if self.view == WlTab::Compare {
             self.compare_with.as_ref().map(|right| {
             let left = self
@@ -1813,9 +1808,9 @@ fn field(label: &str, state: &Entity<gpui_kit::component::input::InputState>) ->
         .into_any_element()
 }
 
-/// 世界树的配色：一条世界线一个颜色。
+/// 时间轴的线色：一条世界线一个颜色。
 ///
-/// 为什么按下标而不是按 kind：kind 只有四类，13 条线里必然撞色；
+/// 为什么按下标而不是按 kind：kind 只有四类，线一多必然撞色；
 /// 而"不同的世界发展线路"要能一眼分开，所以按线的顺序取一轮调色板。
 /// 正典固定蓝（它是基准，不该跟别的线抢色）。
 
