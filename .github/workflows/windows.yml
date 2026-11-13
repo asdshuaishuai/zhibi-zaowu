@@ -11,10 +11,17 @@
 # npm install 时按平台自动取。
 name: Windows 构建抢先版
 
+# 发 Release 的两种方式：
+#   1. push 一个 v* 的 tag（如 v3.0.0-dev.2）→ 构建后自动挂到该 tag 的 Release
+#   2. push main / 手动触发 → 只出 Actions artifact（不占 Release 列表）
 on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: write
 
 jobs:
   windows:
@@ -85,3 +92,11 @@ jobs:
           name: zhibi-windows-x64
           path: target/release/zhibi-windows-x64.zip
           retention-days: 14
+
+      # 打 v* tag 时：zip 自动挂到该 tag 的 GitHub Release
+      - name: 发 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/zhibi-windows-x64.zip
+          generate_release_notes: true
