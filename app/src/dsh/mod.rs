@@ -454,18 +454,30 @@ impl DshClient {
             // macOS .app：MacOS/ → Contents/Resources/runtime
             let rt = dir.join("Resources").join("runtime");
             // 包内目录名沿用 dsh（build_app.sh 把 .vendor/dsh-runtime 拷成 runtime/dsh）
-            let node = rt.join("node").join("bin").join("node");
+            // Windows 的 node 叫 node.exe：两个名字都试，谁在用谁
+            let bin_dir = rt.join("node").join("bin");
             let binjs = rt.join("dsh").join("lib").join("bin.js");
-            if node.exists() && binjs.exists() {
+            let node = ["node", "node.exe"]
+                .iter()
+                .map(|n| bin_dir.join(n))
+                .find(|p| p.exists());
+            if let (true, Some(node)) = (binjs.exists(), node) {
                 return Some((node.display().to_string(), binjs.display().to_string()));
             }
             // 开发态：仓库根 .vendor（vendor_runtime.sh 产出 dsh-runtime；旧名 dsh 兼容）
             let v = dir.join(".vendor");
-            let node2 = v.join("node").join("bin").join("node");
+            let node_bin = v.join("node").join("bin");
+            let node2 = ["node", "node.exe"]
+                .iter()
+                .map(|n| node_bin.join(n))
+                .find(|p| p.exists());
             for name in ["dsh-runtime", "dsh"] {
                 let binjs2 = v.join(name).join("lib").join("bin.js");
-                if node2.exists() && binjs2.exists() {
-                    return Some((node2.display().to_string(), binjs2.display().to_string()));
+                if binjs2.exists() {
+                    // node2 在循环外求值（与 dsh 运行时布局无关），借回引用即可
+                    if let Some(node2) = &node2 {
+                        return Some((node2.display().to_string(), binjs2.display().to_string()));
+                    }
                 }
             }
             dir = dir.parent()?.to_path_buf();

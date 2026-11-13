@@ -1,0 +1,87 @@
+# Windows 可移植版构建（GitHub Actions）。
+#
+# 产物：一个 zip（zhibi-windows-x64.zip），内含
+#   zhibi.exe                          主程序
+#   Resources/runtime/node/bin/node.exe 内嵌 Node（不再要求用户装 Node/npm）
+#   Resources/runtime/dsh/             DSH sdk 闭包（lib + node_modules）
+#   Resources/runtime/novel-pack/      执笔能力包（工具 + 技能 + patch）
+#
+# 依赖关系：Windows 上 GPUI 必须原生编译（无法从 macOS 交叉），所以用
+# windows runner；DSH 的原生模块（node-pty / koffi）自带 win32-x64 prebuild，
+# npm install 时按平台自动取。
+name: Windows 构建抢先版
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # ── vendor 运行时（Windows 布局：node.exe + lib + node_modules）──
+      - name: 组装 DSH 运行时
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ".vendor/node/bin", ".vendor/dsh-runtime" | Out-Null
+          Copy-Item "runtime/zhibi-runtime/package.json" ".vendor/dsh-runtime/package.json"
+          Copy-Item "runtime/zhibi-runtime/dsh-upstream-package.json" ".vendor/dsh-runtime/package.json.dsh"
+          Copy-Item -Recurse "runtime/zhibi-runtime/lib" ".vendor/dsh-runtime/lib"
+          npm install --prefix .vendor/dsh-runtime --omit=dev --no-audit --no-fund --loglevel=error
+          $nodeSrc = (Get-Command node).Source
+          Copy-Item $nodeSrc ".vendor/node/bin/node.exe"
+
+      # ── 冒烟：--help 必须能过（运行时没拼对时这里最先炸）──
+      - name: 冒烟
+        shell: pwsh
+        run: |
+          $env:DSH_HOME = "$PWD/.dsh-probe"
+          & .vendor/node/bin/node.exe .vendor/dsh-runtime/lib/bin.js --profile sdk --help
+          if ($LASTEXITCODE -ne 0) { Write-Error "DSH 冒烟失败"; exit 1 }
+          Remove-Item -Recurse -Force ".dsh-probe" -ErrorAction SilentlyContinue
+
+      - name: cargo build --release
+        shell: pwsh
+        run: cargo build --release
+
+      # ── 可移植目录：镜像 macOS 的 .app 布局（Resources/runtime/…），
+      #    bundled_runtime() 沿 exe 向上找 Resources/runtime，两边同一套逻辑 ──
+      - name: 组装可移植包
+        shell: pwsh
+        run: |
+          $out = "target/release/zhibi-portable"
+          New-Item -ItemType Directory -Force -Path `
+            "$out/Resources/runtime/node/bin", `
+            "$out/Resources/runtime/dsh", `
+            "$out/Resources/runtime/novel-pack" | Out-Null
+          Copy-Item "target/release/zhibi.exe" "$out/zhibi.exe"
+          Copy-Item ".vendor/node/bin/node.exe" "$out/Resources/runtime/node/bin/node.exe"
+          Copy-Item -Recurse ".vendor/dsh-runtime/*" "$out/Resources/runtime/dsh/"
+          Copy-Item -Recurse "novel-pack/*" "$out/Resources/runtime/novel-pack/"
+          # PowerShell 的 here-string 结束符必须在行首，会顶穿 YAML 字面块——
+          # 所以说明文字放仓库里（scripts/windows-README.txt），这里只拷贝
+          Copy-Item "scripts/windows-README.txt" "$out/README.txt"
+
+      - name: 打 zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/release/zhibi-portable/*" `
+            -DestinationPath "target/release/zhibi-windows-x64.zip" -Force
+          Get-Item "target/release/zhibi-windows-x64.zip" | Format-List Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zhibi-windows-x64
+          path: target/release/zhibi-windows-x64.zip
+          retention-days: 14
