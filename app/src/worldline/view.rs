@@ -40,6 +40,7 @@ use crate::worldline::{Kind, Line, Store};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WlTab {
     Timeline,
+    Tree,
     Compare,
 }
 
@@ -123,6 +124,8 @@ pub struct WorldlinePanel {
     ed_premise: Entity<gpui_kit::component::input::InputState>,
     /// 折叠的轨道（作者线多了要收起来）
     collapsed: std::collections::BTreeSet<String>,
+    /// 世界树的钻取根（点两次同一节点 = 钻进它的子树）
+    drill: Option<String>,
     /// 时间轴上点开的节点（线 id, 节点 id）。`Some` = 抽屉打开。
     ///
     /// 为什么是"点节点开抽屉"而不是把节点全塞进右侧详情：右侧详情是**这条线**
@@ -148,9 +151,11 @@ impl WorldlinePanel {
             ed_name,
             ed_premise,
             collapsed: Default::default(),
+            drill: None,
             picked: None,
             message: None,
             view: match std::env::var("ZHIBI_WL_TAB").as_deref() {
+                Ok("tree") => WlTab::Tree,
                 Ok("compare") => WlTab::Compare,
                 _ => WlTab::Timeline,
             },
@@ -1348,6 +1353,326 @@ impl Render for WorldlinePanel {
         // 与时间轴的分工：时间轴说"哪些章定了、之后有什么"，
         // 树说"这些 if 是从谁身上分出来的"。血缘用 parentId，所以有环或
         // 父节点不存在时会在 layout::tree 里被升成独立的树，不会消失。
+        let tree_el: Option<gpui_kit::AnyElement> = if self.view == WlTab::Tree {
+            // 钻取：只看某条线的子树
+            let scoped = match self.drill.as_ref() {
+                Some(r) => crate::worldline::layout::subtree(&lines, r),
+                None => lines.clone(),
+            };
+            let laid = crate::worldline::layout::tree(&scoped);
+            let drill = self.drill.clone();
+            let sel_t = self.selected.clone();
+            let pickable = lines.clone();
+            let nodes_c = laid.nodes.clone();
+            // paint 闭包会 move 走一份，标签层用这份
+            let labels_nodes = laid.nodes.clone();
+
+            // —— 布局：纵向分层（根在底，层往上）+ 正交走线 ——
+            //
+            // 这就是"树"的标准画法：每个父节点在自己的高度上拉一条**水平总线**，
+            // 子节点坐在总线上方的不同 x 上，各自一条竖线上去。
+            // 之前按"章节高度"摆、再用曲线连，结果是几根并排的柱子——
+            // 结构信息全在"谁是谁的孩子"，不在"第几章"。
+            let max_depth = laid.nodes.iter().map(|n| n.depth).max().unwrap_or(0);
+            let tree = div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            let ox = bounds.origin.x.as_f32();
+                            let oy = bounds.origin.y.as_f32();
+                            let w = bounds.size.width.as_f32();
+                            let h = bounds.size.height.as_f32();
+                            let p = |x: f32, y: f32| point(px(ox + x), px(oy + y));
+                            let pad_x = 56.0f32;
+                            let pad_top = 44.0f32;
+                            let pad_bottom = 64.0f32;
+                            let x_of = |nx: f32| {
+                                pad_x + nx.clamp(0., 1.) * (w - pad_x * 2.)
+                            };
+                            let layers = max_depth.max(1) as f32;
+                            let gap = (h - pad_top - pad_bottom) / (layers + 0.6);
+                            let y_of = |depth: usize| {
+                                h - pad_bottom - depth as f32 * gap
+                            };
+
+                            // 每棵子树一个颜色（depth=1 的那条根分支决定整支的色），
+                            // 正典主干永远是最亮的那根。作者认树靠的是颜色连贯。
+                            let mut subtree_color: std::collections::BTreeMap<String, gpui_kit::Rgba> =
+                                Default::default();
+                            let mut branch_i = 0usize;
+                            for n in nodes_c.iter() {
+                                let c = if n.depth == 0 {
+                                    // 主干（正典）用最亮的那个
+                                    theme::ACCENT()
+                                } else if n.depth == 1 {
+                                    // 每条**发展线路**一个颜色：depth=1 的分支各开一色，
+                                    // 它们的后代继承。全图一个色的话，"不同的世界线"
+                                    // 就只是位置不同——颜色才是认路的。
+                                    let palette = [
+                                        theme::GREEN(), theme::AMBER(), theme::PURPLE(),
+                                        theme::RED(), theme::BLUE(),
+                                    ];
+                                    let c = palette[branch_i % palette.len()];
+                                    branch_i += 1;
+                                    c
+                                } else if let Some(pc) =
+                                    n.parent.as_ref().and_then(|p| subtree_color.get(p)).copied()
+                                {
+                                    // 深层继承父支颜色
+                                    pc
+                                } else {
+                                    let palette = [
+                                        theme::GREEN(), theme::AMBER(), theme::PURPLE(),
+                                        theme::RED(), theme::BLUE(),
+                                    ];
+                                    let c = palette[branch_i % palette.len()];
+                                    branch_i += 1;
+                                    c
+                                };
+                                subtree_color.insert(n.id.clone(), c);
+                            }
+
+                            // 走线：父节点 → 水平到子 x → 竖直到子节点。
+                            // 画两遍：一遍宽而淡（光晕），一遍细而实。
+                            for n in nodes_c.iter() {
+                                let Some(color) = subtree_color.get(&n.id).copied() else { continue };
+                                let Some(pid) = &n.parent else { continue };
+                                let Some(par) = nodes_c.iter().find(|p2| &p2.id == pid) else {
+                                    continue;
+                                };
+                                let x = x_of(n.x);
+                                let y = y_of(n.depth);
+                                let par_x = x_of(par.x);
+                                let par_y = y_of(par.depth);
+                                let on = sel_t.as_deref() == Some(n.id.as_str());
+                                let dashed = n.id != "α" && !n.parent.as_deref().map(|p| p == "α").unwrap_or(false)
+                                    && n.depth >= 2;
+                                let width = if on { 3.4 } else if n.depth == 0 { 2.6 } else { 2.0 };
+
+                                // 光晕（宽、淡）
+                                let mut glow = PathBuilder::stroke(px(width + 4.0));
+                                if dashed {
+                                    glow = glow.dash_array(&[px(4.), px(5.)]);
+                                }
+                                glow.move_to(p(par_x, par_y));
+                                glow.line_to(p(x, par_y));
+                                glow.line_to(p(x, y));
+                                if let Ok(path) = glow.build() {
+                                    window.paint_path(path, hsla(color).opacity(0.14));
+                                }
+                                // 实线
+                                let mut seg = PathBuilder::stroke(px(width));
+                                if dashed {
+                                    seg = seg.dash_array(&[px(4.), px(5.)]);
+                                }
+                                seg.move_to(p(par_x, par_y));
+                                seg.line_to(p(x, par_y));
+                                seg.line_to(p(x, y));
+                                if let Ok(path) = seg.build() {
+                                    let a = if n.archived { 0.4 } else { 0.95 };
+                                    window.paint_path(path, hsla(color).opacity(a));
+                                }
+                            }
+
+                            // 节点：圆 + 两圈光环（外圈虚线）
+                            for n in nodes_c.iter() {
+                                let Some(color) = subtree_color.get(&n.id).copied() else { continue };
+                                let x = x_of(n.x);
+                                let y = y_of(n.depth);
+                                let on = sel_t.as_deref() == Some(n.id.as_str());
+                                let root = n.depth == 0;
+                                let r = if root { 7.0 } else if on { 6.0 } else { 4.5 };
+                                let k = 0.5523 * r;
+                                let mut d = PathBuilder::fill();
+                                d.move_to(p(x + r, y));
+                                d.cubic_bezier_to(p(x, y + r), p(x + k, y + r), p(x + r, y));
+                                d.cubic_bezier_to(p(x + r, y), p(x + r, y - k), p(x + k, y - r));
+                                d.cubic_bezier_to(p(x, y - r), p(x - k, y - r), p(x - r, y));
+                                d.cubic_bezier_to(p(x - r, y), p(x - r, y - k), p(x - k, y - r));
+                                // 光晕
+                                if let Ok(path) = {
+                                    let rr = r + 5.0;
+                                    let k2 = 0.5523 * rr;
+                                    let mut g = PathBuilder::fill();
+                                    g.move_to(p(x + rr, y));
+                                    g.cubic_bezier_to(p(x, y + rr), p(x + k2, y + rr), p(x + rr, y));
+                                    g.cubic_bezier_to(p(x + rr, y), p(x + rr, y - k2), p(x + k2, y - rr));
+                                    g.cubic_bezier_to(p(x, y - rr), p(x - k2, y - rr), p(x - rr, y));
+                                    g.cubic_bezier_to(p(x - rr, y), p(x - rr, y - k2), p(x - k2, y - rr));
+                                    g.build()
+                                } {
+                                    window.paint_path(path, hsla(color).opacity(if on { 0.30 } else { 0.14 }));
+                                }
+                                if let Ok(path) = d.build() {
+                                    window.paint_path(path, hsla(color));
+                                }
+                                // 外圈
+                                let mut ring = PathBuilder::stroke(px(1.0));
+                                if root {
+                                    ring = ring.dash_array(&[px(2.), px(4.)]);
+                                }
+                                let rr = r + if root { 8.0 } else { 3.5 };
+                                let k2 = 0.5523 * rr;
+                                ring.move_to(p(x + rr, y));
+                                ring.cubic_bezier_to(p(x, y + rr), p(x + k2, y + rr), p(x + rr, y));
+                                ring.cubic_bezier_to(p(x + rr, y), p(x + rr, y - k2), p(x + k2, y - rr));
+                                ring.cubic_bezier_to(p(x, y - rr), p(x - k2, y - rr), p(x - rr, y));
+                                ring.cubic_bezier_to(p(x - rr, y), p(x - rr, y - k2), p(x - k2, y - rr));
+                                if let Ok(path) = ring.build() {
+                                    window.paint_path(path, hsla(color).opacity(if root { 0.5 } else { 0.3 }));
+                                }
+                            }
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                // 节点标签 + 命中区（覆盖层，与画布同一套坐标公式）
+                .children(labels_nodes.iter().map(|n| {
+                    let id = n.id.clone();
+                    let id2 = n.id.clone();
+                    let on = self.selected.as_deref() == Some(n.id.as_str());
+                    let drilled = drill.as_deref() == Some(n.id.as_str());
+                    div()
+                        .id(SharedString::from(format!("tree-node-{}", n.id)))
+                        .absolute()
+                        .left(relative(n.x.clamp(0., 1.)))
+                        .bottom(relative(
+                            1.0 - (n.depth as f32 / (max_depth.max(1) as f32 + 0.6)),
+                        ))
+                        .mb(px(58.))
+                        .ml(px(-40.))
+                        .w(px(80.))
+                        .text_center()
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .font_family(theme::FAMILY_MONO)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(if on {
+                                    theme::ACCENT()
+                                } else if drilled {
+                                    theme::AMBER()
+                                } else {
+                                    theme::TEXT()
+                                })
+                                .child(SharedString::from(n.id.clone())),
+                        )
+                        .when(!n.name.is_empty() && n.name != n.id, |d| {
+                            d.child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_ellipsis()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_color(theme::FAINT())
+                                    .child(SharedString::from(n.name.clone())),
+                            )
+                        })
+                        .child(
+                            div()
+                                .text_size(px(8.5))
+                                .font_family(theme::FAMILY_MONO)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(format!(
+                                    "{}章 · {}节点",
+                                    n.fork_chapter, n.node_count
+                                ))),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.selected = Some(id.clone());
+                            // 再点同一节点 = 钻取进它的子树
+                            this.drill = if this.drill.as_deref() == Some(id2.as_str()) {
+                                None
+                            } else {
+                                Some(id2.clone())
+                            };
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                }));
+
+            let col = div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .gap(theme::GAP_SM)
+                .p(theme::PAD_MD)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("钻取"),
+                        )
+                        .child({
+                            let on = drill.is_none();
+                            div()
+                                .id("drill-all")
+                                .px(px(7.))
+                                .py(px(2.))
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                                .cursor_pointer()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                                .child("全部")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.drill = None;
+                                    cx.notify();
+                                }))
+                        })
+                        .children(pickable.iter().map(|l| {
+                            let id = l.id.clone();
+                            let on = drill.as_deref() == Some(l.id.as_str());
+                            div()
+                                .id(SharedString::from(format!("drill-{}", l.id)))
+                                .px(px(7.))
+                                .py(px(2.))
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                                .cursor_pointer()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(if on { theme::ACCENT() } else { theme::DIM() })
+                                .child(SharedString::from(l.id.clone()))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.drill = Some(id.clone());
+                                    this.selected = Some(id.clone());
+                                    cx.notify();
+                                }))
+                        })),
+                )
+                // 树直接挂在 col 下并用 flex_1 撑满——不要中间的包装层：
+                // 多一层 flex 容器时高度会被内容（全是绝对定位，高 0）压扁，
+                // 树就成了一条 1px 的线。
+                .child(tree)
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .text_color(theme::FAINT())
+                        .child("根在底部（正典），枝往上长 · 每支一个颜色 · 点节点名选中，再点钻进它的子树"),
+                );
+            Some(col.into_any_element())
+        } else {
+            None
+        };
+
         let compare_el: Option<gpui_kit::AnyElement> = if self.view == WlTab::Compare {
             self.compare_with.as_ref().map(|right| {
             let left = self
@@ -1568,7 +1893,7 @@ impl Render for WorldlinePanel {
                     //
                     // 只在时间轴这一页出现——树与对比各有自己的尺度，
                     // 把同一组按钮摆在所有页上会让人以为它管全部。
-                    .when(self.view == WlTab::Timeline, |d| {
+            .when(self.view == WlTab::Timeline, |d| {
                         let full = horizon;
                         d.child(
                             div()
@@ -1689,6 +2014,38 @@ impl Render for WorldlinePanel {
                                     .py(px(3.))
                                     .rounded(px(6.))
                                     .border_1()
+                                    .border_color(if self.view == WlTab::Tree {
+                                        theme::ACCENT_BORDER()
+                                    } else {
+                                        theme::LINE()
+                                    })
+                                    .bg(if self.view == WlTab::Tree {
+                                        theme::ACCENT_SOFT()
+                                    } else {
+                                        theme::PANEL2()
+                                    })
+                                    .cursor_pointer()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(if self.view == WlTab::Tree {
+                                        theme::ACCENT()
+                                    } else {
+                                        theme::DIM()
+                                    })
+                                    .child("世界树")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.view = WlTab::Tree;
+                                        // 抽屉是"时间轴上那个点"的上下文，切走就没意义了
+                                        this.picked = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("wl-tab-cmp")
+                                    .px(px(9.))
+                                    .py(px(3.))
+                                    .rounded(px(6.))
+                                    .border_1()
                                     .border_color(if self.view == WlTab::Compare {
                                         theme::ACCENT_BORDER()
                                     } else {
@@ -1720,6 +2077,7 @@ impl Render for WorldlinePanel {
                     ),
             )
             .when_some(compare_el, |d, cmp| d.child(cmp))
+            .when_some(tree_el, |d, t| d.child(t))
             .when(self.view == WlTab::Timeline, |d| {
                 // 整页都是时间轴。轨道列表与详情做成浮层：
                 // 线名贴在各自的线尾，选中某条才在右侧浮出它的操作面板。
