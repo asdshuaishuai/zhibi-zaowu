@@ -822,7 +822,7 @@ impl CanvasPanel {
         // 缩放上下限：太小看不清卡片，太大等于没适应
         // 下限 0.5：再小卡片上的名字就只剩一两个字，等于看不见。
         // 图大于窗口时宁可只看一部分，也不要缩成一团糊。
-        let k = (vw / gw).min(vh / gh).clamp(0.5, 1.0);
+        let k = (vw / gw).min(vh / gh).clamp(0.45, 1.0);
         // 居中：图的中心对到窗口中心
         let x = (vw - gw * k) / 2.;
         let y = (vh - gh * k) / 2.;

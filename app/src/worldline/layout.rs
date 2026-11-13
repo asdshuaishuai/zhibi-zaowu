@@ -50,6 +50,10 @@ pub struct TreeNode {
     pub fork_chapter: u32,
     /// 画到第几章
     pub end_chapter: u32,
+    /// 最后一个**已排章节点**的章号（0 = 一个都没排）。
+    /// `fork..end_scheduled` 是"有具体内容"的部分，之上到 `end_chapter`
+    /// 是"还会往前走但还没写"的部分——画成虚线，一眼看出哪段是实的。
+    pub end_scheduled: u32,
     pub archived: bool,
     pub forecast: bool,
     pub node_count: usize,
@@ -71,6 +75,24 @@ pub struct Tree {
 /// 每次不一定一样，也没有"子树占多少宽度"的概念——枝会互相压。这里
 /// 用标准的 tidy-tree 分配：叶 1 槽，父 = 子之和，父的 x = 自己区间的中心。
 pub fn tree(lines: &[Line]) -> Tree {
+    tree_with_horizon(lines, 0)
+}
+
+/// 同 `tree`，但由调用方给出**全书的章节上界**。
+///
+/// 世界线文件自己不知道书写到第几章：一条 if 线可能一个排章节点都没有。
+/// 只从 lines 推 horizon 会得到 1，于是所有分支都被截成一根短桩——
+/// 树看起来像被砍过。调用方（世界线页）手上有成稿章数与固化边界，交给它算。
+pub fn tree_with_horizon(lines: &[Line], horizon_hint: u32) -> Tree {
+    tree_full(lines, horizon_hint, 0)
+}
+
+/// 同 `tree_with_horizon`，并给出**已写进正文的章数**。
+///
+/// 正典的主干是实线到成稿处、虚线到未来：作者一眼看出"哪些是写下来的、
+/// 哪些还只是打算"。只靠 worldlines.json 推不出来——α 常常一个节点都没有，
+/// 但正文写了 30 章。
+pub fn tree_full(lines: &[Line], horizon_hint: u32, base_solid: u32) -> Tree {
     // 只画有血缘的：正典为根，其余按 parentId 挂上去。
     // 父不存在（被删/手改坏了）就当根，不至于整条线消失。
     let ids: std::collections::BTreeSet<&str> = lines.iter().map(|l| l.id.as_str()).collect();
@@ -83,6 +105,11 @@ pub fn tree(lines: &[Line]) -> Tree {
         .map(|l| l.id.as_str());
     let mut children: std::collections::BTreeMap<&str, Vec<&Line>> = Default::default();
     let mut roots: Vec<&Line> = Vec::new();
+    // 每条线的**实际父节点**。不能直接读 line.parent_id：
+    // 没写 parentId 的线会被挂到正典下，但字段仍是空的。
+    // 只读字段的话，画树时 `if let Some(pid) = n.parent` 永远不成立——
+    // 分叉连线一条都不画，看起来就是几根并排的柱子（真的踩过）。
+    let mut eff_parent: std::collections::BTreeMap<&str, &str> = Default::default();
     for l in lines {
         let p = l.parent_id.as_str();
         if l.is_base() {
@@ -92,11 +119,15 @@ pub fn tree(lines: &[Line]) -> Tree {
         if p.is_empty() || !ids.contains(p) || p == l.id {
             // 没写父指针：挂到正典上（正典不存在时才当独立根）
             match base_id {
-                Some(b) => children.entry(b).or_default().push(l),
+                Some(b) => {
+                    children.entry(b).or_default().push(l);
+                    eff_parent.insert(l.id.as_str(), b);
+                }
                 None => roots.push(l),
             }
         } else {
             children.entry(p).or_default().push(l);
+            eff_parent.insert(l.id.as_str(), p);
         }
     }
     // 手改出来的循环血缘（β→γ→β）会让环里的线从根不可达、整棵树里消失。
@@ -152,6 +183,17 @@ pub fn tree(lines: &[Line]) -> Tree {
         rank(a).cmp(&rank(b)).then(a.id.cmp(&b.id))
     });
 
+    // 全书最高章：没有排章节点的线要长到这里。
+    // 一条世界线是"另一种未来的时间轴"，它不会在第 7 章就停住——
+    // 只画 3 章长的短桩，看起来像树枝断了。
+    let horizon = lines
+        .iter()
+        .map(|l| l.last_chapter().max(l.fixed_boundary()))
+        .max()
+        .unwrap_or(0)
+        .max(horizon_hint)
+        .max(1);
+
     let mut out: Vec<TreeNode> = Vec::new();
     let mut cursor = 0f32;
     let mut max_chapter = 0u32;
@@ -206,25 +248,29 @@ pub fn tree(lines: &[Line]) -> Tree {
                 let last = line.last_chapter();
                 let end_chapter = if last > fork_chapter {
                     last
+                } else if line.is_base() {
+                    horizon
                 } else {
-                    // 3 章或全书的 1/10，取大者：短书里也看得见，长书里不夸张
-                    fork_chapter + 3.max(1)
+                    // 一个已排章的节点都没有：这条线一直延伸到全书最高处。
+                    // 它是"另一种未来"，不能被截断成一根短桩。
+                    horizon
                 };
                 max_chapter = max_chapter.max(end_chapter).max(fork_chapter);
                 out.push(TreeNode {
                     id: line.id.clone(),
                     name: line.name.clone(),
-                    parent: if line.parent_id.is_empty() {
-                        None
-                    } else {
-                        Some(line.parent_id.clone())
-                    },
+                    parent: eff_parent.get(line.id.as_str()).map(|p| p.to_string()),
                     depth: top.depth,
                     slot_start: start,
                     slot_end: end,
                     x: (start + end) / 2.,
                     fork_chapter,
                     end_chapter,
+                    end_scheduled: if line.is_base() {
+                        line.last_chapter().max(base_solid)
+                    } else {
+                        line.last_chapter()
+                    },
                     archived: line.is_archived(),
                     forecast: line.kind == Kind::Forecast,
                     node_count: line.nodes.len(),
@@ -253,7 +299,16 @@ pub fn tree(lines: &[Line]) -> Tree {
     }
     // 输出顺序固定（父在前，便于画布先画干再画枝）
     out.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)));
-    Tree { nodes: out, slots, max_chapter: max_chapter.max(1) }
+    let max_chapter = max_chapter.max(1);
+    // 正典是**主干**：它必须一直长到全书最高处。
+    // 否则（α 自己一个节点都没有时）它的枝干只到第 4 章，而子线在第 7/12/27 章
+    // 分叉——分叉点悬在主干顶端之外，画出来就是几根互不相连的柱子。
+    for n in out.iter_mut() {
+        if n.depth == 0 && n.parent.is_none() {
+            n.end_chapter = n.end_chapter.max(max_chapter);
+        }
+    }
+    Tree { nodes: out, slots, max_chapter }
 }
 
 /// 只保留以 `root` 为根的子树（树模式的「钻取」）。
@@ -741,15 +796,19 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_line_becomes_its_own_root() {
-        // 父线被删了，子线还在：不能因此从画面里消失
+    fn a_line_whose_parent_was_deleted_hangs_under_the_canon() {
+        // 父线被删了、子线还在：不能因此从画面里消失。
+        // 挂到正典下（而不是自己当一棵独立的树）——否则树会碎成几根互不相连的柱子，
+        // 作者看到的是"我的世界散架了"。血缘丢了这件事在数据上仍然是事实。
         let lines = vec![
             line("α", "", 0, Kind::Base, false),
             line("ζ", "已删除的线", 8, Kind::WhatIf, false),
         ];
         let t = tree(&lines);
         assert_eq!(t.nodes.len(), 2);
-        assert_eq!(t.nodes.iter().find(|n| n.id == "ζ").unwrap().parent, Some("已删除的线".into()));
+        let z = t.nodes.iter().find(|n| n.id == "ζ").unwrap();
+        assert_eq!(z.parent.as_deref(), Some("α"), "挂到正典下，图才连成一棵树");
+        assert_eq!(z.depth, 1);
     }
 
     #[test]
@@ -924,14 +983,29 @@ mod tests {
     }
 
     #[test]
-    fn a_line_with_no_scheduled_nodes_still_has_a_visible_branch() {
-        // AI 推演出的节点常常没排章（chapter=0）。如果末端就等于分叉章，
-        // 整棵树的所有枝都是零长度——界面上就是"没有树"。
+    fn a_line_with_no_scheduled_nodes_runs_to_the_horizon() {
+        // AI 推演出的节点常常没排章（chapter=0）。一条世界线是"另一种未来"，
+        // 不能在第 7 章就断成一根短桩——它应该一直延伸到全书的最高章。
         let mut l = line("β", "α", 7, Kind::WhatIf, false);
         l.nodes.push(crate::worldline::Node::new("n1", "event", "某件事"));
-        let t = tree(&[l]);
+        let t = tree_with_horizon(&[l], 30);
         let n = t.nodes.iter().find(|n| n.id == "β").unwrap();
-        assert!(n.end_chapter > n.fork_chapter, "枝梢必须比枝根高：{:?}", (n.fork_chapter, n.end_chapter));
+        assert_eq!(n.end_chapter, 30, "没排章的分支要长到全书最高处");
+        assert!(n.end_chapter > n.fork_chapter);
+    }
+
+    #[test]
+    fn the_canon_trunk_spans_the_whole_book() {
+        // 主干必须到顶：不然子线在第 7/12/27 章分叉时，分叉点悬在主干之外，
+        // 画出来就是几根并排的柱子。
+        let lines = vec![
+            line("α", "", 0, Kind::Base, false),
+            line("β", "α", 12, Kind::WhatIf, false),
+        ];
+        let t = tree_with_horizon(&lines, 40);
+        let a = t.nodes.iter().find(|n| n.id == "α").unwrap();
+        assert_eq!(a.end_chapter, 40);
+        assert_eq!(a.fork_chapter, 1);
     }
 
     #[test]
@@ -1006,4 +1080,6 @@ mod tests {
         assert!(a <= 115);
     }
 }
+
+
 

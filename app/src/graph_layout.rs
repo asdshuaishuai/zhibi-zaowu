@@ -48,10 +48,6 @@ pub struct Layout {
 
 const NODE_W: f32 = 150.;
 const NODE_H: f32 = 76.;
-/// 每层之间的最小径向间距
-const RING_GAP: f32 = 210.;
-/// 同一环上两个节点沿弧线的最小间距（避免卡片重叠）
-const ARC_GAP: f32 = 170.;
 /// 孤儿区与主图之间的空隙
 const ORPHAN_GAP: f32 = 150.;
 /// 孤儿区内节点间距
@@ -141,54 +137,41 @@ pub fn gene_map(meta: &[Meta], edges: &[(usize, usize)]) -> Layout {
 
     // 中心
     put(&mut pos, &mut ring, &mut bounds, center, -NODE_W / 2., -NODE_H / 2., Some(0));
-    // 各环：按类型分扇区铺开。
+    // 力导向摆放（Fruchterman-Reingold）。
     //
-    // 为什么不是均匀铺开：所有节点等角距排一圈时，人物会夹在事件中间，
-    // 连线横穿整张图，看起来就是一团乱麻。按类型分扇区后，"人物在东南、
-    // 事件在西南、伏笔在北"是固定的，同类连线只在本扇区内走，交叉少一大半——
-    // 也才有了"基因图"那种可读的条带感。
-    for (r, list) in by_ring.iter().enumerate() {
-        if r == 0 || list.is_empty() {
-            continue;
-        }
-        let k = list.len() as f32;
-        let radius = (r as f32 * RING_GAP).max(k * ARC_GAP / (2. * std::f32::consts::PI));
-        // 按类型分组（保持组内已按名字排好的顺序）
-        let mut sectors: Vec<(&str, Vec<usize>)> = Vec::new();
-        for &idx in list {
-            let kind = meta[idx].kind;
-            match sectors.iter_mut().find(|(k2, _)| *k2 == kind) {
-                Some((_, v)) => v.push(idx),
-                None => sectors.push((kind, vec![idx])),
-            }
-        }
-        // 类型扇区的顺序固定：人物 → 事件 → 伏笔 → 设定 → 其它
-        sectors.sort_by_key(|(kind, _)| kind_rank(kind));
-        let total = k.max(1.);
-        let mut cursor = -std::f32::consts::FRAC_PI_2;
-        for (_, items) in &sectors {
-            // 扇区宽度正比于条数；再留一点缝，免得两个扇区贴在一起看着是一坨
-            let share = items.len() as f32 / total;
-            let arc = 2. * std::f32::consts::PI * share;
-            let n = items.len() as f32;
-            for (i, &idx) in items.iter().enumerate() {
-                let angle = cursor + arc * ((i as f32 + 0.5) / n);
-                let cx = angle.cos() * radius;
-                let cy = angle.sin() * radius;
-                put(&mut pos, &mut ring, &mut bounds, idx, cx - NODE_W / 2., cy - NODE_H / 2., Some(r as u32));
-            }
-            cursor += arc;
-        }
+    // 为什么不再按环铺：环上每个节点只跟圆心有关，节点之间互相不知道对方在哪，
+    // 于是"人物在这边、他牵涉的事件在对面"，连线横穿整张图——就是一团乱麻。
+    // FR 让相连的互相拉近、所有节点互相排斥，得到的是关系图的标准形态：
+    // 抱团的抱团、孤立的散在外面，边短且少交叉。
+    //
+    // 主角钉在原点：作者要的是"围绕主角"，不能让力把它推到角落。
+    // 初始摆放的名次：按 (类型, 名字) 排，与台账顺序无关
+    let mut order_key: Vec<usize> = (0..n).collect();
+    order_key.sort_by(|a, b| {
+        kind_rank(meta[*a].kind)
+            .cmp(&kind_rank(meta[*b].kind))
+            .then(meta[*a].label.cmp(meta[*b].label))
+    });
+    let placed = force_layout(n, &adj, Some(center), &order_key);
+    let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
+    let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
+    for (i, p) in placed.iter().enumerate() {
+        pos[i] = Some((p.0 - NODE_W / 2., p.1 - NODE_H / 2.));
+        ring[i] = if dist[i] == u32::MAX { None } else { Some(dist[i]) };
+        min_x = min_x.min(p.0 - NODE_W / 2.);
+        min_y = min_y.min(p.1 - NODE_H / 2.);
+        max_x = max_x.max(p.0 + NODE_W / 2.);
+        max_y = max_y.max(p.1 + NODE_H / 2.);
     }
+    let mut bounds = (min_x, min_y, max_x, max_y);
 
     // 孤儿区：主图下方，按行铺开
     let base_y = bounds.3 + ORPHAN_GAP;
     if !orphans.is_empty() {
-        // 每行最多 8 个：再多就换行，免得整张图被拉得极宽
         let per_row = 8usize;
         let cols = orphans.len().min(per_row);
         let row_width = cols as f32 * ORPHAN_STEP_X;
-        let start_x = -row_width / 2.;
+        let start_x = min_x + (bounds.2 - min_x - row_width) / 2.;
         for (i, &idx) in orphans.iter().enumerate() {
             let row = i / per_row;
             let col = i % per_row;
@@ -204,7 +187,7 @@ pub fn gene_map(meta: &[Meta], edges: &[(usize, usize)]) -> Layout {
         }
     }
 
-    // 平移到左上角 (0,0)：画布坐标从 0 起，视图偏移才好算
+    // 平移到左上角 (0,0)
     let (min_x, min_y, max_x, max_y) = bounds;
     for p in pos.iter_mut().flatten() {
         p.0 -= min_x;
@@ -214,10 +197,145 @@ pub fn gene_map(meta: &[Meta], edges: &[(usize, usize)]) -> Layout {
     Layout { pos, center: Some(center), ring, orphans, size }
 }
 
-/// 类型在扇区里的固定次序。
+/// 力导向布局（Fruchterman-Reingold）。
 ///
-/// 顺序本身有意义：人物先（剧情由人推动）、事件次之、伏笔再外、设定最外。
-/// 固定次序保证同一本书每次打开图的"地貌"一样，作者能靠位置记忆找东西。
+/// 参数按"卡片是 150×76 的矩形"来定：理想边长 `k` 取 210，
+/// 这样相连的节点大致隔一张卡，不叠在一起也不至于隔着半屏。
+///
+/// 三条实现约定：
+/// 1. **确定性**：初始位置固定摆在一个圆上，不用随机数——同一本书每次打开
+///    图的"地貌"一样，作者才能靠位置记忆找东西。
+/// 2. **主角钉住**：`pinned` 的节点不参与位移，永远在原点。
+/// 3. **冷却**：每轮最大位移线性衰减，最后几轮只做微调，不会来回甩。
+fn force_layout(
+    n: usize,
+    adj: &[Vec<usize>],
+    pinned: Option<usize>,
+    order_key: &[usize],
+) -> Vec<(f32, f32)> {
+    // 初始位置按"名字排序后的名次"摆，而不是数组下标。
+    // 台账里条目的顺序会变（新增一条就把后面全挤一位），如果按下标摆，
+    // 同一本书两次打开图的形状会不一样——作者没法靠位置记忆找东西。
+    let mut pos: Vec<(f32, f32)> = vec![(0., 0.); n];
+    for (rank, &i) in order_key.iter().enumerate() {
+        // 黄金角螺旋：比正方形/圆环更均匀，不会一开始就出现"两堆"
+        let a = rank as f32 * 2.399_963_2;
+        let r = 140. * (rank as f32 + 0.5).sqrt();
+        pos[i] = (a.cos() * r, a.sin() * r);
+    }
+    if n <= 1 {
+        return pos;
+    }
+    // 理想边长。取 175 而不是更大的值：作者一屏要看到"整张关系网"才有意义，
+    // 边长越大图越舒展、但也越难一屏看全（50 个节点时差一倍）。
+    let k = 175.0f32;
+    // FR 的边界框：节点被关在 W×H 里。**没有这条就必然发散**——
+    // 每个节点受几十个邻居的斥力，合力常年顶在上限，位置一轮轮往外漂，
+    // 实测能漂到 8 万像素宽（整张图变成几个孤点）。
+    let frame = (n as f32).sqrt() * k * 1.2;
+    let half = frame / 2.;
+    let iterations = 420;
+    // 位移上限从 k 线性降到 k*0.02
+    for it in 0..iterations {
+        let t = k * (1.0 - it as f32 / iterations as f32).max(0.02);
+        let mut disp = vec![(0.0f32, 0.0f32); n];
+
+        // 排斥：所有节点两两相斥（O(n²)，n 是几十到几百，够用）
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dx = pos[i].0 - pos[j].0;
+                let dy = pos[i].1 - pos[j].1;
+                let d2 = (dx * dx + dy * dy).max(1.0);
+                let d = d2.sqrt();
+                let f = k * k / d;
+                let ux = dx / d;
+                let uy = dy / d;
+                disp[i].0 += ux * f;
+                disp[i].1 += uy * f;
+                disp[j].0 -= ux * f;
+                disp[j].1 -= uy * f;
+            }
+        }
+
+        // 吸引：只在有边的节点之间
+        for i in 0..n {
+            for &j in &adj[i] {
+                if j <= i {
+                    continue;
+                }
+                let dx = pos[i].0 - pos[j].0;
+                let dy = pos[i].1 - pos[j].1;
+                let d = (dx * dx + dy * dy).sqrt().max(1.0);
+                let f = d * d / k;
+                let ux = dx / d;
+                let uy = dy / d;
+                disp[i].0 -= ux * f;
+                disp[i].1 -= uy * f;
+                disp[j].0 += ux * f;
+                disp[j].1 += uy * f;
+            }
+        }
+
+        // 位移（限制在 t 以内），钉住的节点不动、也不许出框
+        for i in 0..n {
+            if Some(i) == pinned {
+                continue;
+            }
+            let (dx, dy) = disp[i];
+            let d = (dx * dx + dy * dy).sqrt().max(1e-6);
+            let s = d.min(t);
+            pos[i].0 = (pos[i].0 + dx / d * s).clamp(-half, half);
+            pos[i].1 = (pos[i].1 + dy / d * s).clamp(-half, half);
+        }
+    }
+
+    // 去重叠：FR 只保证"大致分开"，卡片有实际尺寸，再推几轮确保不叠
+    for _ in 0..60 {
+        let mut moved = false;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dx = pos[j].0 - pos[i].0;
+                let dy = pos[j].1 - pos[i].1;
+                // 卡片的包围盒 + 间距
+                let need_x = NODE_W + 26.;
+                let need_y = NODE_H + 26.;
+                if dx.abs() < need_x && dy.abs() < need_y {
+                    // 沿重叠较小的轴推开，位移自然
+                    let ox = need_x - dx.abs();
+                    let oy = need_y - dy.abs();
+                    let (sx, sy) = (if dx >= 0. { 1. } else { -1. }, if dy >= 0. { 1. } else { -1. });
+                    if ox < oy {
+                        let push = ox * 0.5 * sx;
+                        if Some(i) != pinned { pos[i].0 -= push; }
+                        if Some(j) != pinned { pos[j].0 += push; }
+                    } else {
+                        let push = oy * 0.5 * sy;
+                        if Some(i) != pinned { pos[i].1 -= push; }
+                        if Some(j) != pinned { pos[j].1 += push; }
+                    }
+                    moved = true;
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    // 主角钉在原点，其余整体以它为中心（避免力把整图推歪）
+    if let Some(c) = pinned {
+        let (cx, cy) = pos[c];
+        for p in pos.iter_mut() {
+            p.0 -= cx;
+            p.1 -= cy;
+        }
+    }
+    pos
+}
+
+/// 类型在排序里的固定次序。
+///
+/// 只影响**初始摆放**与同分时的次序，不表达"哪类更重要"：
+/// 人物先（剧情由人推动）、事件、伏笔、故事线、设定。
 fn kind_rank(kind: &str) -> u8 {
     match kind {
         "character" => 0,
@@ -372,43 +490,49 @@ mod tests {
     }
 
     #[test]
-    fn same_kind_nodes_stay_in_one_sector() {
-        // 一圈里有 2 人物 + 2 事件：同类应该连着排，而不是穿插。
-        // 穿插会让人物-事件连线横穿整张图，图就变成一团麻。
+    fn connected_nodes_end_up_closer_than_unconnected_ones() {
+        // 力导向的核心承诺：有边的一对平均比没边的近。
+        // 这不只是"好不好看"——关系图要能读出"谁跟谁一伙"，
+        // 靠的就是这个距离差。
         let meta = vec![
             m("character", "主角", "主角"),
             m("character", "甲", ""),
             m("character", "乙", ""),
-            m("event", "E1", ""),
-            m("event", "E2", ""),
+            m("character", "丙", ""),
+            m("character", "丁", ""),
+            m("character", "戊", ""),
         ];
-        let edges = vec![(0, 1), (0, 2), (0, 3), (0, 4)];
+        // 甲、乙与主角相连；丙、丁、戊互不相连
+        let edges = vec![(0, 1), (0, 2)];
         let l = gene_map(&meta, &edges);
-        // 用相对主角的极角判断：甲、乙应相邻，E1、E2 应相邻
-        let (cx, cy) = centre_of(&l, 0);
-        let ang = |i: usize| {
-            let (x, y) = centre_of(&l, i);
-            (y - cy).atan2(x - cx)
+        let dist = |a: usize, b: usize| {
+            let (ax, ay) = centre_of(&l, a);
+            let (bx, by) = centre_of(&l, b);
+            ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt()
         };
-        let chars: Vec<f32> = vec![ang(1), ang(2)];
-        let evs: Vec<f32> = vec![ang(3), ang(4)];
-        // 两组各自的夹角应该小于 90°（同扇区内），不能铺满一圈
-        let spread = |v: &[f32]| {
-            let mut a = v.to_vec();
-            a.sort_by(|x, y| x.partial_cmp(y).unwrap());
-            let mut d = a[1] - a[0];
-            if d > std::f32::consts::PI { d = 2. * std::f32::consts::PI - d; }
-            d
-        };
-        // 每类分到的扇区宽 = 该类条数 / 总数 × 2π（这里是 π）。
-        // 只要实际夹角没超出自己的扇区宽度，就说明没有和别的类穿插。
-        assert!(spread(&chars) <= std::f32::consts::PI, "人物应聚在自己的扇区里");
-        assert!(spread(&evs) <= std::f32::consts::PI, "事件应聚在自己的扇区里");
-        // 更硬的一条：两类不能有重叠的角度区间
-        let mut all = vec![(chars[0], "c"), (chars[1], "c"), (evs[0], "e"), (evs[1], "e")];
-        all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        let flips = all.windows(2).filter(|w| w[0].1 != w[1].1).count();
-        assert!(flips <= 2, "不同类型必须成段出现，实际交界 {flips} 次");
+        let near = (dist(0, 1) + dist(0, 2)) / 2.;
+        let far = (dist(3, 4) + dist(3, 5) + dist(4, 5)) / 3.;
+        assert!(near < far, "相连的应更近：near={near:.0} far={far:.0}");
+    }
+
+    #[test]
+    fn nodes_do_not_overlap() {
+        // 卡片是 150×76 的矩形，任何两张都不能压在一起——
+        // 压住就是"看不清关系"。
+        let (meta, edges) = sample();
+        let l = gene_map(&meta, &edges);
+        let mut ms = f32::MAX;
+        for i in 0..meta.len() {
+            for j in (i + 1)..meta.len() {
+                if l.ring[i].is_none() != l.ring[j].is_none() {
+                    continue; // 主图与孤儿区分开检查
+                }
+                let (ax, ay) = centre_of(&l, i);
+                let (bx, by) = centre_of(&l, j);
+                ms = ms.min((ax - bx).abs().max((ay - by).abs()));
+            }
+        }
+        assert!(ms > 40., "节点间距过小：{ms}");
     }
 
     #[test]

@@ -1532,7 +1532,12 @@ impl Render for WorldlinePanel {
                 Some(r) => crate::worldline::layout::subtree(&lines, r),
                 None => lines.clone(),
             };
-            let laid = crate::worldline::layout::tree(&scoped);
+            // 上界由页面给：世界线文件不知道书写到第几章
+            let laid = crate::worldline::layout::tree_full(
+                &scoped,
+                self.horizon(&lines, boundary, written),
+                written,
+            );
             let drill = self.drill.clone();
             let sel_t = self.selected.clone();
             let pickable = lines.clone();
@@ -1579,12 +1584,19 @@ impl Render for WorldlinePanel {
                                 ch += 5;
                             }
 
-                            // 枝 + 分叉点 + 节点果
+                            // —— 标准树形画法 ——
+                            //
+                            // 一根主干从底部贯穿到顶（正典），每条分支在**它自己的
+                            // 分叉章高度**水平伸出去，再从那里往上一路长到自己的末端。
+                            //
+                            // 之前每根线各自画一条竖线、再用贝塞尔连到父线，
+                            // 视觉上是五根并排的柱子，不是树：树的结构信息全在
+                            // "从哪个高度分出去"这件事上，必须画成水平分叉。
                             for n in nodes_c.iter() {
-                                let x = x_of(n.depth as f32 * 0.10 + n.x * 0.80);
+                                let x = x_of(n.x);
                                 let y_fork = y_of(n.fork_chapter);
                                 let y_end = y_of(n.end_chapter);
-                                let c = if n.id == "α" || n.depth == 0 {
+                                let c = if n.depth == 0 && n.parent.is_none() {
                                     blue
                                 } else if n.archived {
                                     faint
@@ -1595,41 +1607,55 @@ impl Render for WorldlinePanel {
                                 };
                                 let on = sel_t.as_deref() == Some(n.id.as_str());
                                 let c = if on { theme::ACCENT() } else { c };
+                                let op = if n.archived { 0.45 } else { 0.95 };
 
-                                // 枝：从父节点的 x 弯到自己的 x
+                                // 分叉：从父干的 x 水平走到自己的 x（同一个高度）
                                 if let Some(pid) = &n.parent {
                                     if let Some(par) = nodes_c.iter().find(|p2| &p2.id == pid) {
-                                        let px0 = x_of(par.depth as f32 * 0.10 + par.x * 0.80);
-                                        let y0 = y_of(par.fork_chapter);
-                                        let mut b = PathBuilder::stroke(px(if on { 2.2 } else { 1.6 }));
+                                        let px0 = x_of(par.x);
+                                        let mut br = PathBuilder::stroke(px(if on { 2.2 } else { 1.6 }));
                                         if n.archived {
-                                            b = b.dash_array(&[px(3.), px(3.)]);
+                                            br = br.dash_array(&[px(3.), px(3.)]);
                                         }
-                                        b.move_to(p(px0, y0));
-                                        b.cubic_bezier_to(
-                                            p(px0, y0 - 18.),
-                                            p(x, y_end + 18.),
-                                            p(x, y_end),
-                                        );
-                                        if let Ok(path) = b.build() {
-                                            window.paint_path(
-                                                path,
-                                                hsla(c).opacity(if n.archived { 0.4 } else { 0.9 }),
-                                            );
+                                        br.move_to(p(px0, y_fork));
+                                        br.line_to(p(x, y_fork));
+                                        if let Ok(path) = br.build() {
+                                            window.paint_path(path, hsla(c).opacity(op));
                                         }
                                     }
                                 }
 
-                                // 主干：从分叉点到末端
+                                // 自己的枝：从分叉高度往上长到末端。
+                                //
+                                // 分两段：已排章节点的部分是**实线**（这一段有具体剧情），
+                                // 之上到全书最高处是**虚线**（这条线还会往前走，但作者
+                                // 还没排内容）。整条都实会让人以为"这段已经定了"。
+                                let y_solid = if n.end_scheduled > n.fork_chapter {
+                                    y_of(n.end_scheduled)
+                                } else {
+                                    y_fork
+                                };
                                 let mut tr = PathBuilder::stroke(px(if on { 3.0 } else { 2.2 }));
+                                if n.archived {
+                                    tr = tr.dash_array(&[px(4.), px(4.)]);
+                                }
                                 tr.move_to(p(x, y_fork));
-                                tr.line_to(p(x, y_end));
+                                tr.line_to(p(x, y_solid));
                                 if let Ok(path) = tr.build() {
-                                    window.paint_path(path, hsla(c).opacity(0.85));
+                                    window.paint_path(path, hsla(c).opacity(op));
+                                }
+                                if y_solid > y_end {
+                                    let mut spec = PathBuilder::stroke(px(1.3));
+                                    spec = spec.dash_array(&[px(3.), px(5.)]);
+                                    spec.move_to(p(x, y_solid));
+                                    spec.line_to(p(x, y_end));
+                                    if let Ok(path) = spec.build() {
+                                        window.paint_path(path, hsla(c).opacity(0.42));
+                                    }
                                 }
 
-                                // 分叉点
-                                let r = 3.0;
+                                // 分叉点：树的结构就是靠这个圆点读出来的
+                                let r = 3.2;
                                 let k = 0.5523 * r;
                                 let mut d = PathBuilder::fill();
                                 d.move_to(p(x + r, y_fork));
@@ -1640,7 +1666,8 @@ impl Render for WorldlinePanel {
                                 if let Ok(path) = d.build() {
                                     window.paint_path(path, hsla(c));
                                 }
-                                // 果：这一版的节点数
+
+                                // 节点果：沿枝干按数量均匀摆几个小点
                                 let m = n.node_count.min(6);
                                 for k2 in 0..m {
                                     let t0 = if m > 1 {
@@ -1649,19 +1676,16 @@ impl Render for WorldlinePanel {
                                         0.5
                                     };
                                     let fy = y_fork - (y_fork - y_end) * t0;
-                                    if let Ok(path) = {
-                                        let mut g = PathBuilder::fill();
-                                        let rr = 1.8;
-                                        let kk = 0.5523 * rr;
-                                        let _ = kk;
-                                        g.move_to(p(x + rr, fy));
-                                        g.cubic_bezier_to(p(x + rr, fy + kk), p(x + kk, fy + rr), p(x, fy + rr));
-                                        g.cubic_bezier_to(p(x - kk, fy + rr), p(x - rr, fy + kk), p(x - rr, fy));
-                                        g.cubic_bezier_to(p(x - rr, fy - kk), p(x - kk, fy - rr), p(x, fy - rr));
-                                        g.cubic_bezier_to(p(x + kk, fy - rr), p(x + rr, fy - kk), p(x + rr, fy));
-                                        g.build()
-                                    } {
-                                        window.paint_path(path, hsla(green).opacity(0.6));
+                                    let rr = 1.8;
+                                    let kk = 0.5523 * rr;
+                                    let mut g = PathBuilder::fill();
+                                    g.move_to(p(x + rr, fy));
+                                    g.cubic_bezier_to(p(x + rr, fy + kk), p(x + kk, fy + rr), p(x, fy + rr));
+                                    g.cubic_bezier_to(p(x - kk, fy + rr), p(x - rr, fy + kk), p(x - rr, fy));
+                                    g.cubic_bezier_to(p(x - rr, fy - kk), p(x - kk, fy - rr), p(x, fy - rr));
+                                    g.cubic_bezier_to(p(x + kk, fy - rr), p(x + rr, fy - kk), p(x + rr, fy));
+                                    if let Ok(path) = g.build() {
+                                        window.paint_path(path, hsla(green).opacity(0.65));
                                     }
                                 }
                             }
