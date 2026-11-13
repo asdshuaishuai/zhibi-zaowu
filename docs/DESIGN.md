@@ -30,9 +30,9 @@
 │  Cordis 插件树：模型适配 / 工具注册 / 会话日志 / 审批策略     │
 │  ┌─────────────────────────────────────────────────┐   │
 │  │  novel-pack（我们的 Cordis 插件包，dsh.bundle）      │   │
-│  │  · propose_* 提案工具（复刻执笔 30+ 工具面）          │   │
-│  │  · 确定性工具（骨架闸门/连贯性扫描/AI味扫描/对账）      │   │
-│  │  · PromptLibrary + 创作法典（13 流派 + 网文/传统两法）  │   │
+│  │  · 32 个工具：只读查询 / 提案 / 卡片 / 世界线沙盒       │   │
+│  │  · 直写受写作档位约束（write_ledger / write_prose）    │   │
+│  │  · 19 个技能规程 + 六个专属 Agent 的 preset 绑定        │   │
 │  │  · project-store 服务（.zhibi 兼容目录读写）          │   │
 │  └─────────────────────────────────────────────────┘   │
 └──────────────┬─────────────────────────────────────────┘
@@ -54,22 +54,20 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │ ◉ 执笔   《赤星》· 第12章            [搜索⌥⌘F] [书架] [设置]  ─  □ ✕  │
 ├────────┬──────────────────────────────────────────┬──────────────────┤
-│        │                                          │ ● Agent 轨迹      │
-│  书架   │  第12章 · 断刀（第 3/40 章 · 写作中）        │   [轨迹|提案|对话] │
-│  ──    │                                          ├──────────────────┤
-│ ▸ 卷一  │  沈砚按着刀柄走进雨里……                     │ ▶ 设定归类·14:32  │
-│  01 章  │  ▍AI 续写幽灵文本（灰斜体，Tab 采纳）         │ ├ 🛠 调用 propose_… │
-│  02 章  │                                          │ ├ ↳ 已登记 2 条提案 │
-│  12章←  │  ┌─ AI 分支卡（彩云式，三选一）──────────┐    │ ├ 💬 流式输出…     │
-│  13 章  │  │ A 走向·复仇线  B 走向·师门线  C 温情线 │    │ ├ ✓ 完成·2 提案    │
-│        │  └───────────────[换一批]──[全部不要]────┘    │  （可拖宽/收起）    │
-│  ──    │                                          ├──────────────────┤
-│ 大纲    │  [搭骨架] [一键验证] [去AI味] [让AI记一笔]    │ ✦ 待审提案 2      │
-│ 伏笔    │                                          │ · 伏笔盘点（8条）   │
-│ 设定    │                                          │   [就地预览+采纳]   │
-│ 人物    │                                          │                  │
-│ 记忆    │                                          │                  │
-│ 统计    ├──────────────────────────────────────────┤                  │
+│ 写作    │  第12章 · 断刀（第 3/40 章 · 写作中）        │ ● Agent 轨迹      │
+│  写作   │                                          │   [轨迹|提案|对话] │
+│  章节 3 │  沈砚按着刀柄走进雨里……                     ├──────────────────┤
+│  大纲   │                                          │ ▶ 设定归类·14:32  │
+│  设定   │  ┌─ 走向卡（三选一，点选并入正文）────────┐    │ ├ 🛠 调用 propose_… │
+│  人物卡 │  │ 复仇线 ｜ 师门线 ｜ 温情线             │    │ ├ ↳ 已登记 2 条提案 │
+│ 世界    │  └───────────────[换一批]──[全部不要]────┘    │ ├ 💬 流式输出…     │
+│  画板   │                                          │ ├ ✓ 完成·2 提案    │
+│  排期   │  [搭骨架] [写草稿] [一键验证] [去AI味]        │  （可拖宽/收起）    │
+│  世界线 │                                          ├──────────────────┤
+│  预言书 │                                          │ ✦ 待审提案 2      │
+│ 资料    │                                          │ · 伏笔盘点（8条）   │
+│  记忆   │                                          │   [就地预览+采纳]   │
+│  统计   ├──────────────────────────────────────────┤                  │
 │        │ ⚡状态条：AI 运行中·搭骨架（3 个工具）…  [停止]  │                  │
 └────────┴──────────────────────────────────────────┴──────────────────┘
    侧栏          主工作区（编辑器 / 台账 / 收件箱 / 图谱）          右侧 Dock（固定）
@@ -87,14 +85,15 @@
 
 稿纸居中（约 720px 栏宽），纸感底色，宋体正文可选。执笔的功能位原样保留：章节状态、字数进度环、快照/回滚、专注模式（⌘⇧F 全窗只剩稿纸）。
 
-**彩云小梦式共写（提案制改造版）**——执笔的「生成后再看」升级为「写时陪伴」：
+**AI 介入点（全部止步于提案或卡片，正文只有作者点采纳才变）**：
 
-1. **续写幽灵（Ghost Continuation）**：光标停在段尾 ≥1.2s，自动请求续写 1-2 句，以灰斜体幽灵文本显示在光标后。`Tab` 逐句采纳（采纳的句子转为正文并续请求下一句），`Esc` 拒绝，继续打字即自动作废。幽灵文本**不是正文**，落盘只发生采纳那一刻——提案铁律的最小颗粒度。
-2. **分支卡（Three Branches）**：段尾按 `⌘⇧→` 或点「给我几个走向」，AI 一次给 **3 个走向**（各 80-150 字）：走复仇线 / 走师门线 / 走温情线，每张卡片带情绪标签与伏笔影响提示。点选一张 → 该走向展开为完整段落草稿（仍以**草稿提案**形态挂在当前章下方），作者可再改再采纳。`换一批` 重新生成，`全部不要` 关闭。
-3. **选区改写菜单**：选中一段 → 浮出菜单：**拉深**（小梦的招牌：同一段写得更细更满）/ **扩写** / **精简** / **换一种写法** / **去AI味改写**。产出以 diff 预览（原文 vs 建议）就地展示，逐条采纳，采纳前自动快照。
-4. **分叉点标记**：被分支卡替换或从幽灵文本生长出的段落，左缘留一枚小墨点标记「此段有 AI 参与」，悬停可回看当时的轨迹跳转——共写透明化，正文主权可追溯。
+1. **搭骨架 → 写草稿**：工具条「搭骨架」走 `propose_skeleton`，4–6 个节拍进收件箱；采纳才写入 `meta.json` 的 `skeletonApproved=true`。「写草稿」走 `propose_draft`，**没有批准骨架会被工具层直接拒绝**；采纳草稿先快照正文再整章替换。这是「写前契约」的两步，不是一键成章。
+2. **走向卡（Three Branches）**：段尾点「给我几个走向」（⌘⇧B），AI 用 `offer_branches` 给 3 个走向（各 80–150 字）。稿纸下方浮出三张卡：`label` 只做标题，`text` 是正文。点「采纳此走向」→ 先快照 → 把 `text` 接在正文末尾。`换一批` 重发任务，`全部不要` 收起。卡面不消费 `mood`/`touches`，标签也不会混进正文。
+3. **选区改写**：选中一段 → 选「拉深 / 扩写 / 缩写 / 改写 / 去AI味」→ 走 `offer_rewrite`，结果以 **原文 → 建议** 的 diff 卡出现在轨迹窗。`original` 必须逐字引自正文，采纳时宿主会校验原文是否仍在（作者等待期间改过稿则拒绝替换），替换前自动快照。
+4. **续写**：`offer_continuation` 只把一句续写作为文本气泡放进轨迹窗，**没有幽灵文本、没有 Tab 自动采纳**——作者自己决定要不要抄进正文。
+5. **AI 墨点**：AI 参与过的正文区间写进 `chapters/ch-NNN/ai-marks.json`，编辑器左缘按位置画短墨点（代笔琥珀 / 共写朱砂）；撤销该次改动时标记同步清除。墨点只标「这段有 AI 参与」，不改正文一个字节。
 
-共写请求与重型任务共用同一个轨迹面板（轻量请求标记为「续写」小节点，不淹没主轨迹）。
+共写请求与重型任务共用同一个轨迹面板（轻量请求标记为小节点，不淹没主轨迹）。
 
 ### 4.2 右侧 Agent 轨迹 Dock
 
@@ -134,30 +133,28 @@
 
 | 小梦的能力 | 执笔造物 的提案制版本 |
 |---|---|
-| 一键续写（AI 接着写下去） | 续写幽灵（Tab 逐句采纳，Esc 拒绝） |
-| 多走向分支供选 | 分支卡三选一（⌘⇧→），选中后展开为草稿提案 |
-| 拉深（写得更细） | 选区「拉深」→ diff 预览逐条采纳 |
-| 一键成文/扩写 | 选区扩写 / 整章「一键成章」流水线（草稿→审查→去AI味，停在采纳前） |
-| 世界书/设定注入 | 创作法典 + ContextPack 造包（预算裁剪，执笔机制原样） |
-| 无痕迹生成 | 恰恰相反：分叉点墨点标记 + 轨迹可回溯（我们的差异化卖点） |
+| 一键续写（AI 接着写下去） | 续写建议进轨迹窗（文本气泡），作者自己决定要不要用；没有自动落笔 |
+| 多走向分支供选 | 分支卡三选一（⌘⇧B），`label` 上卡面、`text` 采纳后并入正文（先快照） |
+| 拉深（写得更细） | 选区「拉深」→ diff 卡逐处采纳，原文对不上就拒绝替换 |
+| 一键成文/扩写 | 选区扩写；整章走「骨架 → 草稿 → 验证 / 去AI味」，每步都是提案，停在采纳前 |
+| 世界书/设定注入 | 19 个技能规程 + 只读工具自行取数；**没有自动上下文包**，读工具有截断上限（见 REFERENCE.md） |
+| 无痕迹生成 | 恰恰相反：AI 墨点标记 + 轨迹可回溯（我们的差异化卖点） |
 
-## 6. 执笔能力 → DSH 工具面映射（复刻清单）
+## 6. 执笔能力 → DSH 工具面映射
 
-| 执笔能力 | novel-pack 工具 | 类型 |
+工具面以 `novel-pack/src/index.ts` 为准，完整清单见 [REFERENCE.md](REFERENCE.md)。当前 **32 个工具 / 19 个技能 / 7 个画布维度**。按职责分五组：
+
+| 组 | 工具 | 语义 |
 |---|---|---|
-| 搭骨架 / 闸门评分 | `propose_skeleton` / `gate_skeleton`（确定性） | AI / 本地 |
-| 一键成章流水线 | `propose_draft` + `propose_validation` + `propose_deslop` 编排 | AI |
-| 分段写作 | 同上，按节拍切块（带上一块实际结尾） | AI |
-| 全书连贯性审查 + 埋点修复 | `scan_continuity`（本地 20 类）→ `propose_clue_fixes` | 本地→AI |
-| 大纲对账 | `sync_outline_audit`（本地双字组匹配）→ `propose_outline_updates` | 本地→AI |
-| 去AI味 25 项 | `scan_ai_tells`（本地）→ `propose_deslop` | 本地→AI |
-| 盘点伏笔 / 记一笔 / 档案卡 | `propose_clues` / `propose_memory` / `propose_dossier` | AI |
-| 设定归类 / 整理旧稿 / 框架搭建 | `propose_canon_classify` / `propose_canon+clues` / `propose_storylines+events+canon` | AI |
-| 一键召回（上下文包） | `build_context_pack`（确定性造包） | 本地 |
-| 导入 oh-story / 导出 | `import_workspace` / `export_*` | 本地 |
-| 创作法典注入 / 质量反馈回路 | system-prompt 组装插件（PromptLibrary 移植） | 本地 |
+| 只读 | `get_chapter` / `get_clues` / `get_outline` / `get_canon` / `get_characters` / `get_world_state` / `list_proposals` / `get_write_mode` | 给 AI 取证。**都有上限**：章节 12000 字、设定前 24 篇×1600 字、人物默认 30 / 上限 80、档案卡最近 12 章、事件事实截 80 字；需要全量时让 AI 直接读文件 |
+| 提案 | `propose_canon` / `propose_clues` / `propose_relations` / `propose_character` / `propose_aliases` / `propose_canon_classify` / `propose_skeleton` / `propose_draft` / `propose_validation` / `propose_deslop` / `propose_memory` / `propose_dossier` / `propose_clue_fixes` / `propose_outline_updates` | 只写 `proposals/inbox.json`，采纳前不动台账 |
+| 卡片 | `offer_branches` / `offer_rewrite` / `offer_continuation` | 结构化参数直接落成稿纸卡/轨迹 diff/文本气泡，不解析模型文本 |
+| 世界线沙盒 | `propose_worldline` / `simulate_worldline` / `promote_diff` / `archive_worldline` | 只写 `worldlines.json`；α 拒绝推演与归档；扶正/逐节点采纳/按章晋升是宿主动作 |
+| 宿主 / 直写 | `apply_proposal`（宿主令牌）/ `write_ledger`（共写+）/ `write_prose`（代笔+逐章授权） | 直写由 `write-policy.ts` 按书内 `zhibi-auth.json` 判定；AI 调用 `apply_proposal` 一律拒绝 |
 
-提案铁律在 DSH 里落地为：**正文写入工具不存在**；`apply_*` 只由前端在作者点击后调用；工具审批管道（DSH approval）保留为第二道闸。
+提案铁律在 DSH 里落地为：**辅助/共写档没有正文写入工具**；代笔档只对 `ghostwriteChapters` 里的章开放 `write_prose`；`apply_*` 只由前端在作者点击后调用；工具审批管道（DSH approval）保留为第二道闸。AI 绕过宿主直写时，回合结束由宿主快照比对补记 `Actor::Ai` 改动记录，仍可在「改动记录」里撤销。
+
+> 历史备注：早期设计里的 `gate_skeleton` / `scan_continuity` / `sync_outline_audit` / `scan_ai_tells` / `build_context_pack` / `import_workspace` / `export_*` 等“确定性工具”**没有实现**，现行版本一律由 AI 读账本出提案，或由前端确定性计算（如排期预警、章节统计）。不要按旧清单找工具。
 
 ### 5.1 彩云小梦实地调研补充（2026-11-09，基于 xiaomengai.com 前端 JS 词汇表实证）
 
@@ -180,7 +177,7 @@ zhibi-next/
 ├── app/                 # GPUI 前端（Rust，gpui-kit 0.9）
 │   └── src/             # workspace / canvas / director / characters / relations /
 │                        # journal / worldline / dsh / account / prompts …
-├── novel-pack/          # DSH 能力包（TS）：30 工具 + 16 技能 + guard + write-policy
+├── novel-pack/          # DSH 能力包（TS）：32 工具 + 19 技能 + guard + write-policy
 │   ├── skills/          # 写作能力的作业规程（AI 加载，作者可改，不需重编客户端）
 │   └── test/            # 双端一致性
 ├── runtime/zhibi-runtime# 封闭的 DSH sdk 运行环境（只装 sdk 闭包，274MB）
@@ -254,7 +251,7 @@ zhibi-next/
 - **创作法典 `AGENTS.md`**：新建书时写入（铁律 / 术语 / 档位）。DSH 的
   `agent-instructions` 读 cwd（书目录）下这个文件并注入项目指令——不写它，
   界面上的铁律就只是界面文案，模型看不到。作者可自行修改。
-- **M8 技能库与创造模式**：16 个技能替代硬编码任务书；官方 `tool-cordis`
+- **M8 技能库与创造模式**：19 个技能替代硬编码任务书；官方 `tool-cordis`
   + 本书专属 Agent（删除即恢复默认）。**专属 Agent 的 persona 里点名了各自的
   作业规程技能**——页面按钮派活时只给操作名，子 Agent 自己不知道该按什么标准做，
   所以规程必须挂在 persona 上（有测试保证每个技能名都真实存在）。
@@ -271,15 +268,15 @@ gpui 的 `cubic_bezier_to(to, control_a, control_b)` —— **终点是第一个
 
 ## 8. 拍板记录（原「待定问题」，均已定案并落地）
 
-1. **DSH 接入形态：sdk 子进程**（NDJSON JSON-RPC over stdio）——已实现并 23 工具真实注册验证（含作者主权工程化后的别名工具与令牌门）。
+1. **DSH 接入形态：sdk 子进程**（NDJSON JSON-RPC over stdio）——已实现并 32 工具真实注册验证（含作者主权工程化后的别名工具与令牌门）。
 2. **novel-pack 分发：随应用内置**，经 `cordis.patch.yml` 自动挂载；`dsh plugin --profile sdk add` 独立安装能力保留。
 3. **GPUI Kit 钉 0.9.0**（crates.io 源为准；git main 0.9.1 存在 API 漂移，不采用）——全仓零警告验证通过。
 
 ## 10. 无限画板 · 世界线 · 预言书（多重世界线）
 
-> 命名沿革：本节「世界线」排期板原名「导演台」（对齐 AI 短剧工具的叫法），2026-11-10 更名。
+> 命名沿革：本节「章节排期」原叫「导演台」（对齐 AI 短剧工具的叫法），2026-11-10 更名「排期板」，现统一为**章节排期**——它的对象是章 × 幕的工作排期，不是世界线。
 
-对标 AI 短剧工具的「无限画板 + 导演台」，但执笔的对象不是分镜，而是**叙事结构本身**：
+对标 AI 短剧工具的「无限画板 + 排期」，但执笔的对象不是分镜，而是**叙事结构本身**：
 剧情线路、人物关系、暗线发展、因果影响与延伸——再加上一个别家没有的东西：
 **预言书**——多重世界线的假设推演，以及每条世界线对原始设定的影响清单。
 
@@ -292,7 +289,7 @@ gpui 的 `cubic_bezier_to(to, control_a, control_b)` —— **终点是第一个
 | **世界线** | **剧情的发展方向与时间节点**。前面的剧情固化后，后面可能产生的所有 if 线。横轴就是章节。 | 「故事确定到哪儿了，之后有哪些可能？」 |
 | **画布** | **关系网**。剧情关节节点、设定、道具、人物之间的关联关系：张三 → 他的人物关系 → 他的事件与剧情发展。 | 「这个关节跟谁有关、牵扯到什么？」 |
 | **预言书** | **if 工坊**。在某个固化点上分叉出来的假设线，以及每条线对正典的影响清单。 | 「这条假设如果成真，正典会变成什么样？要不要收？」 |
-| **排期板** | 章 × 幕的工作排期。**与世界线无关**，读的是 events/clues/stages。 | 「下一章该写什么，伏笔到期没？」 |
+| **章节排期** | 章 × 幕的工作排期。**与世界线无关**，读的是 events/clues/stages。 | 「下一章该写什么，伏笔到期没？」 |
 
 **世界线与画布的关系**：两者正交，靠**双向弱引用**连起来。
 - 世界线节点 = 时间轴上的一个关节（「第 12 章发生了观灯人现身」）
@@ -301,8 +298,8 @@ gpui 的 `cubic_bezier_to(to, control_a, control_b)` —— **终点是第一个
 - **弱**的意思是：画布节点被删了，世界线不会崩，只是查不到关系。
 
 **固化**有两层含义，两者都要支持：
-1. **边界**：α 正典的固化边界 = 最新成稿章（写出来的都定了），之后是开放的 if 空间。
-2. **扶正**：作者从某条 if 线里选定一条，它成为正典的后续（`Kind::Fixed`），
+1. **边界**：全局固化边界 = `max(非空正文最大章, 未归档的 base/fixed 线各自的 `fixedThrough`/节点上界)`。写出来的都定了，边界之后才是开放的 if 空间。归档线不参与。
+2. **扶正**：作者从某条 if 线里选定一条，它成为正典的后续（`Kind::Fixed`，**真实落盘**），
    全局固化边界推到它的末尾。原正典保留（用于对比「扶正前是什么样」）。
 
 ### 10.2 四个页面的分工
@@ -312,6 +309,7 @@ gpui 的 `cubic_bezier_to(to, control_a, control_b)` —— **终点是第一个
 | **世界线 Worldline** | **时间轴**。横轴 = 真实章节；固化段实线、开放段虚线；每条 if 从它的分叉章长出。页内两个看法：**时间轴** / **对比**（世界树形态已砍，见 12.4） | 选章节、从任意处再分叉、改节点章号、连/删因果边、标暗线、折叠轨道、扶正、归档、删除 |
 | **画布 Canvas** | **关系网**。七维（总览/设定/人物/关系/时间/事件/转折），节点是人物/设定/道具/事件，边是人物关系与剧情关联 | 框选、拖节点、看一阶影响半径、读者视角；选中节点看它**在世界线上的落点** |
 | **预言书 Oracle** | **if 工坊**。选中一条线 → 看推演卷轴（按章分段的因果链）→ 看影响面 → 逐条或批量晋升 | 写假设 → 让 AI 推演 → 看影响清单 → 晋升为提案 |
+| **章节排期 Director** | 章 × 幕排期板（原名「导演台」）。事件卡/伏笔卡拖进章节；预测候选虚线列拖入章列=按章晋升 | 拖卡改期 → 触发骨架合同核对 |
 
 ### 10.2b 专属 Agent 是能力，不是对话对象
 
@@ -340,7 +338,6 @@ gpui 的 `cubic_bezier_to(to, control_a, control_b)` —— **终点是第一个
 技术约束：DSH sdk 协议没有"直接给某个 preset 发消息"的方法，子 agent
 只能由主 agent 通过 `tool-subagent` 派。所以三条路最终都经过主 Agent，
 区别只在路由由谁决定。
-| **排期板 Director** | 章 × 幕排期板（原名「导演台」）。事件卡/伏笔卡拖进章节 | 拖卡改期 → 触发骨架合同核对 |
 
 > 曾经的错误：三视图（并轨/世界树/对比）全塞在「预言书」页里，
 > 而「世界线」这个词在侧栏出现两次——一次指排期板、一次藏在预言书里，
@@ -357,7 +354,7 @@ worldlines.json: [{
   fixedThrough(这条线自己固化到第几章), tookOver(被扶正时留痕),
   status: 推演中|已定稿|已归档,
   nodes: [{id, kind, label, reference(正典id), canvasRef(画布节点id，双向弱引用),
-           chapter(真实章节落点), note, state: planned|written|branch-only, x, y}],
+           chapter(真实章节落点), note, state: planned|adopted|written|branch-only, x, y}],
   edges: [{from, to, kind: plant|payoff|involve|conflict|influence|hiddenline}],
   diffs: [{target, targetRef, kind: add|change|remove, before, after, reason, severity}],
   derived: {characters: [...], canon: [...], clues: [...]}   // 本线专属衍生，不碰正典
@@ -375,25 +372,36 @@ worldlines.json: [{
 
 ### 10.5 novel-pack 工具面
 
+AI 可调（全部只写沙盒）：
+
 | 工具 | 语义 |
 |---|---|
 | `get_world_state` | 读正典图数据（线/事件/人物/伏笔/设定 + 关系边）供画板与推演 |
-| `propose_worldline` | 建世界线（假设 + fork 章），登记进 worldlines.json |
-| `simulate_worldline` | 沿假设推演：输出 nodes/edges/diffs/derived（只写沙盒），diff 必须逐条给 reason 与影响章号 |
-| `promote_diff` | 把某条 diff 晋升为正式 propose_* 提案（宿主执行，幂等：同 target+kind 不重复登记） |
-| `archive_worldline` | 归档一条线（保留可查） |
+| `propose_worldline` | 建世界线（名称 + 假设 + fork 章），登记进 worldlines.json；**不带血缘字段**，血缘由宿主 `fork_at_chapter` 写 |
+| `simulate_worldline` | 沿假设推演：输出 nodes/edges/diffs/derived（只写沙盒），diff 必须逐条给 reason；α 拒绝 |
+| `promote_diff` | 把某条 diff 晋升为正式 propose_* 提案（幂等：同 target+kind 不重复登记） |
+| `archive_worldline` | 归档/恢复一条线；α 拒绝 |
+
+宿主专用（AI 拿不到）：
+
+| 动作 | 语义 |
+|---|---|
+| `fork_at_chapter` | 从某章/某节点再分叉，写 `parentId` / `forkNode` / `forkedChapter` |
+| `promote_diff_chapter` | 带章号晋升，产出 `plannedEvent` 提案（happened=false） |
+| `adopt_node` | 逐节点采纳的第一步：产出 `plannedEvent` 提案；收件箱采纳后才写 events 并转 `adopted` |
+| `fix_line` / `unfix_line` | 扶正整条线（`kind=fixed`，正典边界前推）/ 撤销扶正 |
 
 ### 10.6 实施切片
 
 1. **M7-1 画板骨架**：GPUI 无限画布（pan/zoom + 节点卡 + SVG 边），读正典渲染当前书的关系图；
 2. **M7-2 预言书**：worldlines.json + 上面五个工具 + 预言书面板（假设输入 → 推演流进轨迹窗 → diff 列表 → 晋升）；
-3. **M7-3 世界线排期板（原导演台）**：章×幕排期板 + 拖卡触发骨架合同核对；
+3. **M7-3 章节排期板（当时的「导演台」）**：章×幕排期板 + 拖卡触发骨架合同核对；
 4. **M7-4 画板增强**：影响半径高亮、读者视角、框选成组、暗线虚线。
 
 ### 10.7 落地状态
 
 - **M7-1 ✅**：`app/src/canvas.rs::CanvasPanel` — 节点卡（故事线/事件/人物/伏笔/设定）+ `canvas()` 三次贝塞尔边（influence/plant/payoff，暗线虚线 PURPLE）+ 拖节点/空白平移/±缩放/⊡复位 + 点选一阶影响半径侧板 + 读者视角（隐未揭示事件与暗线）；视图态持久化 `canvas.json`（view/pos/reader），不碰正典。侧栏 Mode::Canvas（Waypoints 图标）。
-- **M7-2 ✅**：数据底座 `worldlines.json`（α 基准行，Rust `ensure_m7_files` + novel-pack `ensureDirs`/自愈三处同语义）；novel-pack 五工具 `get_world_state/propose_worldline/simulate_worldline/promote_diff/archive_worldline`（共 22 工具注册通过）；`OraclePanel`（Mode::Oracle，Sparkle 图标）：世界线列表 + 影响清单逐条「晋升为提案」（走 `store.promote_diff`，幂等）+ 衍生 line 归属标 + 底部假设 composer（发射 `oracle_task` 进同一条 DSH 会话，轨迹窗全程可见）；`canonRevise`（采纳前自动备份到 `canon/backups/`）/`outlineUpdates` 确定性落库双端（TS+Rust）实现。
+- **M7-2 ✅**：数据底座 `worldlines.json`（α 基准行，Rust `ensure_m7_files` + novel-pack `ensureDirs`/自愈三处同语义）；novel-pack 五工具 `get_world_state/propose_worldline/simulate_worldline/promote_diff/archive_worldline`（当时共 22 工具注册通过）；`OraclePanel`（Mode::Oracle，Sparkle 图标）：世界线列表 + 影响清单逐条「晋升为提案」（走 `store.promote_diff`，幂等）+ 衍生 line 归属标 + 底部假设 composer（发射 `oracle_task` 进同一条 DSH 会话，轨迹窗全程可见）；`canonRevise`（采纳前自动备份到 `canon/backups/`）/`outlineUpdates` 确定性落库双端（TS+Rust）实现。
 - **M7-3 ✅**：`app/src/director.rs::DirectorPanel` — 8 章窗口排期板：事件卡（蓝点/暗线紫点）+ 伏笔埋设卡（琥珀◆）跨列拖拽改期，落点=列 on_mouse_up 命中，直写 `events.json.chapter`/`clues.json.plantedChapter`（作者主权亲笔通道，非 AI）；窗口外存量入「待排期」池；底部确定性预警条（无覆盖章/伏笔静默≥8 章/断线线/窗口内未揭示数）；每列「AI 核对」→ `prompts::director_task` 进 DSH 会话。侧栏 Mode::Director（Kanban 图标）。测试 `director_sovereign_edits` 通过。
 - **重要修复（M7-3 期间发现的双端错文件 bug）**：真实磁盘账本是 `storylines.json`/`events.json`/`stages.json` 三文件分储，旧 TS `outline()` 读 `outline.json`、`outlineUpdates` 落库也写 `outline.json`——对真实项目全是空读/错写。现 TS `outline()` 三文件合并读（outline.json 仅作兼容兜底），双端 `outlineUpdates` 落库统一改写 `storylines.json`；`memory.json` 人物键统一为 `aliases[].canonicalName`（TS world_state、Rust 画板人物节点同修）。
 - **M7-4 ✅（画板增强收口）**：读者视角/暗线虚线/影响半径随 M7-1 落地；画板新增 `involve` 绿边（memory.facts subject×fromChapter 确定映射）；**Shift 点选成组**（多选集 + 组拖，非 Shift 单选；「清空选择」按钮；侧板显「已选 N 个节点」）。
@@ -409,27 +417,30 @@ worldlines.json: [{
 
 | kind | 语义 | 数据来源 | 写权限 |
 |---|---|---|---|
-| `base`（α） | 正典基准 | 全部台账 | 只读 |
-| `fixed` | **已固化**：已写完确定下来的剧情 | 自动派生：`happened=true` 事件 + 已成稿章节（只读视图，不落文件） | 只读展示 |
+| `base`（α） | 正典基准 | 全部台账 | 只读（不可创建第二条） |
+| `fixed` | **已扶正**：作者从某条 if 线里选定、正式收进正典后续的那条线 | 落盘为线的 `kind=fixed`；扶正时把 α 的 `fixedThrough` 推到该线边界 | 宿主 `fix_line` / `unfix_line` |
 | `forecast` | **预测线**：按大纲/设定（无大纲则按已成稿）推演后续剧情 | AI `forecast_task` → simulate 工具写沙盒；diffs=计划剧情，晋升走 outline/clues/skeleton 提案 | 沙盒 only |
 | `what-if` | 假设推演（原预言书能力） | 同上 | 沙盒 only |
+
+**固化边界** = `max(非空正文最大章, 未归档的 base/fixed 线各自的 fixed_boundary)`。归档线不参与——它被隐藏了，就不该继续把边界顶高。注意这与旧稿「`fixed` 是自动派生、只读、不落文件」的说法相反：`fixed` 是一条**真实落盘**的线，不是视图。
 
 固化线给用户「织到哪了」的全景；预测线给用户「接下来往哪织」的可选路——都是整理辅助，铁律不变：预测晋升成提案、采纳才进正典。
 
 ### 11.2 多维画布（CanvasPanel 顶栏维度页签）
 
-每维 = 节点类型子集 + 专属布局 + 专属边映射（全部真实数据，零臆造）：
+**七个维度**（没有“预言维”：世界线在「世界线」页看，不在画布上）。每维 = 节点类型子集 + 专属布局 + 专属边映射（全部真实数据，零臆造）：
 
 | 画布 | 节点 | 边 | 布局 |
 |---|---|---|---|
 | 总览 | 五类全量 | influence/plant/payoff/involve | 列式（现行） |
 | 设定 | canon（分类着色，meta=类别） | facts.object↔canon 命中边 | 网式（两排均布） |
 | 人物 | characters（canonical+aka） | involve（facts.subject×fromChapter→事件） | 列式 |
-| **关系** | characters | **subject→object 且两端可经别名表归一** → 人名↔人名边，label=predicate（获得/师徒/敌对…） | 中心辐射（主角居中） |
+| **关系** | characters | 读 `relations.json` 区间（端点按人物档案归一），label=区间谓词、按 `classify` 着色；暗线不画 | 中心辐射（主角居中） |
 | **时间** | events 按章 | chapter 顺序链边 + 挂线 storylines | 横轴时间线（每行 8 事件折行） |
 | 事件 | storylines+events | influence | 列式 |
 | **转折** | dossier.turns 弧线拐点 + events | 拐点→该章事件边（RED） | 章轴纵向 |
-| **预言** | 选中世界线的 nodes（沙盒） | 该线 edges（隐藏边紫虚线） | 列式（AI 给的 x/y 优先，否则列兜底）；~~世界树~~已下线（2026-11-13，见 12.4-11），不改此维 |
+
+世界线节点与画布节点仍靠**双向弱引用**连着（世界线节点的 `canvasRef` 指回画布节点，画布侧反查「它在哪几条线的哪一章」），但画布不渲染沙盒线——这是 2026-11-13 砍掉第八维「预言」后的口径。
 
 视图态 `canvas.json` 的 `pos` 键升为 `"<dim>:<nodeId>"`（维度间互不踩踏）；边色沿用现有语义色板。
 
@@ -437,10 +448,10 @@ worldlines.json: [{
 
 1. **M8-1 ✅ 画布维度化**：`Dim` 枚举 + 七维映射 + dim-keyed 持久化 + 顶栏页签。
 2. **M8-2 ✅ 双态**：`propose_worldline` 增 kind 参数（what-if 默认/forecast 预测：fork=下一章、diffs 全为 add 计划）；`prompts::forecast_task`（读大纲→无则读成稿→预测三走向×节拍级节点）；OraclePanel 按 kind 分组（固化=自动只读卡；预测线/假设线分列）；「预测续写」composer 双模式按钮。
-3. **M8-3 ✅ 预测线→世界线排期板联动**：世界线排期板新增「预测候选」虚线列（扫描 forecast 线 add 型事件/故事线 diff，排除已晋升）；拖入章列 = `promote_diff_chapter`（带章号晋升→**plannedEvent 提案**，非直写台账——与实卡改期语义区分）；新提案 kind `plannedEvent` 双端确定性落库（events.json 追加 `E{seq}` happened=false revealed=false + plannedFrom 溯源）；实链验证：预测→排期→采纳=E01@13章入账且标记"待写成"，二次排期晋升被拒。
+3. **M8-3 ✅ 预测线→章节排期联动**：章节排期新增「预测候选」虚线列（扫描 forecast 线 add 型事件/故事线 diff，排除已晋升）；拖入章列 = `promote_diff_chapter`（带章号晋升→**plannedEvent 提案**，非直写台账——与实卡改期语义区分）；新提案 kind `plannedEvent` 双端确定性落库（events.json 追加 `E{seq}` happened=false revealed=false + plannedFrom 溯源）；实链验证：预测→排期→采纳=E01@13章入账且标记"待写成"，二次排期晋升被拒。
 
-4. **M8-4 ✅ 世界线增强（实机驱动）**：画布新增第八维「预言」——直接渲染世界线沙盒的 nodes/edges（node 卡标「线β · event/character/storyline」、预测/假设节点一律琥珀虚线、隐藏边紫虚线），左上「世界线：β」chip 可切换线；计划事件（happened=false）在总览/时间/事件维统一「计划(线X)」标 + 琥珀虚线框；预言书补 fork 章显示、归档/恢复按钮与「已归档」沉底分组、影响清单按 target 分组（事件→故事线→设定→人物→伏笔）并显示已排期章；α 固化卡文案收口为单行（固化 · 成稿 N 章 · 定事 N · 伏笔 N/N）。
-   - **M8-4b**：预言书右列「在画布查看」——跨面板跳转（切画布预言维并选中该线，实机验证通过）；影响清单 before/after 红→绿对照（与原型一致）。
+4. **M8-4 ✅ 世界线增强（实机驱动）**：~~画布新增第八维「预言」~~（**该维已于 2026-11-13 下线，见 §12.4-11；世界线改在「世界线」页看**）——当时直接渲染世界线沙盒的 nodes/edges（node 卡标「线β · event/character/storyline」、预测/假设节点一律琥珀虚线、隐藏边紫虚线），左上「世界线：β」chip 可切换线；计划事件（happened=false）在总览/时间/事件维统一「计划(线X)」标 + 琥珀虚线框；预言书补 fork 章显示、归档/恢复按钮与「已归档」沉底分组、影响清单按 target 分组（事件→故事线→设定→人物→伏笔）并显示已排期章；α 固化卡文案收口为单行（固化 · 成稿 N 章 · 定事 N · 伏笔 N/N）。
+   - **M8-4b**：预言书右列「在画布查看」——跨面板跳转（当时切到画布预言维并选中该线，实机验证通过；该入口随第八维一起下线）。影响清单 before/after 红→绿对照（与原型一致）。
    - 实机验收（断刀记验证）：β 线五个节点/五条边全渲染、琥珀虚线计划卡、清单三组、归档按钮、画布跳转全通过。
 
 5. **M8-5 ⚠ 世界树（2026-11-11 定案 → 2026-11-13 下线）**：当时用户口径——**官网**的世界线要读成**世界树**
@@ -478,7 +489,7 @@ worldlines.json: [{
 | 3 | 生成前枚举需作者拍板的决定点（写谁、发生什么、是否回收伏笔） | **未落结构（只到文案层）** | 当前可见的是生成后的条目清单与待拍板计数；「生成前先让作者逐条裁定决定点」的界面尚未实现。 |
 | 4 | 保存完整输入快照（前文版本、引用条目版本、参数、模型），历史为决策树，可回放/分叉 | **部分落结构** | 已落：正文快照（`chapters/ch-NNN/snapshots/`，快照页可恢复）、提案 payload 全量留在 `inbox.json`、`createdAt/decidedAt` 可见、已决历史可展开回看同一份 payload。未落：引用条目版本/参数/模型未写入快照；决策树与分叉对比未实现。 |
 | 5 | 撤销粒度与 AI 动作一一对应，每步改了什么、能退回哪里界面可见 | **部分落结构** | 已落：draft 采纳前自动快照、deslop 首次替换前快照、canonRevise 原文备份到 `canon/backups/`；clues/canonClassify/skeleton/report/memoryPack/dossier/outlineUpdates/clueFixes/plannedEvent 采纳前把将被覆盖的原文件备份到 `snapshots/ledger/`，卡片「落点 · 回滚」按 kind 写明落点与备份去向。未落：非正文台账快照没有正文快照页那样的恢复入口（见 12.4）。 |
-| 6 | 不设自动执行通道（无批量续写、自动整章、自动补字数、后台跑下一步） | **已落结构（工程约束）** | 工具面只有 `propose_*`；`apply_proposal` 注册为宿主专用，未开 `hostApply`/令牌时 AI 调用一律拒绝（`novel-pack/src/index.ts` 的 hostApply 闸门）；前端没有批量续写、自动整章、自动补字数的入口。 |
+| 6 | 不设自动执行通道（无批量续写、自动整章、自动补字数、后台跑下一步） | **已落结构（工程约束）** | 辅助/共写档没有正文写入工具；代笔档只对逐章授权的章开放 `write_prose`；`apply_proposal` 注册为宿主专用，未开 `hostApply`/令牌时 AI 调用一律拒绝（`novel-pack/src/index.ts` 的 hostApply 闸门）；前端没有批量续写、自动整章、自动补字数的入口。 |
 | 7 | 与已定事实/伏笔冲突不静默、标出冲突位置与两种处理后果，停下等裁定 | **部分落结构** | 已落：`report` 只报告不代改，卡片列出 `location/evidence/suggestion`，冲突位置进入依据区。未落：「两种处理后果并排 + 停下等裁定」的交互。 |
 | 8 | 伏笔作为可清点对象入账，AI 触碰时显示动用了哪条，未回收随时可查 | **已落结构** | `clues.json` + `actionLog` 台账；`clueFixes` 提案依据区逐条列出「伏笔 Fxx」；未回收状态在伏笔台账可查。 |
 | 9 | 正文区分作者手写与 AI 草稿、支持逐段 diff，不提供抹除来源的后处理 | **部分落结构** | 已落：AI 文本只能以提案存在；deslop 以 `original → replacement` 逐处预览；无「降 AIGC 痕迹」类后处理。未落：正文内逐段来源标记与逐段 diff（§4.1 的墨点仍在规划）。 |

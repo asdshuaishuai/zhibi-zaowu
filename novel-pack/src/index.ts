@@ -99,7 +99,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
 
     textTool(
       'get_chapter',
-      '读取某章正文（作者亲笔）。用于验证时对照原文取证。',
+      '读取某章正文（作者亲笔）。用于验证时对照原文取证。单次最多返回 12000 字，超长章会被静默截断——需要后半段时直接用文件工具读 chapters/ch-NNN/prose.md。',
       { chapter: num('章节号') },
       (args) =>
         guard(async () => {
@@ -134,7 +134,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
 
     textTool(
       'get_outline',
-      '读取故事线 + 时间线事件（含作者真相/读者已知）+ 最近档案卡（推进/拐点/悬念）。',
+      '读取故事线 + 时间线事件（含作者真相/读者已知）+ 档案卡（推进/拐点/悬念）。故事线与事件全量返回；档案卡只给最近 12 章——更早的卡片请直接读 dossiers.json。',
       {},
       () =>
         guard(async () => {
@@ -174,7 +174,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
 
     textTool(
       'get_canon',
-      '读取全部设定文档（标题 + 内容）。设定是作者主权：不得臆造，先读再写。',
+      '读取设定文档（标题 + 内容）。设定是作者主权：不得臆造，先读再写。注意有上限：只返回前 24 篇、每篇截 1600 字，并不是全部——需要更多或完整原文时直接读 canon/ 目录下的文件。',
       {},
       () =>
         guard(async () => {
@@ -191,10 +191,10 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
 
     textTool(
       'get_characters',
-      '读取人物档案（本名/定位/口吻/动机/状态/锁定字段）。写对白、补人物、理关系前先读：口吻与动机只能从档案与原文来，不能编。',
+      '读取人物档案（本名/定位/口吻/动机/状态/锁定字段）。写对白、补人物、理关系前先读：口吻与动机只能从档案与原文来，不能编。结果按目录顺序截取，默认 30 人、上限 80 人；人物多时用 name 精确过滤，不要指望一次拿全。',
       {
         name: str('按本名或别名过滤（省略 = 全部）', false),
-        limit: num('最多返回人数（默认 30）', false),
+        limit: num('最多返回人数（默认 30，上限 80）', false),
       },
       (args) =>
         guard(async () => {
@@ -361,7 +361,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
 
     textTool(
       'propose_relations',
-      '提交人物关系边提案：给定「谁—谓词—谁」（如 沈砚—师从—老周 / 钱九渊—敌对—沈砚），可选首次成立章。采纳后写入关系区间台账（relations.json）——关系图按章显示、演变条能看出同一对人物从师徒到决裂；同时写一条记忆事实供总览维使用。作者可拒收、可继续用同一工具修正。',
+      '提交人物关系边提案：给定「谁—谓词—谁」（如 沈砚—师从—老周 / 钱九渊—敌对—沈砚），可带首次成立章与结束章。采纳后写入关系区间台账（relations.json）——关系图按章显示、演变条能看出同一对人物从师徒到决裂；同时写一条记忆事实供总览维使用。方向用 directed 标明：师从/父子/主仆为有向（默认 true），同乡/相识可为无向。作者可拒收、可继续用同一工具修正。',
       {
         relations: {
           type: 'array',
@@ -375,6 +375,8 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
               to: str('客体（人名）'),
               evidence: str('依据（哪章哪段；可为空）', false),
               chapter: num('首次成立章号（可空）', false),
+              toChapter: num('结束章号（不含；0/省略=至今仍成立）', false),
+              directed: { type: 'boolean', description: '关系是否有方向：师从/父子/主仆填 true（默认），同乡/相识可填 false', required: false },
               publicToReader: { type: 'boolean', description: '读者是否已知（暗线填 false）', required: false },
             },
             required: ['from', 'predicate', 'to'],
@@ -749,7 +751,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
 
     textTool(
       'get_world_state',
-      '读取正典世界的紧凑图状态（故事线/事件/伏笔/设定/人物别名 + 现有世界线摘要）。画板节点与预言书推演都以此为唯一事实源；推演前先调它。',
+      '读取正典世界的紧凑图状态（故事线/事件/伏笔/设定/人物别名 + 现有世界线摘要）。画板节点与预言书推演都以此为唯一事实源；推演前先调它。为了紧凑：事件事实截 80 字、设定只给标题、人物只给别名，需要细节再调对应专用读工具。',
       {},
       () =>
         guard(async () => {
@@ -1259,6 +1261,7 @@ function payloadKind(payload: Record<string, unknown>): string {
     ['suggestions', 'deslop'],
     ['facts', 'memoryPack'],
     ['aliases', 'aliases'],
+    ['characters', 'character'],
     ['relations', 'relations'],
     ['updates', 'outlineUpdates'],
     ['outlineUpdates', 'outlineUpdates'],
@@ -1292,6 +1295,112 @@ async function readObjectChecked(store: NovelStore, rel: string): Promise<Record
   if (v === undefined) return {}
   if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error(`${rel} 顶层不是对象，已拒绝覆盖`)
   return v as Record<string, unknown>
+}
+
+/** 关系谓词 → 粗分类（与 app/src/relations.rs::classify 同表）。 */
+function classifyRelation(predicate: string): string {
+  const kin = ['父子', '父女', '母子', '母女', '兄弟', '姐妹', '夫妻', '亲族', '叔', '舅', '姨']
+  const mentor = ['师从', '师父', '徒弟', '门下', '传人', '授业']
+  const hostile = ['敌对', '仇敌', '背叛', '杀过', '暗杀', '宿敌', '追杀']
+  const love = ['暗恋', '喜欢', '爱慕', '夫妻', '情人']
+  const interest = ['利用', '共谋', '交易', '主仆', '部下', '上司', '盟友']
+  if (kin.some((k) => predicate.includes(k))) return '亲缘'
+  if (mentor.some((k) => predicate.includes(k))) return '师承'
+  if (hostile.some((k) => predicate.includes(k))) return '敌对'
+  if (love.some((k) => predicate.includes(k))) return '情爱'
+  if (interest.some((k) => predicate.includes(k))) return '利益'
+  return '其他'
+}
+
+/** 关系区间规范化：丢掉空标签/倒挂段，按起点排序（与 Rust Relation::normalize 同语义）。 */
+function normalizeRelation(rel: any): void {
+  const intervals: any[] = Array.isArray(rel?.intervals) ? rel.intervals : []
+  rel.intervals = intervals
+    .filter((iv: any) => {
+      const label = String(iv?.label ?? '').trim()
+      const from = Number(iv?.fromChapter) || 0
+      const to = Number(iv?.toChapter) || 0
+      return label.length > 0 && (to === 0 || to > from)
+    })
+    .sort((a: any, b: any) => (Number(a?.fromChapter) || 0) - (Number(b?.fromChapter) || 0))
+}
+
+/** 人物提案合并：只补空、只增不删，lockedFields 一律不动。返回改动字段数。 */
+function fillCharacter(target: any, incoming: any): number {
+  const locked = Array.isArray(target.lockedFields) ? target.lockedFields.map(String) : []
+  const isLocked = (...names: string[]) => names.some((n) => locked.includes(n))
+  let n = 0
+  const strFields: Array<[string, string]> = [
+    ['role', 'role'],
+    ['faction', 'faction'],
+    ['age', 'age'],
+    ['appearance', 'appearance'],
+    ['personality', 'personality'],
+    ['motivation', 'motivation'],
+    ['background', 'background'],
+    ['voice', 'voice'],
+    ['status', 'status'],
+    ['notes', 'notes'],
+    ['coreStory', 'coreStory'],
+  ]
+  for (const [key, lock] of strFields) {
+    if (isLocked(lock)) continue
+    const have = String(target[key] ?? '').trim()
+    const add = String(incoming[key] ?? '').trim()
+    if (!have && add) {
+      target[key] = incoming[key]
+      n += 1
+    }
+  }
+  if (!isLocked('statusChapter') && !(Number(target.statusChapter) > 0) && Number(incoming.statusChapter) > 0) {
+    target.statusChapter = Number(incoming.statusChapter)
+    n += 1
+  }
+  if (!isLocked('minor') && !target.minor && incoming.minor === true) {
+    target.minor = true
+    n += 1
+  }
+  if (!isLocked('aliases')) {
+    const names: string[] = Array.isArray(target.aliases) ? target.aliases.map(String) : []
+    for (const a of Array.isArray(incoming.aliases) ? incoming.aliases : []) {
+      const name = String(a).trim()
+      if (name && name !== target.name && !names.includes(name)) {
+        names.push(name)
+        n += 1
+      }
+    }
+    target.aliases = names
+  }
+  for (const [key, lock] of [
+    ['goals', 'goals'],
+    ['flaws', 'flaws'],
+    ['tags', 'tags'],
+  ] as Array<[string, string]>) {
+    if (isLocked(lock)) continue
+    const list: string[] = Array.isArray(target[key]) ? target[key].map(String) : []
+    for (const v of Array.isArray(incoming[key]) ? incoming[key] : []) {
+      const item = String(v).trim()
+      if (item && !list.includes(item)) {
+        list.push(item)
+        n += 1
+      }
+    }
+    target[key] = list
+  }
+  if (!isLocked('arc')) {
+    const arc: any[] = Array.isArray(target.arc) ? target.arc : []
+    for (const p of Array.isArray(incoming.arc) ? incoming.arc : []) {
+      const chapter = Number(p?.chapter) || 0
+      const state = String(p?.state ?? '').trim()
+      if (chapter > 0 && state && !arc.some((x: any) => Number(x?.chapter) === chapter && String(x?.state ?? '') === state)) {
+        arc.push(p)
+        n += 1
+      }
+    }
+    arc.sort((a: any, b: any) => (Number(a?.chapter) || 0) - (Number(b?.chapter) || 0))
+    target.arc = arc
+  }
+  return n
 }
 
 async function applyPayload(store: NovelStore, p: Proposal): Promise<ApplyResult> {
@@ -1578,36 +1687,215 @@ async function applyPayload(store: NovelStore, p: Proposal): Promise<ApplyResult
         message: `去AI味逐处替换 ${hit}/${suggestions.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}（首次替换前已快照）`,
       }
     }
+    case 'character': {
+      // 与 Rust apply_payload 的 character 分支同语义：按 name/别名归并，
+      // 只补空、尊重 lockedFields；新建人物同步 memory.aliases（画布事实源）。
+      const incoming: any[] = Array.isArray(payload.characters)
+        ? payload.characters
+        : Array.isArray(payload.items)
+          ? payload.items
+          : []
+      if (incoming.length === 0) return { applied: 0, message: '人物提案没有 characters' }
+      const chars = await readArrayChecked(store, 'characters.json')
+      const mem = await readObjectChecked(store, 'memory.json')
+      const aliases: any[] = Array.isArray(mem['aliases']) ? (mem['aliases'] as any[]) : []
+      const touched: string[] = []
+      let applied = 0
+      const skipped: string[] = []
+      for (const raw of incoming) {
+        if (!raw || typeof raw !== 'object') {
+          skipped.push('人物条目不是对象')
+          continue
+        }
+        const name = String(raw.name ?? '').trim()
+        if (!name) {
+          skipped.push('人物条目缺 name')
+          continue
+        }
+        const pos = chars.findIndex(
+          (c: any) =>
+            String(c?.name ?? '') === name ||
+            (Array.isArray(c?.aliases) && c.aliases.map(String).includes(name)),
+        )
+        if (pos >= 0) {
+          const changed = fillCharacter(chars[pos], raw)
+          if (changed > 0) {
+            applied += 1
+            touched.push(String(chars[pos].name))
+          } else {
+            skipped.push(`「${name}」没有可补的字段（已写或已锁）`)
+          }
+        } else {
+          const fresh: any = {
+            id: `ch-${crypto.randomUUID()}`,
+            name,
+            aliases: [],
+            role: '',
+            faction: '',
+            age: '',
+            appearance: '',
+            personality: '',
+            motivation: '',
+            background: '',
+            goals: [],
+            flaws: [],
+            voice: '',
+            status: '',
+            statusChapter: 0,
+            arc: [],
+            tags: [],
+            lockedFields: [],
+            notes: '',
+            coreStory: '',
+            minor: false,
+          }
+          // 新档案本身是"从无到有"：只收白名单字段，不让提案里的任意键污染档案
+          for (const key of [
+            'role', 'faction', 'age', 'appearance', 'personality', 'motivation',
+            'background', 'voice', 'status', 'notes', 'coreStory', 'minor', 'statusChapter',
+            'goals', 'flaws', 'tags', 'aliases', 'arc',
+          ]) {
+            if (raw[key] !== undefined) fresh[key] = raw[key]
+          }
+          fillCharacter(fresh, raw)
+          chars.push(fresh)
+          applied += 1
+          touched.push(name)
+        }
+      }
+      if (applied > 0) {
+        await snapshotLedger(store, ['characters.json', 'memory.json'])
+        await store.writeJSON('characters.json', chars)
+        // memory.aliases：新建/补全的人都要能在画布上找到
+        for (const name of touched) {
+          const c = chars.find((x: any) => String(x?.name ?? '') === name)
+          const names: string[] = Array.isArray(c?.aliases) ? c.aliases.map(String) : []
+          const pos = aliases.findIndex((a: any) => String(a?.canonicalName ?? '') === name)
+          if (pos >= 0) {
+            const cur: string[] = Array.isArray(aliases[pos].aliases) ? aliases[pos].aliases.map(String) : []
+            for (const n of names) if (n && n !== name && !cur.includes(n)) cur.push(n)
+            aliases[pos].aliases = cur
+          } else {
+            aliases.push({ canonicalName: name, aliases: names.filter((n) => n && n !== name) })
+          }
+        }
+        mem['aliases'] = aliases
+        await store.writeJSON('memory.json', mem)
+      }
+      return {
+        applied,
+        message: `人物档案 ${applied}/${incoming.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}`,
+      }
+    }
     case 'relations': {
       const relations: any[] = Array.isArray(payload.relations) ? payload.relations : []
-      const mem = await store.readJSON<Record<string, unknown>>('memory.json', {})
-      const cur = Array.isArray(mem['facts']) ? (mem['facts'] as any[]) : []
-      let added = 0
+      if (relations.length === 0) return { applied: 0, message: '关系提案没有 relations' }
+      const rels = await readArrayChecked(store, 'relations.json')
+      let touched = 0
       const skipped: string[] = []
       for (const r of relations) {
-        const from = String(r.from ?? '').trim()
-        const pred = String(r.predicate ?? '').trim()
-        const to = String(r.to ?? '').trim()
-        if (!from || !pred || !to) { skipped.push('缺 from/predicate/to'); continue }
+        const from = String(r?.from ?? '').trim()
+        const pred = String(r?.predicate ?? '').trim()
+        const to = String(r?.to ?? '').trim()
+        if (!from || !pred || !to) {
+          skipped.push('缺 from/predicate/to')
+          continue
+        }
+        const chapter = Number(r?.chapter) || 0
+        const endChapter = Number(r?.toChapter) || 0
+        if (endChapter !== 0 && endChapter <= chapter) {
+          skipped.push(`${from}-${pred}-${to} 的 toChapter 必须晚于 chapter`)
+          continue
+        }
+        const directed = r?.directed !== false
+        const publicToReader = r?.publicToReader !== false
+        const evidence = String(r?.evidence ?? '')
+        // 方向不同的关系不能合并：A→B 与 B→A 是两条
+        const pos = rels.findIndex((x: any) => {
+          if (x?.directed !== directed) return false
+          const xf = String(x?.from ?? '')
+          const xt = String(x?.to ?? '')
+          return directed ? xf === from && xt === to : (xf === from && xt === to) || (xf === to && xt === from)
+        })
+        const dup =
+          pos >= 0 &&
+          (Array.isArray(rels[pos]?.intervals) ? rels[pos].intervals : []).some(
+            (iv: any) =>
+              String(iv?.label ?? '') === pred &&
+              (chapter === 0 || (Number(iv?.fromChapter) || 0) === chapter),
+          )
+        if (dup) {
+          skipped.push(`${from}-${pred}-${to} 第${chapter}章已在账`)
+          continue
+        }
+        const interval = {
+          fromChapter: chapter,
+          toChapter: endChapter,
+          label: pred,
+          publicToReader,
+          evidence,
+        }
+        if (pos >= 0) {
+          if (!Array.isArray(rels[pos].intervals)) rels[pos].intervals = []
+          rels[pos].intervals.push(interval)
+          normalizeRelation(rels[pos])
+          const last = rels[pos].intervals[rels[pos].intervals.length - 1]
+          if (last) rels[pos].kind = classifyRelation(String(last.label ?? ''))
+        } else {
+          rels.push({
+            id: `rel-${crypto.randomUUID()}`,
+            from,
+            to,
+            intervals: [interval],
+            directed,
+            kind: classifyRelation(pred),
+            note: '',
+          })
+        }
+        touched += 1
+      }
+      if (touched === 0) {
+        return { applied: 0, message: `没有可入账的关系：${skipped.join('、')}` }
+      }
+      // facts 双写：总览维兼容。用严格读，坏 memory.json 不能当空对象覆盖。
+      const mem = await readObjectChecked(store, 'memory.json')
+      const cur = Array.isArray(mem['facts']) ? (mem['facts'] as any[]) : []
+      for (const r of relations) {
+        const from = String(r?.from ?? '').trim()
+        const pred = String(r?.predicate ?? '').trim()
+        const to = String(r?.to ?? '').trim()
+        if (!from || !pred || !to) continue
+        const chapter = Number(r?.chapter) || 0
         const dup = cur.some(
-          (f) => f.subject === from && f.predicate === pred && f.object === to,
+          (f) =>
+            f?.subject === from &&
+            f?.predicate === pred &&
+            f?.object === to &&
+            (Number(f?.fromChapter) || 0) === chapter,
         )
-        if (dup) { skipped.push(`${from}-${pred}-${to} 已在账`); continue }
-        cur.push({
+        if (dup) continue
+        const entry: any = {
           id: crypto.randomUUID(),
           subject: from,
           predicate: pred,
           object: to,
-          fromChapter: Number(r.chapter) || 0,
-          publicToReader: r.publicToReader !== false,
+          fromChapter: chapter,
+          publicToReader: r?.publicToReader !== false,
+          directed: r?.directed !== false,
           source: 'relation',
-          note: String(r.evidence ?? ''),
-        })
-        added += 1
+          note: String(r?.evidence ?? ''),
+        }
+        if (Number(r?.toChapter) > 0) entry.toChapter = Number(r.toChapter)
+        cur.push(entry)
       }
+      await snapshotLedger(store, ['relations.json', 'memory.json'])
+      await store.writeJSON('relations.json', rels)
       mem['facts'] = cur
       await store.writeJSON('memory.json', mem)
-      return { applied: added, message: `人物关系入账 ${added}/${relations.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}` }
+      return {
+        applied: touched,
+        message: `人物关系入账 ${touched}/${relations.length}${skipped.length ? '；跳过：' + skipped.join('、') : ''}`,
+      }
     }
     case 'memoryPack': {
       const chapter = Number(payload.chapter ?? 0)

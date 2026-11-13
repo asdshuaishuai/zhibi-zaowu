@@ -162,7 +162,13 @@ impl Journal {
             return Err("内容未变，未记录".into());
         }
         let before_hash = self.store_blob(before)?;
-        let after_hash = content_hash(after);
+        // 空串是「文件不存在/已清空」的哨兵，不能做内容哈希：
+        // 删除文件（after="")必须能在之后撤销，否则撤销守卫会把它误判成冲突。
+        let after_hash = if after.is_empty() {
+            String::new()
+        } else {
+            content_hash(after)
+        };
         let change = Change {
             id: format!("c{}", uuid_like()),
             ts: now_millis(),
@@ -217,8 +223,16 @@ impl Journal {
         } else {
             content_hash(&current)
         };
-        // 空串含义：那一刻文件不存在。当前也空 → 没有冲突。
-        if actual != change.after_hash {
+        // 空串 after_hash = 那次改动把文件清空/删除；当前只要还是空，就没有冲突。
+        // 非空 after_hash 才做内容哈希比对（作者之后又改过 → Conflict）。
+        if change.after_hash.is_empty() {
+            if !current.is_empty() {
+                return Ok(UndoOutcome::Conflict {
+                    expected: String::new(),
+                    actual,
+                });
+            }
+        } else if actual != change.after_hash {
             return Ok(UndoOutcome::Conflict {
                 expected: change.after_hash,
                 actual,
@@ -518,6 +532,40 @@ mod tests {
         write(&root, "characters.json", "[]");
         assert_eq!(j.undo(&root, &c.id).unwrap(), UndoOutcome::Removed);
         assert!(!root.join("characters.json").exists());
+    }
+
+    #[test]
+    fn undo_restores_a_deleted_file() {
+        // 删除 imports/ 文档记的是 before=原文、after=""；撤销必须能把文件写回来，
+        // 不能被"空串 vs content_hash("")"的比对误判成冲突。
+        let root = tmp_book("delfile");
+        let j = Journal::new(&root);
+        write(&root, "imports/doc.md", "原始材料");
+        let c = j
+            .record(&root, "imports/doc.md", "原始材料", "", &Actor::Author, "remove", "b", "删除")
+            .unwrap();
+        std::fs::remove_file(root.join("imports/doc.md")).unwrap();
+        assert_eq!(j.undo(&root, &c.id).unwrap(), UndoOutcome::Restored);
+        assert_eq!(
+            std::fs::read_to_string(root.join("imports/doc.md")).unwrap(),
+            "原始材料"
+        );
+    }
+
+    #[test]
+    fn undo_of_deleted_file_still_conflicts_if_a_new_file_appeared() {
+        let root = tmp_book("delfile-conflict");
+        let j = Journal::new(&root);
+        write(&root, "imports/doc.md", "旧");
+        let c = j
+            .record(&root, "imports/doc.md", "旧", "", &Actor::Author, "remove", "b", "删除")
+            .unwrap();
+        write(&root, "imports/doc.md", "作者又新建了一份");
+        assert!(matches!(j.undo(&root, &c.id).unwrap(), UndoOutcome::Conflict { .. }));
+        assert_eq!(
+            std::fs::read_to_string(root.join("imports/doc.md")).unwrap(),
+            "作者又新建了一份"
+        );
     }
 
     #[test]

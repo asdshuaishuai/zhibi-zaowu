@@ -243,42 +243,42 @@ pub fn zhibi_presets() -> Vec<PresetSpec> {
             label: "人物",
             order: 1,
             persona: "你负责本书的人物档案：从正文与档案里核对人物信息，补全外貌、性格、动机、背景、目标、缺陷、口吻与弧线，并提出合并/拆分建议。只描述可取证的事实；不确定的标注为待作者确认。开工前先 `skill zhibi-character` 加载作业规程。",
-            deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
+            deny: &["bash", "write", "edit", "plugin_manager", "workflow", "write_ledger", "write_prose"],
         },
         PresetSpec {
             id: "relations",
             label: "关系",
             order: 2,
             persona: "你负责人物关系网：梳理谁与谁之间的关系、关系类型与方向，标注每段关系从第几章成立、到第几章结束、读者是否已知。同一对人物可以有多段不同区间的关系。开工前先 `skill zhibi-relations` 加载作业规程。",
-            deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
+            deny: &["bash", "write", "edit", "plugin_manager", "workflow", "write_ledger", "write_prose"],
         },
         PresetSpec {
             id: "worldline",
             label: "世界线",
             order: 3,
             persona: "你负责世界线推演：从指定节点分叉，沿因果链推演后续，每个节点标注章节与状态。所有推演只写沙盒，不改正典；要进正典必须走提案由作者采纳。开工前先 `skill zhibi-oracle` 加载推演规程。",
-            deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
+            deny: &["bash", "write", "edit", "plugin_manager", "workflow", "write_ledger", "write_prose"],
         },
         PresetSpec {
             id: "oracle",
             label: "预言",
             order: 4,
             persona: "你负责预测与影响分析：按大纲（无大纲则按成稿）向前预测 2-3 个走向，说明每个走向呼应了哪些到期伏笔与设定铁律，并评估影响面（波及几条线、几个设定、最大风险）。开工前先 `skill zhibi-forecast` 加载规程。",
-            deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
+            deny: &["bash", "write", "edit", "plugin_manager", "workflow", "write_ledger", "write_prose"],
         },
         PresetSpec {
             id: "outline",
             label: "大纲伏笔",
             order: 5,
             persona: "你负责大纲、伏笔与设定的整理：对账计划与实际，找出断线、逾期未兑现、烂账，并给出可执行修正。台账的最终落库由作者决定。开工前按任务选规程：`skill zhibi-outline-sync` 对账、`skill zhibi-inventory` 盘伏笔、`skill zhibi-canon-classify` 归类设定。",
-            deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
+            deny: &["bash", "write", "edit", "plugin_manager", "workflow", "write_ledger", "write_prose"],
         },
         PresetSpec {
             id: "reviewer",
             label: "校审",
             order: 6,
             persona: "你是校审员：只查客观错误（连续性矛盾、设定违背、伏笔合同未兑现、物理不可能、动机断裂），不评文风好坏，不代改正文。开工前按任务选规程：`skill zhibi-audit` 全书连贯性、`skill zhibi-validate` 单章验收、`skill zhibi-deslop` 去 AI 味。",
-            deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
+            deny: &["bash", "write", "edit", "plugin_manager", "workflow", "write_ledger", "write_prose"],
         },
     ]
 }
@@ -512,11 +512,15 @@ fn takeover_line(book: &BookPreset) -> Option<String> {
         return None;
     }
     Some(format!(
-        "本书另有一位专属助手「{}」（subagent agentPreset=book）：上面列出的所有写作任务\
+        "本书另有一位专属助手「{}」（subagent agent_preset=book）：上面列出的所有写作任务\
          都优先派给它，它了解本书的术语与口味；只有纯工具性的杂活你自己做。",
         book.name
     ))
 }
+
+/// 极简模式的主 Agent 提示：没有子 Agent，不要按路由表派活。
+const MINIMAL_PROMPT: &str = "当前是极简模式：没有子 Agent，所有工作由你自己完成；\
+产出仍只走 propose_* 工具登记为提案，不要尝试派活，也不要假装已经派出去了。";
 
 impl DshClient {
     /// 包内运行时定位：.app/Contents/Resources/runtime/{node/bin/node, dsh/lib/bin.js}。
@@ -615,16 +619,28 @@ impl DshClient {
     /// 能派，主 Agent 自己永远不知道该派谁。
     ///
     /// 解法：把两段文本在 Rust 侧拼好，写成最后加载的一层覆盖。
-    fn persona_merge_patch(home: &std::path::Path, pack: Option<&str>) -> Option<String> {
+    ///
+    /// 极简模式没有子 Agent：这里换成"自己干"的短提示，不能把派活路由表塞进去。
+    fn persona_merge_patch(
+        home: &std::path::Path,
+        pack: Option<&str>,
+        mode: AgentMode,
+    ) -> Option<String> {
         let pack_persona = pack
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|t| extract_persona_prefix(&t));
-        let takeover = read_book_preset(home).as_ref().and_then(takeover_line);
-        // 没有能力包也没有接管提示时不用写：mode patch 里的路由表已经生效。
+        let (routing, takeover) = if mode == AgentMode::Minimal {
+            (MINIMAL_PROMPT.to_string(), None)
+        } else {
+            (
+                crate::capabilities::routing_hint(),
+                read_book_preset(home).as_ref().and_then(takeover_line),
+            )
+        };
+        // 没有能力包也没有接管提示时不用写：mode patch 里的提示已经生效。
         if pack_persona.is_none() && takeover.is_none() {
             return None;
         }
-        let routing = crate::capabilities::routing_hint();
         let merged = compose_persona(
             pack_persona.as_deref().unwrap_or(""),
             &routing,
@@ -697,6 +713,8 @@ impl DshClient {
                 "edit",
                 "plugin_manager",
                 "workflow",
+                "write_ledger",
+                "write_prose",
                 "web_fetch",
                 "web_search",
             ];
@@ -833,10 +851,18 @@ impl DshClient {
         // 判断依据必须是明确的"什么任务 → 派给谁"，不能靠模型从 Agent 名字猜。
         // 这段不进 patch 的话，主 Agent 会倾向于自己硬做（它有全部工具），
         // 结果就是"专属 Agent 形同虚设"。
+        //
+        // 极简模式没有子 Agent：不能注入派活路由表，否则模型会去调一个已被
+        // disabled 的 tool-subagent，或者假装派了活。
+        let routing = if mode == AgentMode::Minimal {
+            MINIMAL_PROMPT.to_string()
+        } else {
+            crate::capabilities::routing_hint()
+        };
         lines.push("- id: system-prompt".into());
         lines.push("  config:".into());
         lines.push("    personaPrefix: >-".into());
-        for line in crate::capabilities::routing_hint().lines() {
+        for line in routing.lines() {
             if line.trim().is_empty() {
                 continue;
             }
@@ -847,8 +873,11 @@ impl DshClient {
         //
         // 必须和上面的路由表合并成**一条** `- id: system-prompt`：patch 是
         // 按 id 覆盖的，写两段后面那段会把前面整段吃掉（路由表就没了）。
-        if let Some(line) = book.as_ref().and_then(takeover_line) {
-            lines.push(format!("      {line}"));
+        // 极简模式没有子 Agent，接管提示也不写。
+        if mode != AgentMode::Minimal {
+            if let Some(line) = book.as_ref().and_then(takeover_line) {
+                lines.push(format!("      {line}"));
+            }
         }
 
         // 预设注册表 + 每个专属 Agent 一行。
@@ -949,7 +978,7 @@ impl DshClient {
             args.push(patch.clone());
         }
         if !mode_override {
-            if let Some(patch) = Self::persona_merge_patch(&home, pack.as_deref()) {
+            if let Some(patch) = Self::persona_merge_patch(&home, pack.as_deref(), mode) {
                 args.push("--patch".into());
                 args.push(patch);
             }
@@ -1604,7 +1633,7 @@ mod tests {
             "- id: system-prompt\n  config:\n    personaPrefix: >-\n      PACK_PERSONA_LINE\n",
         )
         .unwrap();
-        let out = DshClient::persona_merge_patch(&home, Some(pack.to_str().unwrap()))
+        let out = DshClient::persona_merge_patch(&home, Some(pack.to_str().unwrap()), AgentMode::Managed)
             .expect("应生成合并层");
         let yml = std::fs::read_to_string(out).unwrap();
         assert!(yml.contains("- id: system-prompt"));
@@ -1612,8 +1641,27 @@ mod tests {
         assert!(yml.contains("PACK_PERSONA_LINE"));
         assert!(yml.contains("人物"), "路由表要合并进来");
         // 文件已存在时覆盖写，不追加——否则重启后 persona 会重复叠加
-        let again = DshClient::persona_merge_patch(&home, Some(pack.to_str().unwrap())).unwrap();
+        let again = DshClient::persona_merge_patch(&home, Some(pack.to_str().unwrap()), AgentMode::Managed).unwrap();
         let yml2 = std::fs::read_to_string(again).unwrap();
         assert_eq!(yml, yml2);
+    }
+
+    #[test]
+    fn minimal_mode_does_not_inject_subagent_routing() {
+        let home = tmp_home("minimal-routing");
+        let pack = home.join("pack.patch.yml");
+        std::fs::write(
+            &pack,
+            "- id: system-prompt\n  config:\n    personaPrefix: >-\n      PACK_PERSONA_LINE\n",
+        )
+        .unwrap();
+        let yml = make_patch_with(AgentMode::Minimal, &home);
+        assert!(yml.contains("极简模式"), "极简提示要进 patch：{yml}");
+        assert!(!yml.contains("agent_preset=character"), "极简模式不能注入派活路由表");
+        let merged = DshClient::persona_merge_patch(&home, Some(pack.to_str().unwrap()), AgentMode::Minimal)
+            .expect("应生成合并层");
+        let yml2 = std::fs::read_to_string(merged).unwrap();
+        assert!(yml2.contains("极简模式"));
+        assert!(!yml2.contains("agent_preset=character"), "合并层也不能复活路由表");
     }
 }

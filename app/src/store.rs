@@ -666,15 +666,20 @@ mod tests {
         let (home, _guard) = use_home("import");
         let dir = create_project("导入测试").unwrap();
         let handle = ProjectHandle::open(&dir).unwrap();
-        let src = std::path::Path::new("/tmp/import-test");
-        if src.exists() {
-            let (d, c) = handle.import_dir(src).unwrap();
-            assert_eq!(d, 1, "应识别一个章节文件");
-            assert_eq!(c, 1, "应识别一个设定文件");
-            let props = handle.proposals();
-            assert_eq!(props.len(), 2);
-            assert!(props.iter().any(|p| p.payload.get("kind").and_then(|k| k.as_str()) == Some("draft")));
-        }
+        // 自建夹具：不依赖 /tmp/import-test 这类环境残留（否则测试会假失败）。
+        let src = std::env::temp_dir().join(format!("zhibi-import-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("第01章.md"), "第1章 风起\n\n他推门而入。").unwrap();
+        std::fs::write(src.join("设定-世界观.md"), "大陆叫云洲，灵气三十年一涨。").unwrap();
+
+        let (d, c) = handle.import_dir(&src).unwrap();
+        assert_eq!(d, 1, "应识别一个章节文件");
+        assert_eq!(c, 1, "应识别一个设定文件");
+        let props = handle.proposals();
+        assert_eq!(props.len(), 2);
+        assert!(props.iter().any(|p| p.payload.get("kind").and_then(|k| k.as_str()) == Some("draft")));
+        let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1078,7 +1083,7 @@ mod tests {
         let dir = create_project("关系测试").unwrap();
         let h = ProjectHandle::open(&dir).unwrap();
         let payload = serde_json::json!({ "kind": "relations", "relations": [
-            { "from": "沈砚", "predicate": "师从", "to": "老周", "chapter": 7, "publicToReader": true },
+            { "from": "沈砚", "predicate": "师从", "to": "老周", "chapter": 7, "toChapter": 19, "directed": true, "publicToReader": true },
             { "from": "钱九渊", "predicate": "敌对", "to": "沈砚", "chapter": 20 }
         ]});
         let (n, _) = h.apply_payload(&payload).unwrap();
@@ -1094,8 +1099,15 @@ mod tests {
         let mentor = rels.iter().find(|r| r.from == "沈砚" && r.to == "老周").unwrap();
         assert_eq!(mentor.intervals.len(), 1);
         assert_eq!(mentor.intervals[0].from_chapter, 7);
+        assert_eq!(mentor.intervals[0].to_chapter, 19, "终点章必须落库");
+        assert!(mentor.directed, "师从是有向关系");
         assert_eq!(mentor.intervals[0].label, "师从");
         assert_eq!(mentor.kind, "师承", "着色分类由谓词得出");
+        // 终点早于起点必须拒绝，不能落成倒挂区间
+        let bad = h.apply_payload(&serde_json::json!({ "kind": "relations", "relations": [
+            { "from": "甲", "predicate": "同乡", "to": "乙", "chapter": 10, "toChapter": 5 }
+        ]})).unwrap_err();
+        assert!(bad.contains("toChapter"), "{bad}");
         // 幂等：同边重复采纳不重复入账
         let (n2, sk) = h.apply_payload(&serde_json::json!({ "kind": "relations", "relations": [
             { "from": "沈砚", "predicate": "师从", "to": "老周" }
@@ -2276,10 +2288,25 @@ impl ProjectHandle {
                         continue;
                     }
                     let chapter = r.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                    let end_chapter = r.get("toChapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                    // 终点必须晚于起点（0 = 至今）；AI 写反了不能落成倒挂区间。
+                    if end_chapter != 0 && end_chapter <= chapter {
+                        skipped.push(format!("{from}-{pred}-{to} 的 toChapter 必须晚于 chapter"));
+                        continue;
+                    }
+                    let directed = r.get("directed").and_then(|b| b.as_bool()).unwrap_or(true);
                     let public = r.get("publicToReader").and_then(|b| b.as_bool()).unwrap_or(true);
                     let evidence = r.get("evidence").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // 方向不同的关系不能合并：A→B 的「师从」和 B→A 的「师从」是两条。
                     let pos = list.iter().position(|x| {
-                        (x.from == from && x.to == to) || (x.from == to && x.to == from)
+                        if x.directed != directed {
+                            return false;
+                        }
+                        if directed {
+                            x.from == from && x.to == to
+                        } else {
+                            (x.from == from && x.to == to) || (x.from == to && x.to == from)
+                        }
                     });
                     let dup = pos
                         .map(|i| {
@@ -2296,7 +2323,7 @@ impl ProjectHandle {
                     }
                     let interval = crate::relations::Interval {
                         from_chapter: chapter,
-                        to_chapter: 0,
+                        to_chapter: end_chapter,
                         label: pred.clone(),
                         public_to_reader: public,
                         evidence,
@@ -2313,7 +2340,7 @@ impl ProjectHandle {
                         }
                         None => {
                             let mut rel = crate::relations::Relation::new(&from, &to, &crate::relations::classify(&pred));
-                            rel.directed = false;
+                            rel.directed = directed;
                             rel.intervals.push(interval);
                             list.push(rel);
                         }
@@ -2340,24 +2367,38 @@ impl ProjectHandle {
                     if from.is_empty() || pred.is_empty() || to.is_empty() {
                         continue;
                     }
+                    let chapter = r.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0);
+                    // 与 memoryPack 同口径：三元组 + 生效章去重。同一对人物在不同章
+                    // 的同一谓词是两段历史，facts 也要留下两个点。
                     let dup = cur.iter().any(|f| {
                         f.get("subject").and_then(|v| v.as_str()) == Some(from.as_str())
                             && f.get("predicate").and_then(|v| v.as_str()) == Some(pred.as_str())
                             && f.get("object").and_then(|v| v.as_str()) == Some(to.as_str())
+                            && f.get("fromChapter").and_then(|v| v.as_u64()) == Some(chapter)
                     });
                     if dup {
                         continue;
                     }
-                    cur.push(serde_json::json!({
+                    let mut entry = serde_json::json!({
                         "id": uuid_like(),
                         "subject": from,
                         "predicate": pred,
                         "object": to,
-                        "fromChapter": r.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0),
+                        "fromChapter": chapter,
                         "publicToReader": r.get("publicToReader").and_then(|b| b.as_bool()).unwrap_or(true),
                         "source": "relation",
                         "note": r.get("evidence").and_then(|v| v.as_str()).unwrap_or(""),
-                    }));
+                    });
+                    if let Some(obj) = entry.as_object_mut() {
+                        if let Some(end) = r.get("toChapter").and_then(|c| c.as_u64()).filter(|c| *c > 0) {
+                            obj.insert("toChapter".into(), serde_json::json!(end));
+                        }
+                        obj.insert(
+                            "directed".into(),
+                            serde_json::json!(r.get("directed").and_then(|b| b.as_bool()).unwrap_or(true)),
+                        );
+                    }
+                    cur.push(entry);
                 }
                 mem["facts"] = serde_json::json!(cur);
                 write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)?;

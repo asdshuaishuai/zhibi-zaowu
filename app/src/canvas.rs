@@ -170,6 +170,8 @@ pub struct CanvasPanel {
     rel_to: Entity<InputState>,
     rel_label: Entity<InputState>,
     rel_from: Entity<InputState>,
+    /// 终点章（0/空 = 至今）。关系演变要靠它收束上一段，不能只写起点。
+    rel_to_chapter: Entity<InputState>,
 }
 
 /// 侧板里的小节标题（比 sec_title 更紧凑，面板已经很小）。
@@ -192,6 +194,7 @@ impl CanvasPanel {
         let rel_to = cx.new(|c| InputState::new(window, c).placeholder("对方人名"));
         let rel_label = cx.new(|c| InputState::new(window, c).placeholder("关系：师从/敌对/结义…"));
         let rel_from = cx.new(|c| InputState::new(window, c).placeholder("起始章"));
+        let rel_to_chapter = cx.new(|c| InputState::new(window, c).placeholder("终点章（留空=至今）"));
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             dim: Dim::Overview,
@@ -217,6 +220,7 @@ impl CanvasPanel {
             rel_to,
             rel_label,
             rel_from,
+            rel_to_chapter,
         };
         this.refresh();
         this
@@ -1647,6 +1651,7 @@ impl Render for CanvasPanel {
                             .child(div().child(Input::new(&self.rel_to)))
                             .child(div().child(Input::new(&self.rel_label)))
                             .child(div().child(Input::new(&self.rel_from)))
+                            .child(div().child(Input::new(&self.rel_to_chapter)))
                             .child(
                                 div()
                                     .id("rel-add")
@@ -1674,6 +1679,16 @@ impl Render for CanvasPanel {
                                             .trim()
                                             .parse()
                                             .unwrap_or(0);
+                                        let end: u32 = this
+                                            .rel_to_chapter
+                                            .read(cx)
+                                            .value()
+                                            .trim()
+                                            .parse()
+                                            .unwrap_or(0);
+                                        if end != 0 && end <= from {
+                                            return; // 终点必须晚于起点（0 = 至今）
+                                        }
                                         let me = match this.sel.last() {
                                             Some(&i) => this.nodes[i].label.clone(),
                                             None => return,
@@ -1688,7 +1703,7 @@ impl Render for CanvasPanel {
                                         .unwrap_or_default();
                                         let iv = crate::relations::Interval {
                                             from_chapter: from,
-                                            to_chapter: 0,
+                                            to_chapter: end,
                                             label: label.clone(),
                                             // 作者亲手建的关系默认读者可见；暗线由 AI 提案或后续编辑标记
                                             public_to_reader: true,

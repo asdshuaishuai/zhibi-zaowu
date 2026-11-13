@@ -25,7 +25,7 @@ whenToUse: 作者要给"接下来怎么写"找出路。
 
 ## 有纲按纲，无纲按势
 
-- 本书有明确大纲（`storylines` 的 `plannedPayoffChapter` 等）→ **以大纲为准**。预测是把大纲往前推，不是另起炉灶。
+- 本书有明确大纲（`storylines` 的 `status` / `isThroughLine`、`events.json` 里已排章的事件）→ **以大纲为准**。预测是把大纲往前推，不是另起炉灶。
 - 没有大纲 → 纯按已成稿预测：看哪些伏笔快到期、哪条线断了、人物的 `goals` 现在指向什么。
 
 ## 铁律

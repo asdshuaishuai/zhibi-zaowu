@@ -38,6 +38,14 @@ pub enum EditorEvent {
     DismissBranches,
 }
 
+/// 一张走向卡。`label` 只用于卡面标题，`text` 才是采纳后并入正文的正文本身——
+/// 两者分开，正文里就不会混进「【复仇线】」这种给眼睛看的标签。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BranchCard {
+    pub label: String,
+    pub text: String,
+}
+
 pub struct EditorPanel {
     focus_handle: FocusHandle,
     /// 当前章正文（Workspace 持有同一 Entity，用于读写与保存）
@@ -50,7 +58,7 @@ pub struct EditorPanel {
     pub notes: Entity<InputState>,
     last_saved: String,
     /// 分支卡（原型三选一）：AI 产出的走向列表，采纳一个即并入正文
-    pub branches: Vec<String>,
+    pub branches: Vec<BranchCard>,
     /// 选区状态（kit 无 SelectionChanged 事件 → 220ms 轮询 selected_text 回填）
     has_sel: bool,
     sel_chars: usize,
@@ -115,7 +123,7 @@ impl EditorPanel {
 }
 
 impl EditorPanel {
-    pub fn set_branches(&mut self, branches: Vec<String>, cx: &mut Context<Self>) {
+    pub fn set_branches(&mut self, branches: Vec<BranchCard>, cx: &mut Context<Self>) {
         self.branches = branches;
         cx.notify();
     }
@@ -527,19 +535,13 @@ impl Render for EditorPanel {
                 )
             } else {
                 let mut cards = Vec::new();
-                for (ix, body) in branches.iter().enumerate() {
-                    let name = body
-                        .chars()
-                        .take_while(|c| *c != '】' && *c != '\n')
-                        .collect::<String>()
-                        .trim_start_matches('【')
-                        .to_string();
-                    let preview = body.chars().skip(0).collect::<String>();
-                    let preview: String = preview
-                        .chars()
-                        .skip(name.chars().count() + 1)
-                        .take(130)
-                        .collect();
+                for (ix, card) in branches.iter().enumerate() {
+                    let label = if card.label.trim().is_empty() {
+                        format!("走向 {}", (b'A' + ix as u8) as char)
+                    } else {
+                        card.label.clone()
+                    };
+                    let preview: String = card.text.chars().take(130).collect();
                     let adopt_ix = ix;
                     cards.push(
                         div()
@@ -559,11 +561,7 @@ impl Render for EditorPanel {
                                     .text_size(theme::FONT_SMALL)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::ACCENT())
-                                    .child(SharedString::from(if name.is_empty() {
-                                        format!("走向 {}", (b'A' + ix as u8) as char)
-                                    } else {
-                                        name
-                                    })),
+                                    .child(SharedString::from(label)),
                             )
                             .child(
                                 div()

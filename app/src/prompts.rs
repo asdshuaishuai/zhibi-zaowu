@@ -128,7 +128,7 @@ pub fn knowledge_split_task(doc: &str, chars: usize) -> String {
         "知识库拆分：书目录 imports/{doc} 是作者导入的一篇原始材料（约 {chars} 字）。\n\
          先 `skill zhibi-import-extract` 加载规程并照做，本次**只处理这一篇**：\n\
          通读后按内容拆分提取（人物/关系/设定/伏笔/大纲），逐类分派给对应专属 Agent\n\
-         （subagent，agentPreset=character/relations/outline），全部产出走提案。铁律：\n\
+         （subagent，agent_preset=character/relations/outline），全部产出走提案。铁律：\n\
          只提取不创作；矛盾不上秤（两条都出并注明冲突）；源文档保留在知识库\n\
          不删除、不改写。长文分段读，不要一次读完整篇就下结论。\n\
          完成后汇总拆出了哪些类、各多少条提案。{BASIS_RULE}"
@@ -143,10 +143,10 @@ pub fn knowledge_split_task(doc: &str, chars: usize) -> String {
 pub fn import_extract_task(doc_count: usize) -> String {
     format!(
         "设定提取：书目录 imports/ 下有 {doc_count} 篇作者导入的原始材料（INDEX.md 有清单）。\n\
-         通读后按内容分类提取，**逐类分派给对应专属 Agent**（subagent，agentPreset 参数）：\n\
-         - 人物档案（外貌/性格/动机/口吻）→ agentPreset=character\n\
-         - 人物关系（谁与谁、从第几章）→ agentPreset=relations\n\
-         - 世界设定/伏笔/大纲故事线 → agentPreset=outline\n\
+         通读后按内容分类提取，**逐类分派给对应专属 Agent**（subagent，agent_preset 参数）：\n\
+         - 人物档案（外貌/性格/动机/口吻）→ agent_preset=character\n\
+         - 人物关系（谁与谁、从第几章）→ agent_preset=relations\n\
+         - 世界设定/伏笔/大纲故事线 → agent_preset=outline\n\
          一篇材料可能同时出多类产出，就分派多次。铁律：\n\
          1. 所有产出一律走提案工具，由作者在收件箱裁决；你不写任何台账或正文。\n\
          2. 材料里没有的不要编——提取只能基于原文，拿不准就跳过并在汇总里列出。\n\

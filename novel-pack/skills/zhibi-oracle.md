@@ -13,8 +13,10 @@ whenToUse: 作者在预言书写了一句"如果……"，要让 AI 推演这条
 ## 流程
 
 1. `get_world_state` 读正典图：故事线、事件、人物、伏笔、设定。
-2. `propose_worldline` 开一条新线（自动取 β/γ/…，带 parentId 与 forkNode）。
-3. `simulate_worldline` 写入推演结果。
+2. **先看宿主有没有已经建好线**。作者从「从此处再分叉」或预言书发起时，宿主会先调 `fork_at_chapter` 建好 β/γ…，血缘（parentId / forkNode / forkedChapter）由宿主写。任务书里给了线 id 就直接用它。
+   - 只有宿主没建线时，才由你调 `propose_worldline` 开一条。它的参数只有 `name` / `premise` / `forkedChapter` / `kind`，**没有** `parentId`、`forkNode`——别编这两个字段。
+   - 宿主已建线还再开一条，结果是树上多出一条无血缘的野线；作者会看到两条。
+3. `simulate_worldline` 往这条线里写入推演结果。
 
 ## 推演要够深
 
@@ -35,7 +37,11 @@ whenToUse: 作者在预言书写了一句"如果……"，要让 AI 推演这条
 
 ## 节点
 
-每个节点带 `chapter`（真实章节落点，不是相对位置）、`label`（一句话）、`note`（可选的细节）、`state`（planned / written / branch-only）。
+每个节点带 `chapter`（真实章节落点，不是相对位置）、`label`（一句话）、`note`（可选的细节）、`state`（`planned` / `adopted` / `written` / `branch-only`）。
+
+- 推演出来的节点一律是 `planned`（计划），不要自己填 `written`。
+- `adopted` = 作者已采纳、等正文写到这里；`written` = 正文已写到该章。这两个状态由宿主与采纳流程推进，不由推演决定。
+- 重推演会按节点 id 保留旧的 `chapter/state/note`，省略字段不会清空状态。
 
 `label` 要能被作者一眼读懂，不要写"事件A""节点1"。
 

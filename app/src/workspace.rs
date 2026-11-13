@@ -1,4 +1,4 @@
-//! 工作区：标题栏 + [侧栏(真章节树) | DockArea(编辑器 + 右侧轨迹)] + 状态条。
+//! 工作区：标题栏 + [侧栏(分组导航) | DockArea(编辑器 + 右侧轨迹)] + 状态条。
 //! 职责：项目句柄、章节切换与正文保存、DSH 生命周期与事件分发。
 
 use anyhow::Result;
@@ -209,6 +209,7 @@ const NAV_GROUPS: &[(&str, &[Mode])] = &[
             Mode::Knowledge,
             Mode::Import,
             Mode::Snapshots,
+            Mode::Journal,
             Mode::BookInfo,
         ],
     ),
@@ -348,7 +349,7 @@ pub struct Workspace {
     bookinfo_view: Entity<BookInfoPanel>,
     chat: Entity<ChatPanel>,
     /// 分支卡数据（与 EditorPanel 同步；采纳读这里）
-    branches: Vec<String>,
+    branches: Vec<crate::editor::BranchCard>,
     toast: Option<SharedString>,
     toast_seq: u64,
     mode: Mode,
@@ -426,7 +427,17 @@ impl Workspace {
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "main".into())
         );
-        let book_auth = crate::journal::BookAuth::load(&root);
+        let mut book_auth = crate::journal::BookAuth::load(&root);
+        // 书内 zhibi-auth.json 是唯一事实源。第一次打开且没有它时，把设置里的
+        // 默认档位落下来——否则界面按 BookAuth 显示「辅助」，DSH 却按 settings
+        // 注入 ZHIBI_WRITE_MODE，两处权限会分叉。
+        if !root.join("zhibi-auth.json").exists() {
+            let settings_mode = crate::store::load_settings().writing_mode;
+            if !settings_mode.trim().is_empty() {
+                book_auth.writing_mode = settings_mode;
+                let _ = book_auth.save(&root);
+            }
+        }
         let mut chapters = handle.chapters();
         // 默认落到最近一章（有正文的最后一章），没有则建第 1 章
         let chapter = chapters
@@ -1740,10 +1751,10 @@ impl Workspace {
                     this.on_send(task, cx);
                 }
                 EditorEvent::AdoptBranch(ix) => {
-                    if let Some(body) = this.branches.get(*ix).cloned() {
+                    if let Some(card) = this.branches.get(*ix).cloned() {
                         let _ = this.handle.snapshot_prose(this.chapter);
-                        // branches 里存的就是走向正文（工具参数直接给），无需再剥前缀
-                        let content = body.clone();
+                        // 只并入正文，label 留在卡面上——正文不该出现标签。
+                        let content = card.text;
                         let cur = this.prose.read(cx).value().to_string();
                         let sep = if cur.is_empty() || cur.ends_with('\n') { "" } else { "\n\n" };
                         let next = format!("{cur}{sep}{content}");
@@ -2831,17 +2842,24 @@ impl Workspace {
     fn on_card_tool(&mut self, name: &str, args: &Value, cx: &mut Context<Self>) {
         match name {
             "offer_branches" => {
-                let branches: Vec<String> = args
+                let branches: Vec<crate::editor::BranchCard> = args
                     .get("branches")
                     .and_then(|b| b.as_array())
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|b| {
-                                // 只存正文：标签/情绪由工具参数单独给出，
-                                // 采纳时不需要再从字符串里剥前缀。
-                                b.get("text")
-                                    .and_then(|t| t.as_str())
-                                    .map(|t| t.to_string())
+                                // 标题与正文分开存：label 只上卡面，text 才是并入正文的内容。
+                                // 这样 author 采纳后正文里不会出现「【复仇线】」这种标签。
+                                let text = b.get("text").and_then(|t| t.as_str())?.to_string();
+                                if text.trim().is_empty() {
+                                    return None;
+                                }
+                                let label = b
+                                    .get("label")
+                                    .and_then(|l| l.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                Some(crate::editor::BranchCard { label, text })
                             })
                             .collect()
                     })

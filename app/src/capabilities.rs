@@ -233,7 +233,7 @@ pub fn agent(id: &str) -> Option<&'static AgentSpec> {
 /// 写成"什么任务 → 派给谁"的形式，比列一串 Agent 名字有用得多：
 /// 模型执行的是匹配任务类型，不是理解组织架构。
 pub fn routing_hint() -> String {
-    let mut out = String::from("## 专属 Agent\n\n写作类任务派给对应子 Agent（subagent 的 agentPreset 参数），不要自己硬做：\n");
+    let mut out = String::from("## 专属 Agent\n\n写作类任务派给对应子 Agent（subagent 的 agent_preset 参数），不要自己硬做：\n");
     for a in AGENTS {
         out.push_str(&format!("- `{}`（{}）：{}\n", a.id, a.label, a.duty));
     }
@@ -258,7 +258,7 @@ pub fn bulk_task(agent_id: &str, capability_key: &str) -> Option<String> {
     let a = agent(agent_id)?;
     let cap = a.bulk.iter().find(|c| c.key == capability_key)?;
     Some(format!(
-        "让「{}」子 Agent 做这件事（subagent，agentPreset={}）：{}。\n\
+        "让「{}」子 Agent 做这件事（subagent，agent_preset={}）：{}。\n\
          你自己不要动手，等它返回后用一段话转述结论与产出的提案数。",
         a.label, a.id, cap.hint
     ))
@@ -273,7 +273,7 @@ pub fn targeted_task(agent_id: &str, op_key: &str, target: &str) -> Option<Strin
     let a = agent(agent_id)?;
     let op = a.targeted.iter().find(|o| o.key == op_key)?;
     Some(format!(
-        "让「{}」子 Agent 做这件事（subagent，agentPreset={}）：对{}执行「{}」。\n\
+        "让「{}」子 Agent 做这件事（subagent，agent_preset={}）：对{}执行「{}」。\n\
          只处理这一个对象，不要顺带改动别的。等它返回后转述结论。",
         a.label, a.id, target, op.label
     ))
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn bulk_task_names_the_preset_and_forbids_improvising() {
         let t = bulk_task("character", "char-bulk-fill").unwrap();
-        assert!(t.contains("agentPreset=character"), "必须点名 preset");
+        assert!(t.contains("agent_preset=character"), "必须点名 preset");
         assert!(t.contains("人物"), "要带中文名，模型才认得出");
         assert!(t.contains("不要动手"), "要明确禁止主 Agent 自己干");
         assert!(t.contains("提案"), "产出形态要写清");
@@ -343,7 +343,7 @@ mod tests {
         let t = targeted_task("character", "char-fill", "人物：沈砚（ch-3f2a）").unwrap();
         assert!(t.contains("沈砚"), "对象描述要原样带上");
         assert!(t.contains("只处理这一个对象"), "指定对象操作不能扩散到别的对象");
-        assert!(t.contains("agentPreset=character"));
+        assert!(t.contains("agent_preset=character"));
     }
 
     #[test]

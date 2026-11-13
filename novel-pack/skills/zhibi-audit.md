@@ -24,6 +24,11 @@ whenToUse: 全书通读前，或大改之后。
 
 ## 落库
 
-用 `propose_clue_fixes` 提案。只报告，不代改。
+分两类走：
+
+- **伏笔台账本身的错**（状态不对、埋设章错、该回收没回收）→ `propose_clue_fixes`。
+- **其余连贯性硬伤**（死者复出、位置跳跃、人称漂移、时间线倒挂）→ `propose_validation` 的 `findings`，每条 `kind` / `location` / `evidence` / `suggestion`。报告只读，不改正文。
+
+两类都只报告，不代改。正文修订由作者决定；需要改写建议时另走 `offer_rewrite`。
 
 提案须给出依据来源（引用既有伏笔/设定/事实编号）。
