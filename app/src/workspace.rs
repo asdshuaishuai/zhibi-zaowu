@@ -32,9 +32,10 @@ use crate::store::{self, ProjectHandle};
 use crate::theme;
 use crate::trajectory::{TrajEvent, TrajKind, TrajectoryPanel};
 use crate::views::{
-    CanonPanel, CharactersPanel, CluesPanel, GraphPanel, ImportEvent, ImportPanel,
-    CharacterEvent, JournalEvent, JournalPanel, KnowledgeEvent, MemoryPanel,
-    OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel, StatsPanel, ViewEvent,
+    CanonPanel, ChaptersEvent, ChaptersPanel, CharactersPanel, CluesPanel, GraphPanel,
+    ImportEvent, ImportPanel, CharacterEvent, JournalEvent, JournalPanel, KnowledgeEvent,
+    MemoryPanel, OutlinePanel, SettingsEvent, SettingsPanel, SnapEvent, SnapshotsPanel,
+    StatsPanel, ViewEvent,
 };
 
 gpui_kit::actions!(zhibi, [SaveProse, ToggleFocusMode, BranchesNow]);
@@ -73,6 +74,8 @@ pub struct QuestionRequest {
 #[derive(PartialEq, Clone, Copy)]
 pub enum Mode {
     Editor,
+    /// 全书章节总览（原侧栏平铺列表搬到这里）。
+    Chapters,
     Outline,
     Canon,
     Memory,
@@ -97,7 +100,8 @@ impl Mode {
     pub(crate) fn from_key(k: &str) -> Option<Mode> {
         let k = k.trim().to_ascii_lowercase();
         Some(match k.as_str() {
-            "editor" | "章节" => Mode::Editor,
+            "editor" | "写作" | "稿纸" => Mode::Editor,
+            "chapters" | "章节" | "章目" => Mode::Chapters,
             "outline" | "大纲" => Mode::Outline,
             "canon" | "设定" => Mode::Canon,
             "memory" | "记忆" => Mode::Memory,
@@ -124,7 +128,8 @@ impl Mode {
 
     fn label(&self) -> &'static str {
         match self {
-            Mode::Editor => "章节",
+            Mode::Editor => "写作",
+            Mode::Chapters => "章节",
             Mode::Outline => "大纲 · 时间线",
             Mode::Canon => "设定",
             Mode::Memory => "记忆中枢",
@@ -149,6 +154,7 @@ impl Mode {
     fn icon(&self) -> IconName {
         match self {
             Mode::Editor => IconName::SquarePen,
+            Mode::Chapters => IconName::BookOpenText,
             Mode::Outline => IconName::ScrollText,
             Mode::Canon => IconName::BookMarked,
             Mode::Memory => IconName::Brain,
@@ -172,24 +178,41 @@ impl Mode {
 }
 
 /// 侧栏导航顺序（与原实现一致，只是改为数据表以便统一出行）。
-const NAV: [Mode; 17] = [
-    Mode::Editor,
-    Mode::Outline,
-    Mode::Canon,
-    Mode::Memory,
-    Mode::Stats,
-    Mode::Clues,
-    Mode::Characters,
-    Mode::Canvas,
-    Mode::Director,
-    Mode::Worldline,
-    Mode::Oracle,
-    Mode::BookInfo,
-    Mode::Graph,
-    Mode::Snapshots,
-    Mode::Import,
-    Mode::Knowledge,
-    Mode::Settings,
+/// 侧栏导航：按栏目分组。章节是全书骨架，单列一个页面，不再平铺在侧栏。
+const NAV_GROUPS: &[(&str, &[Mode])] = &[
+    (
+        "写作",
+        &[
+            Mode::Editor,
+            Mode::Chapters,
+            Mode::Outline,
+            Mode::Canon,
+            Mode::Clues,
+            Mode::Characters,
+        ],
+    ),
+    (
+        "世界",
+        &[
+            Mode::Canvas,
+            Mode::Director,
+            Mode::Worldline,
+            Mode::Oracle,
+            Mode::Graph,
+        ],
+    ),
+    (
+        "资料",
+        &[
+            Mode::Memory,
+            Mode::Stats,
+            Mode::Knowledge,
+            Mode::Import,
+            Mode::Snapshots,
+            Mode::BookInfo,
+        ],
+    ),
+    ("系统", &[Mode::Settings]),
 ];
 
 /// 颜色 token 是 `Rgba` 函数（theme.rs 约定），组件库色位要 `Hsla`：Rgba: Into<Hsla>。
@@ -308,6 +331,8 @@ pub struct Workspace {
     outline_view: Entity<OutlinePanel>,
     memory_view: Entity<MemoryPanel>,
     stats_view: Entity<StatsPanel>,
+    /// 全书章节总览（侧栏只留导航，章节不再平铺）。
+    chapters_view: Entity<ChaptersPanel>,
     clues_view: Entity<CluesPanel>,
     characters_view: Entity<CharactersPanel>,
     settings_view: Entity<SettingsPanel>,
@@ -457,10 +482,32 @@ impl Workspace {
         )
         .detach();
 
+        // 章节总览：点卡进稿纸 / 新建章。页面只读磁盘，切章仍走工作区唯一入口。
         let canon_view = cx.new(|cx| CanonPanel::new(cx, handle.clone()));
         let outline_view = cx.new(|cx| OutlinePanel::new(cx, handle.clone()));
         let memory_view = cx.new(|cx| MemoryPanel::new(cx, handle.clone()));
         let stats_view = cx.new(|cx| StatsPanel::new(cx, handle.clone()));
+        let chapters_view = cx.new(|cx| ChaptersPanel::new(cx, handle.clone(), chapter));
+
+        // 章节总览：点卡进稿纸 / 新建章。页面只读磁盘，切章仍走工作区唯一入口。
+        cx.subscribe_in(
+            &chapters_view,
+            window,
+            |this, _, ev: &ChaptersEvent, window, cx| match ev {
+                ChaptersEvent::Open(n) => {
+                    this.switch_center(Mode::Editor, window, cx);
+                    this.switch_chapter(*n, window, cx);
+                }
+                ChaptersEvent::NewChapter => {
+                    let n = this.handle.next_chapter_number();
+                    let _ = this.handle.ensure_chapter(n);
+                    this.chapters = this.handle.chapters();
+                    this.switch_center(Mode::Editor, window, cx);
+                    this.switch_chapter(n, window, cx);
+                }
+            },
+        )
+        .detach();
         let clues_view = cx.new(|cx| CluesPanel::new(cx, handle.clone()));
         let characters_view = cx.new(|cx| CharactersPanel::new(window, cx, handle.clone()));
         let settings_view = cx.new(|cx| SettingsPanel::new(window, cx));
@@ -1774,6 +1821,7 @@ impl Workspace {
             outline_view,
             memory_view,
             stats_view,
+            chapters_view,
             clues_view,
             characters_view,
             settings_view,
@@ -1971,6 +2019,11 @@ impl Workspace {
         self.mode = mode;
         let view = match mode {
             Mode::Editor => panel_handle(self.editor.clone()),
+            Mode::Chapters => {
+                self.chapters_view
+                    .update(cx, |panel, cx| panel.refresh(self.chapter, cx));
+                panel_handle(self.chapters_view.clone())
+            }
             Mode::Outline => panel_handle(self.outline_view.clone()),
             Mode::Canon => panel_handle(self.canon_view.clone()),
             Mode::Memory => panel_handle(self.memory_view.clone()),
@@ -3750,81 +3803,18 @@ impl Workspace {
                     })),
             )
             .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+            // 章节行带总数：侧栏不再平铺章目，至少要一眼看到全书有多少章。
+            .when(mode == Mode::Chapters, |d| {
+                d.child(
+                    div()
+                        .font_family(theme::FAMILY_MONO)
+                        .text_size(theme::FONT_TAG)
+                        .text_color(theme::FAINT())
+                        .child(SharedString::from(format!("{:02}", self.chapters.len()))),
+                )
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.switch_center(mode, window, cx);
-            }))
-            .into_any_element()
-    }
-
-    /// 章节行：行内编号等宽码（选中转朱砂），未动笔用幽灵色（规则 8/10）。
-    fn chapter_row(
-        &self,
-        ix: usize,
-        info: &store::ChapterInfo,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let n = info.n;
-        let active = n == self.chapter;
-        let meta = if info.has_prose {
-            SharedString::from(format!("{}字", info.words))
-        } else {
-            SharedString::from("未动笔")
-        };
-        div()
-            .id(SharedString::from(format!("chapter-{ix}")))
-            .flex()
-            .items_center()
-            .gap(theme::GAP_MD)
-            .px(theme::PAD_SM)
-            .py(theme::PAD_XS)
-            .rounded(theme::RADIUS_BTN_SM)
-            .cursor_pointer()
-            .border_1()
-            .border_color(if active {
-                theme::ACCENT_BORDER()
-            } else {
-                theme::PANEL()
-            })
-            .bg(if active {
-                theme::ACCENT_SOFT()
-            } else {
-                theme::PANEL()
-            })
-            .text_size(theme::FONT_SMALL)
-            .text_color(if active { theme::TEXT() } else { theme::DIM() })
-            .hover(|s| s.bg(theme::PANEL2()).border_color(theme::ACCENT_BORDER()))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .font_family(theme::FAMILY_MONO)
-                    .text_size(theme::FONT_LABEL)
-                    .text_color(if active {
-                        theme::ACCENT()
-                    } else {
-                        theme::FAINT()
-                    })
-                    .child(SharedString::from(format!("{n:02}"))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_ellipsis()
-                    .child(SharedString::from(info.title.clone())),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(theme::FONT_TAG)
-                    .text_color(if info.has_prose {
-                        theme::FAINT()
-                    } else {
-                        theme::GHOST()
-                    })
-                    .child(meta),
-            )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.switch_chapter(n, window, cx);
             }))
             .into_any_element()
     }
@@ -3846,49 +3836,12 @@ impl Workspace {
 
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut rows: Vec<AnyElement> = Vec::new();
-        rows.push(Self::section_label("工作台"));
-        for (ix, mode) in NAV.iter().copied().enumerate() {
-            rows.push(self.nav_row(ix, mode, cx));
-        }
-        let count = SharedString::from(format!("{:02}", self.chapters.len()));
-        rows.push(
-            div()
-                .flex()
-                .items_center()
-                .gap(theme::GAP_MD)
-                .mt(theme::GAP_GROUP)
-                .pt(theme::PAD_SM)
-                .border_t_1()
-                .border_color(theme::LINE())
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(theme::FONT_LABEL)
-                        .text_color(theme::FAINT())
-                        .child("章节"),
-                )
-                .child(
-                    div()
-                        .font_family(theme::FAMILY_MONO)
-                        .text_size(theme::FONT_TAG)
-                        .text_color(theme::FAINT())
-                        .child(count),
-                )
-                .into_any_element(),
-        );
-        if self.chapters.is_empty() {
-            rows.push(
-                div()
-                    .px(theme::PAD_SM)
-                    .py(theme::PAD_MD)
-                    .text_size(theme::FONT_SMALL)
-                    .text_color(theme::DIM())
-                    .child("还没有章节——下方「新建章」即可落笔。")
-                    .into_any_element(),
-            );
-        } else {
-            for (ix, info) in self.chapters.iter().enumerate() {
-                rows.push(self.chapter_row(ix, info, cx));
+        let mut ix = 0usize;
+        for (group, modes) in NAV_GROUPS {
+            rows.push(Self::section_label(group));
+            for mode in modes.iter().copied() {
+                rows.push(self.nav_row(ix, mode, cx));
+                ix += 1;
             }
         }
 

@@ -3982,3 +3982,368 @@ impl ComponentPanel for KnowledgePanel {
             .child("知识库")
     }
 }
+
+/* ───────────────────────── 章节（综合栏目） ───────────────────────── */
+
+/// 章节页的出口：点卡片进稿纸 / 新建章。页面本身只读磁盘，不改任何东西。
+#[derive(Debug, Clone)]
+pub enum ChaptersEvent {
+    Open(u32),
+    NewChapter,
+}
+
+/// 全书章节总览：目录 + 进度 + 快速进入。
+///
+/// 为什么从侧栏搬出来：侧栏平铺几百章，既挤掉导航，也看不出"写到哪、还差多少"。
+/// 章节本来就是全书的骨架，值得一个自己的页面。
+pub struct ChaptersPanel {
+    focus_handle: FocusHandle,
+    handle: Rc<ProjectHandle>,
+    current: u32,
+}
+
+impl ChaptersPanel {
+    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>, current: u32) -> Self {
+        Self {
+            focus_handle: cx.focus_handle(),
+            handle,
+            current,
+        }
+    }
+
+    /// 进入页面时同步当前章（高亮"正在写"那张卡）。
+    pub fn refresh(&mut self, current: u32, cx: &mut Context<Self>) {
+        self.current = current;
+        cx.notify();
+    }
+
+    fn card(&self, info: &crate::store::ChapterInfo, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let n = info.n;
+        let active = n == self.current;
+        let written = info.has_prose;
+        let title = if info.title.trim().is_empty() {
+            "未命名".to_string()
+        } else {
+            info.title.clone()
+        };
+        div()
+            .id(SharedString::from(format!("ch-card-{n}")))
+            .flex()
+            .flex_col()
+            .gap(theme::GAP_MD)
+            .w(px(236.))
+            .p(theme::PAD_LG)
+            .rounded(theme::RADIUS_CARD)
+            .border_1()
+            .border_color(if active {
+                theme::ACCENT_BORDER()
+            } else {
+                theme::LINE()
+            })
+            .bg(if active {
+                theme::ACCENT_SOFT()
+            } else {
+                theme::PANEL()
+            })
+            .cursor_pointer()
+            .hover(|s| s.border_color(theme::ACCENT_BORDER()).bg(theme::PANEL2()))
+            .on_click(cx.listener(move |_this, _, _, cx| {
+                cx.emit(ChaptersEvent::Open(n));
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(theme::GAP_SM)
+                    .child(
+                        div()
+                            .font_family(theme::FAMILY_MONO)
+                            .text_size(theme::FONT_LABEL)
+                            .text_color(if active {
+                                theme::ACCENT()
+                            } else {
+                                theme::FAINT()
+                            })
+                            .child(SharedString::from(format!("第 {n:02} 章"))),
+                    )
+                    .child(chip(
+                        if written { "成稿" } else { "未动笔" },
+                        if written { Tone::Green } else { Tone::Neutral },
+                    )),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_size(theme::FONT_BODY)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if written { theme::TEXT() } else { theme::DIM() })
+                    .child(SharedString::from(title)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::GAP_SM)
+                    .child(
+                        div()
+                            .text_size(theme::FONT_TAG)
+                            .text_color(theme::FAINT())
+                            .child(SharedString::from(if written {
+                                format!("{} 字", info.words)
+                            } else {
+                                "还没落笔".to_string()
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(theme::FONT_TAG)
+                            .text_color(if active { theme::ACCENT() } else { theme::FAINT() })
+                            .child(SharedString::from(if active { "正在写" } else { "打开 →" })),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+impl EventEmitter<PanelEvent> for ChaptersPanel {}
+impl EventEmitter<ChaptersEvent> for ChaptersPanel {}
+
+impl Focusable for ChaptersPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for ChaptersPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let chapters = self.handle.chapters();
+        let written = chapters.iter().filter(|c| c.has_prose).count();
+        let total_words: usize = chapters.iter().map(|c| c.words).sum();
+        let target_chapters = self.handle.project_meta().target_chapters;
+        let word_target = self.handle.project_word_target() as u64;
+        let target_words = if target_chapters > 0 && word_target > 0 {
+            target_chapters as u64 * word_target
+        } else {
+            0
+        };
+        let today = self
+            .handle
+            .daily_words()
+            .last()
+            .map(|(_, w)| *w)
+            .unwrap_or(0);
+
+        let mut cards: Vec<gpui_kit::AnyElement> = Vec::new();
+        for info in &chapters {
+            cards.push(self.card(info, cx));
+        }
+
+        let progress = |label: String, now: u64, goal: u64, tone: Tone| -> gpui_kit::AnyElement {
+            let frac = if goal == 0 {
+                0.
+            } else {
+                (now as f32 / goal as f32).clamp(0., 1.)
+            };
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme::GAP_SM)
+                .flex_1()
+                .min_w(px(220.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(theme::GAP_SM)
+                        .child(
+                            div()
+                                .text_size(theme::FONT_TAG)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(label)),
+                        )
+                        .child(
+                            div()
+                                .font_family(theme::FAMILY_MONO)
+                                .text_size(theme::FONT_TAG)
+                                .text_color(theme::DIM())
+                                .child(SharedString::from(if goal == 0 {
+                                    format!("{now}")
+                                } else {
+                                    format!("{now} / {goal}")
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .h(px(6.))
+                        .w_full()
+                        .rounded(theme::RADIUS_TAG)
+                        .bg(theme::BAR_TRACK())
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(frac))
+                                .rounded(theme::RADIUS_TAG)
+                                .bg(tone.text()),
+                        ),
+                )
+                .into_any_element()
+        };
+
+        let mut stats: Vec<gpui_kit::AnyElement> = vec![
+            chip(format!("共 {} 章", chapters.len()), Tone::Neutral),
+            chip(format!("成稿 {written}"), Tone::Green),
+            chip(format!("总字数 {total_words}"), Tone::Accent),
+        ];
+        if today > 0 {
+            stats.push(chip(format!("今日 +{today}"), Tone::Blue));
+        }
+        if target_chapters > 0 {
+            stats.push(chip(
+                format!("目标 {target_chapters} 章"),
+                if written >= target_chapters as usize {
+                    Tone::Green
+                } else {
+                    Tone::Amber
+                },
+            ));
+        }
+
+        let mut body = panel_col()
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .justify_between()
+                    .gap(theme::GAP_GROUP)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(theme::GAP_XS)
+                            .child(sec_title("章节"))
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_META)
+                                    .text_color(theme::DIM())
+                                    .child("全书目录与进度；点任意一章进入稿纸"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_SM)
+                            .child(
+                                cap_btn("chapters-new", "新建章", cx).on_click(cx.listener(
+                                    |_this, _, _, cx| cx.emit(ChaptersEvent::NewChapter),
+                                )),
+                            )
+                            .child(
+                                cap_btn("chapters-current", "继续写当前章", cx).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        cx.emit(ChaptersEvent::Open(this.current.max(1)));
+                                    }),
+                                ),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(theme::GAP_MD)
+                    .children(stats),
+            );
+
+        // 两条进度：章数与字数。目标没设就只显示当前值，不画假进度。
+        let mut bars: Vec<gpui_kit::AnyElement> = Vec::new();
+        if target_chapters > 0 {
+            bars.push(progress(
+                "章数进度".to_string(),
+                written as u64,
+                target_chapters as u64,
+                Tone::Green,
+            ));
+        }
+        if target_words > 0 {
+            bars.push(progress(
+                "字数进度".to_string(),
+                total_words as u64,
+                target_words,
+                Tone::Accent,
+            ));
+        }
+        if !bars.is_empty() {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(theme::GAP_GROUP_LG)
+                    .w_full()
+                    .children(bars),
+            );
+        }
+
+        if chapters.is_empty() {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(theme::GAP_MD)
+                    .w_full()
+                    .py(px(48.))
+                    .rounded(theme::RADIUS_CARD)
+                    .border_1()
+                    .border_color(theme::LINE())
+                    .bg(theme::PANEL())
+                    .child(
+                        div()
+                            .text_size(theme::FONT_BODY)
+                            .text_color(theme::DIM())
+                            .child("还没有章节"),
+                    )
+                    .child(
+                        div()
+                            .text_size(theme::FONT_TAG)
+                            .text_color(theme::FAINT())
+                            .child("点右上「新建章」开第一章——建好就能直接落笔"),
+                    ),
+            );
+        } else {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(theme::GAP_GROUP)
+                    .w_full()
+                    .children(cards),
+            );
+        }
+
+        panel_root("chapters-scroll").child(body)
+    }
+}
+
+impl BasePanel for ChaptersPanel {
+    fn panel_name(&self) -> &'static str {
+        "chapters-view"
+    }
+}
+impl ComponentPanel for ChaptersPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .text_size(theme::FONT_BODY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::TEXT())
+            .child("章节")
+    }
+}
