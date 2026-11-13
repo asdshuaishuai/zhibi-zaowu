@@ -493,15 +493,29 @@ impl CanvasPanel {
                     let _ = web.migrate_from_facts(&facts, &people);
                     live = web.at_chapter(chapter);
                 }
+                // 关系端点存的是人名，可能写成别名；先用人物档案归一成本名，
+                // 再和画布人物节点（memory.aliases 的 canonicalName）对齐。
+                // 不归一的话，别名形态的关系边会静默消失。
+                let people = crate::characters::Roster::new(&self.handle.root).all();
+                let person_index = |name: &str| -> Option<usize> {
+                    let canon = people
+                        .iter()
+                        .find(|c| c.matches(name))
+                        .map(|c| c.name.as_str())
+                        .unwrap_or(name);
+                    nodes.iter().position(|n| {
+                        n.kind == "character"
+                            && (n.label == name
+                                || n.label == canon
+                                || people
+                                    .iter()
+                                    .find(|c| c.name == n.label)
+                                    .map(|c| c.matches(name))
+                                    .unwrap_or(false))
+                    })
+                };
                 for rel in &live {
-                    let (Some(fi), Some(ti)) = (
-                        nodes
-                            .iter()
-                            .position(|n| n.kind == "character" && n.label == rel.from),
-                        nodes
-                            .iter()
-                            .position(|n| n.kind == "character" && n.label == rel.to),
-                    ) else {
+                    let (Some(fi), Some(ti)) = (person_index(&rel.from), person_index(&rel.to)) else {
                         continue;
                     };
                     if fi == ti {
