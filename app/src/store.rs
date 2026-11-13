@@ -2702,6 +2702,8 @@ pub struct AppSettings {
     pub subagent_enabled: bool,
     /// 空闲回收 DSH 进程的分钟数（0 = 不回收）。
     pub idle_recycle_min: u32,
+    /// 主题形态：ink=墨（深色）/ xuan=宣纸（浅色纸感）。缺键 = 墨。
+    pub theme: String,
     /// 内置插件开关：行 id → 是否启用。缺键 = 开（默认全开）。
     ///
     /// 为什么 key 是 patch 行 id 而不是包名：能开关的最小单位是一行，
@@ -2730,6 +2732,7 @@ impl Default for AppSettings {
             subagent_enabled: true,
             idle_recycle_min: 30,
             max_runtime_procs: 2,
+            theme: String::new(),
             plugin_overrides: std::collections::BTreeMap::new(),
         }
     }

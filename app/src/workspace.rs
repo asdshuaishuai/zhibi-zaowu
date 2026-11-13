@@ -686,6 +686,16 @@ impl Workspace {
                     // 直接写盘。这些项都要重新生成 patch 才生效。
                     match crate::store::save_settings(cfg) {
                         Ok(()) => {
+                            // 主题：保存即切，全部窗口同步重刷
+                            let kind = if cfg.theme.trim() == "xuan" {
+                                crate::theme::ThemeKind::Xuan
+                            } else {
+                                crate::theme::ThemeKind::Ink
+                            };
+                            crate::theme::set_theme_kind(kind);
+                            crate::apply_gpui_theme(cx);
+                            cx.refresh_windows();
+
                             // 进程还开着，但跑的是旧 patch：不重启的话作者会以为
                             // 刚关掉的联网已经生效，实际这一轮还能联网。
                             // 所以这里直接重启（对话不丢，靠 session/resume 接回），
@@ -694,13 +704,18 @@ impl Workspace {
                             if was_running {
                                 this.restart_runtime(cx);
                             }
-                            let msg = if was_running {
-                                "设置已保存；运行时已重启，新设置即刻生效（对话历史保留）"
-                            } else {
-                                "设置已保存（运行时未启动，下次发送时按新设置启动）"
+                            let msg = match (was_running, kind) {
+                                (true, k) => format!(
+                                    "设置已保存；运行时已重启，新设置即刻生效（主题：{}，对话历史保留）",
+                                    k.label()
+                                ),
+                                (false, k) => format!(
+                                    "设置已保存（运行时未启动；主题：{}）",
+                                    k.label()
+                                ),
                             };
                             this.trajectory.update(cx, |panel, cx| {
-                                panel.push(TrajKind::Info(msg.to_string()), cx);
+                                panel.push(TrajKind::Info(msg), cx);
                             });
                         }
                         Err(e) => this.trajectory.update(cx, |panel, cx| {

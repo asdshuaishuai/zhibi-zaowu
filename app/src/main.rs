@@ -39,36 +39,83 @@ use gpui_kit::{
 /// 全局主题初始化：墨底/宣纸/朱砂——库组件（Input/Button/Textarea/Sidebar/
 /// TitleBar/StatusBar）全部从这里取色，不再与手绘 palette 两套体系打架。
 fn init_theme(cx: &mut gpui_kit::App) {
-    Theme::change(ThemeMode::Dark, None, cx);
-    {
-        let theme = cx.default_global::<Theme>();
-        let c = &mut theme.colors;
-        c.background = rgb(0x17181c).into();
-        c.foreground = rgb(0xd8d5cf).into();
-        c.border = rgb(0x2e3138).into();
-        c.accent = rgba(0xc96f4a24).into();
-        c.accent_foreground = rgb(0xd8d5cf).into();
-        c.primary = rgb(0xc96f4a).into();
-        c.primary_foreground = rgb(0xffffff).into();
-        c.secondary = rgb(0x24262d).into();
-        c.secondary_foreground = rgb(0xd8d5cf).into();
-        c.muted = rgb(0x24262d).into();
-        c.muted_foreground = rgb(0x8e8b85).into();
-        c.input = rgb(0x24262d).into();
-        c.popover = rgb(0x1e2026).into();
-        c.popover_foreground = rgb(0xd8d5cf).into();
-        c.danger = rgb(0xc0605c).into();
-        c.success = rgb(0x7fae72).into();
-        c.info = rgb(0x6f9bc4).into();
-        c.scrollbar = rgb(0x1e2026).into();
-        c.scrollbar_thumb = rgb(0x3a3d45).into();
-        c.sidebar = rgb(0x1e2026).into();
-        c.sidebar_foreground = rgb(0xd8d5cf).into();
-        c.sidebar_accent = rgba(0xc96f4a24).into();
-        c.sidebar_accent_foreground = rgb(0xd8d5cf).into();
-        c.sidebar_border = rgb(0x2e3138).into();
-        c.sidebar_primary = rgb(0xc96f4a).into();
-        c.sidebar_primary_foreground = rgb(0xffffff).into();
+    // 启动即按设置切主题（settings.json 的 theme：ink=墨 / xuan=宣纸）
+    let t = crate::store::load_settings().theme;
+    crate::theme::set_theme_kind(match t.trim() {
+        "xuan" => crate::theme::ThemeKind::Xuan,
+        _ => crate::theme::ThemeKind::Ink,
+    });
+    apply_gpui_theme(cx);
+}
+
+/// 把组件库主题（按钮/输入/侧栏等）按当前主题形态重刷。
+///
+/// 我们的 theme.rs 颜色函数每帧都会重新取值，切完即生效；
+/// 组件库的 Theme 是全局单例，必须在这里整体替换。
+pub fn apply_gpui_theme(cx: &mut gpui_kit::App) {
+    match crate::theme::theme_kind() {
+        crate::theme::ThemeKind::Xuan => {
+            Theme::change(ThemeMode::Light, None, cx);
+            let theme = cx.default_global::<Theme>();
+            let c = &mut theme.colors;
+            c.background = rgb(0xf2ecdd).into();
+            c.foreground = rgb(0x37322a).into();
+            c.border = rgb(0xd6cbae).into();
+            c.accent = rgba(0xb04a3020).into();
+            c.accent_foreground = rgb(0x37322a).into();
+            c.primary = rgb(0xb04a30).into();
+            c.primary_foreground = rgb(0xfff8ee).into();
+            c.secondary = rgb(0xeae0c9).into();
+            c.secondary_foreground = rgb(0x37322a).into();
+            c.muted = rgb(0xeae0c9).into();
+            c.muted_foreground = rgb(0x7c7462).into();
+            c.input = rgb(0xefe7d4).into();
+            c.popover = rgb(0xf9f4e7).into();
+            c.popover_foreground = rgb(0x37322a).into();
+            c.danger = rgb(0xb0432e).into();
+            c.success = rgb(0x4e7d55).into();
+            c.info = rgb(0x4f6d99).into();
+            c.scrollbar = rgb(0xeae0c9).into();
+            c.scrollbar_thumb = rgb(0xcfc4a8).into();
+            c.sidebar = rgb(0xf6f0e1).into();
+            c.sidebar_foreground = rgb(0x37322a).into();
+            c.sidebar_accent = rgba(0xb04a3020).into();
+            c.sidebar_accent_foreground = rgb(0x37322a).into();
+            c.sidebar_border = rgb(0xd6cbae).into();
+            c.sidebar_primary = rgb(0xb04a30).into();
+            c.sidebar_primary_foreground = rgb(0xfff8ee).into();
+        }
+        crate::theme::ThemeKind::Ink => {
+            Theme::change(ThemeMode::Dark, None, cx);
+            let theme = cx.default_global::<Theme>();
+            let c = &mut theme.colors;
+            c.background = rgb(0x1b1d25).into();
+            c.foreground = rgb(0xd8d5cf).into();
+            c.border = rgb(0x454b61).into();
+            c.accent = rgba(0xc96f4a24).into();
+            c.accent_foreground = rgb(0xd8d5cf).into();
+            c.primary = rgb(0xc96f4a).into();
+            c.primary_foreground = rgb(0xffffff).into();
+            c.secondary = rgb(0x31374a).into();
+            c.secondary_foreground = rgb(0xd8d5cf).into();
+            c.muted = rgb(0x31374a).into();
+            c.muted_foreground = rgb(0x9a9da8).into();
+            c.input = rgb(0x31374a).into();
+            c.popover = rgb(0x262a35).into();
+            c.popover_foreground = rgb(0xd8d5cf).into();
+            c.danger = rgb(0xc0605c).into();
+            c.success = rgb(0x7fae72).into();
+            c.info = rgb(0x6f9bc4).into();
+            c.scrollbar = rgb(0x262a35).into();
+            c.scrollbar_thumb = rgb(0x454b61).into();
+            c.sidebar = rgb(0x262a35).into();
+            c.sidebar_foreground = rgb(0xd8d5cf).into();
+            c.sidebar_accent = rgba(0xc96f4a24).into();
+            c.sidebar_accent_foreground = rgb(0xd8d5cf).into();
+            c.sidebar_border = rgb(0x454b61).into();
+            c.sidebar_primary = rgb(0xc96f4a).into();
+            c.sidebar_primary_foreground = rgb(0xffffff).into();
+        }
     }
 }
 

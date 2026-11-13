@@ -2117,6 +2117,8 @@ pub struct SettingsPanel {
     ed_max_procs: Entity<gpui_kit::component::input::InputState>,
     /// 内置插件开关的界面镜像（保存时整体写回 settings）
     plugin_overrides: std::collections::BTreeMap<String, bool>,
+    /// 主题形态镜像（ink / xuan）
+    theme_sel: String,
     /// 账号快照（余额、登录状态）；None = 还没查过
     account: Option<crate::account::AccountSnapshot>,
     /// 余额正在查
@@ -2202,6 +2204,7 @@ impl SettingsPanel {
             ed_idle,
             ed_max_procs,
             plugin_overrides: cfg.plugin_overrides.clone(),
+            theme_sel: if cfg.theme.trim() == "xuan" { "xuan".into() } else { "ink".into() },
             account: None,
             account_busy: false,
             status: String::new(),
@@ -2356,6 +2359,7 @@ impl SettingsPanel {
         cfg.max_runtime_procs = parse_u32(&self.ed_max_procs.read(cx).value(), cur.max_runtime_procs)
             .max(1);
         cfg.plugin_overrides = self.plugin_overrides.clone();
+        cfg.theme = self.theme_sel.clone();
         cfg
     }
 }
@@ -2652,6 +2656,66 @@ impl Render for SettingsPanel {
                                 .text_size(theme::FONT_MICRO)
                                 .text_color(theme::FAINT())
                                 .child("assist 只提案 · cowrite 可写台账 · ghostwrite 还可写授权章节的正文"),
+                        ),
+                )
+                .child(sec_title("外观"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_SM)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(
+                            div()
+                                .text_size(theme::FONT_MICRO)
+                                .text_color(theme::FAINT())
+                                .child("保存后立即生效，全部窗口同步切换。"),
+                        )
+                        .child(
+                            div().flex().gap(theme::GAP_SM).children([
+                                ("ink", "墨底 · 深色", "工作台夜间写作的墨色界面"),
+                                ("xuan", "宣纸 · 浅色", "米色纸面 + 墨字 + 朱砂印，白天校稿"),
+                            ]
+                            .into_iter()
+                            .map(|(key, label, hint)| {
+                                let on = self.theme_sel == key;
+                                div()
+                                    .id(SharedString::from(format!("theme-{key}")))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .p(theme::PAD_MD)
+                                    .rounded(theme::RADIUS_CARD)
+                                    .border_1()
+                                    .cursor_pointer()
+                                    .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
+                                    .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
+                                    .child(
+                                        div()
+                                            .text_size(theme::FONT_LABEL)
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(if on { theme::ACCENT() } else { theme::TEXT() })
+                                            .child(label),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(theme::FAINT())
+                                            .child(hint),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.theme_sel = key.to_string();
+                                        cx.notify();
+                                    }))
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()),
                         ),
                 )
                 .child(sec_title("AI 权限"))

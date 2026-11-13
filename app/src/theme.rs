@@ -23,6 +23,58 @@
 #![allow(non_snake_case)]
 
 use gpui_kit::{Pixels, Rgba, px, rgb, rgba};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+// ---------------------------------------------------------------------------
+// 主题形态：墨（深色，默认）/ 宣纸（浅色纸感）
+// ---------------------------------------------------------------------------
+
+/// 两套正式主题。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeKind {
+    /// 墨：深色（默认）
+    Ink,
+    /// 宣纸：浅色纸感（米色纸面 + 墨字 + 朱砂印）
+    Xuan,
+}
+
+/// 静态存储：颜色函数不带 cx，切换只在设置保存时发生一次，
+/// 原子量足够（读发生在每一帧渲染，写一生难有几次）。
+static THEME_KIND: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_theme_kind(k: ThemeKind) {
+    THEME_KIND.store(match k {
+        ThemeKind::Ink => 0,
+        ThemeKind::Xuan => 1,
+    }, Ordering::Relaxed);
+}
+
+pub fn theme_kind() -> ThemeKind {
+    match THEME_KIND.load(Ordering::Relaxed) {
+        1 => ThemeKind::Xuan,
+        _ => ThemeKind::Ink,
+    }
+}
+
+impl ThemeKind {
+    /// 中文名（设置回执/日志用）。
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeKind::Ink => "墨底",
+            ThemeKind::Xuan => "宣纸",
+        }
+    }
+}
+
+/// 实色 token 双主题取值。
+fn pick_u32(ink: u32, xuan: u32) -> u32 {
+    if theme_kind() == ThemeKind::Xuan {
+        xuan
+    } else {
+        ink
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // 表面与描边（design.css:4 --bg/--panel/--panel2/--line）
@@ -30,28 +82,28 @@ use gpui_kit::{Pixels, Rgba, px, rgb, rgba};
 
 /// 墨底 #1b1d25 —— 页面/画布背景。
 pub fn BG() -> Rgba {
-    rgb(0x1B1D25)
+    rgb(pick_u32(0x1B1D25, 0xF2ECDD))
 }
 /// 主面板 #262a35 —— 卡片、标题栏、侧栏、底栏（比墨底亮一档以上，
 /// Windows 的高伽马屏上再浅的色阶会糊成一片，档差必须拉到 10+）。
 pub fn PANEL() -> Rgba {
-    rgb(0x262A35)
+    rgb(pick_u32(0x262A35, 0xF9F4E7))
 }
 /// 次级面板 #31374a —— 输入框底、内嵌块、图标按钮底。
 pub fn PANEL2() -> Rgba {
-    rgb(0x31374A)
+    rgb(pick_u32(0x31374A, 0xEAE0C9))
 }
 /// 稿纸卡 #20242e —— 正文容器专用（介于墨底与面板之间）。
 pub fn PROSE_BG() -> Rgba {
-    rgb(0x20242E)
+    rgb(pick_u32(0x20242E, 0xF7F1E2))
 }
 /// 分隔线 #454b61 —— 1px 描边/分节线（要能从面板上"读出来"，不是隐约有）。
 pub fn LINE() -> Rgba {
-    rgb(0x454B61)
+    rgb(pick_u32(0x454B61, 0xD6CBAE))
 }
 /// 弱化分隔线 rgba(69,75,97,.55) —— 表格行间线。
 pub fn LINE_SOFT() -> Rgba {
-    rgba(0x454B618C)
+    rgba(pick_u32(0x454B618C, 0xD6CBAE99))
 }
 
 // ---------------------------------------------------------------------------
@@ -60,23 +112,23 @@ pub fn LINE_SOFT() -> Rgba {
 
 /// 正文/宣纸字 #d8d5cf。
 pub fn TEXT() -> Rgba {
-    rgb(0xD8D5CF)
+    rgb(pick_u32(0xD8D5CF, 0x37322A))
 }
 /// 次级文字 #9a9da8 —— 计数、说明。
 pub fn DIM() -> Rgba {
-    rgb(0x9A9DA8)
+    rgb(pick_u32(0x9A9DA8, 0x7C7462))
 }
 /// 弱文字 #707584 —— 标签、meta、时间戳。
 pub fn FAINT() -> Rgba {
-    rgb(0x707584)
+    rgb(pick_u32(0x707584, 0xA49C87))
 }
 /// 幽灵/禁用文字 #7d8293（workspace.html:33）。
 pub fn GHOST() -> Rgba {
-    rgb(0x7D8293)
+    rgb(pick_u32(0x7D8293, 0xB5AC99))
 }
 /// 朱砂实心主按钮上的文字：白。
 pub fn ON_ACCENT() -> Rgba {
-    rgb(0xFFFFFF)
+    rgb(pick_u32(0xFFFFFF, 0xFFF8EE))
 }
 
 // ---------------------------------------------------------------------------
@@ -85,15 +137,15 @@ pub fn ON_ACCENT() -> Rgba {
 
 /// 强调朱砂 #c96f4a —— 主按钮实心、选中编号、关键 <b>。
 pub fn ACCENT() -> Rgba {
-    rgb(0xC96F4A)
+    rgb(pick_u32(0xC96F4A, 0xB04A30))
 }
 /// 朱砂软底 rgba(201,111,74,.14) —— 选中/hover/主能力按钮底。
 pub fn ACCENT_SOFT() -> Rgba {
-    rgba(0xC96F4A24)
+    rgba(pick_u32(0xC96F4A24, 0xB04A3020))
 }
 /// 朱砂描边 rgba(201,111,74,.45) —— hover 提亮后的边框色。
 pub fn ACCENT_BORDER() -> Rgba {
-    rgba(0xC96F4A73)
+    rgba(pick_u32(0xC96F4A73, 0xB04A3073))
 }
 
 // ---------------------------------------------------------------------------
@@ -102,47 +154,47 @@ pub fn ACCENT_BORDER() -> Rgba {
 
 /// 成功/完成 #7fae72。
 pub fn GREEN() -> Rgba {
-    rgb(0x7FAE72)
+    rgb(pick_u32(0x7FAE72, 0x4E7D55))
 }
 /// 成功软底 rgba(127,174,114,.12) —— ok 气泡、绿徽标底。
 pub fn GREEN_SOFT() -> Rgba {
-    rgba(0x7FAE721F)
+    rgba(pick_u32(0x7FAE721F, 0x4E7D5520))
 }
 /// 成功描边 rgba(127,174,114,.35) —— .za-chip.g 边框（design.css:41）。
 pub fn GREEN_BORDER() -> Rgba {
-    rgba(0x7FAE7259)
+    rgba(pick_u32(0x7FAE7259, 0x4E7D5566))
 }
 /// 运行中蓝 #6f9bc4 —— spinner、live 状态。
 pub fn BLUE() -> Rgba {
-    rgb(0x6F9BC4)
+    rgb(pick_u32(0x6F9BC4, 0x4F6D99))
 }
 /// 蓝软底 rgba(111,155,196,.12) —— livebox/运行活动条底。
 pub fn BLUE_SOFT() -> Rgba {
-    rgba(0x6F9BC41F)
+    rgba(pick_u32(0x6F9BC41F, 0x4F6D9920))
 }
 /// 蓝描边 rgba(111,155,196,.4)。
 pub fn BLUE_BORDER() -> Rgba {
-    rgba(0x6F9BC466)
+    rgba(pick_u32(0x6F9BC466, 0x4F6D9966))
 }
 /// 危险/失败 #c0605c —— 破坏性动作、红告警。
 pub fn RED() -> Rgba {
-    rgb(0xC0605C)
+    rgb(pick_u32(0xC0605C, 0xB0432E))
 }
 /// 危险软底 rgba(192,96,92,.12)。
 pub fn RED_SOFT() -> Rgba {
-    rgba(0xC0605C1F)
+    rgba(pick_u32(0xC0605C1F, 0xB0432E20))
 }
 /// 放缓/提醒琥珀 #d9a05b（outline.html:23 .o、p2 到期提醒）。
 pub fn AMBER() -> Rgba {
-    rgb(0xD9A05B)
+    rgb(pick_u32(0xD9A05B, 0xA1782E))
 }
 /// 琥珀软底 rgba(217,160,91,.15)。
 pub fn AMBER_SOFT() -> Rgba {
-    rgba(0xD9A05B26)
+    rgba(pick_u32(0xD9A05B26, 0xA1782E29))
 }
 /// 紫 #a08cc0 —— 次要分类/进度条填充（仅实色，原型未定义紫软底）。
 pub fn PURPLE() -> Rgba {
-    rgb(0xA08CC0)
+    rgb(pick_u32(0xA08CC0, 0x7D5F9E))
 }
 
 // ---------------------------------------------------------------------------
@@ -151,16 +203,16 @@ pub fn PURPLE() -> Rgba {
 
 /// 进度条轨道 rgba(255,255,255,.06)（outline.html:20 .bar）。
 pub fn BAR_TRACK() -> Rgba {
-    rgba(0xFFFFFF0F)
+    rgba(pick_u32(0xFFFFFF0F, 0x37322A14))
 }
 /// 中性徽标底 rgba(255,255,255,.07)（outline.html:53 .p5 长线档）。
 pub fn CHIP_NEUTRAL() -> Rgba {
-    rgba(0xFFFFFF12)
+    rgba(pick_u32(0xFFFFFF12, 0x37322A1A))
 }
 /// 封面题字宣纸色 #e8ddca（M8 封面改按 Swift 五式重绘后暂未使用，留作备用）。
 #[allow(dead_code)]
 pub fn COVER_TEXT() -> Rgba {
-    rgb(0xE8DDCA)
+    rgb(pick_u32(0xE8DDCA, 0xE8DDCA))
 }
 
 // ---------------------------------------------------------------------------
