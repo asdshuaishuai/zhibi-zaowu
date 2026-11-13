@@ -133,6 +133,16 @@ fn epoch_to_iso8601(secs: u64) -> String {
     )
 }
 
+/// 设定文档导入结果。
+#[derive(Debug, Clone, Default)]
+pub struct ImportedDocs {
+    pub count: usize,
+    pub chars: usize,
+    /// 跳过的同名文件（内容与已有的一致，幂等导入）
+    pub skipped: Vec<String>,
+    pub names: Vec<String>,
+}
+
 impl ProjectHandle {
     /// 书目信息（project.json 全量；缺文件回默认）。
     pub fn project(&self) -> NovelProject {
@@ -580,6 +590,44 @@ mod tests {
         let home = temp_home(tag);
         unsafe { std::env::set_var("HOME", &home); }
         (home, guard)
+    }
+
+    #[test]
+    fn settings_import_is_idempotent_and_never_overwrites() {
+        let (home, _guard) = use_home("settings-import");
+        let dir = create_project("设定导入").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        let src = std::path::Path::new("/tmp/settings-import-test");
+        let _ = std::fs::remove_dir_all(src);
+        std::fs::create_dir_all(src).unwrap();
+        std::fs::write(src.join("世界观.md"), "大陆叫云洲，灵气潮汐三十年一涨。").unwrap();
+        std::fs::write(src.join("沈砚小传.md"), "沈砚，断刀客，寡言。").unwrap();
+
+        let r1 = handle.import_settings_docs(src).unwrap();
+        assert_eq!(r1.count, 2, "两篇都该归档");
+        assert!(dir.join("imports").join("世界观.md").exists());
+        assert!(dir.join("imports").join("INDEX.md").exists(), "给总 Agent 的清单要生成");
+
+        // 再导一次：内容相同 → 幂等跳过，不产生副本
+        let r2 = handle.import_settings_docs(src).unwrap();
+        assert_eq!(r2.count, 0);
+        assert_eq!(r2.skipped.len(), 2, "内容相同的两篇都该跳过：{:?}", r2.skipped);
+
+        // 同名但内容不同：加序号，绝不覆盖
+        std::fs::write(src.join("世界观.md"), "大陆其实叫云川。").unwrap();
+        let r3 = handle.import_settings_docs(src).unwrap();
+        assert_eq!(r3.count, 1);
+        assert!(dir.join("imports").join("世界观-2.md").exists(), "冲突版本要留档");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("imports").join("世界观.md")).unwrap(),
+            "大陆叫云洲，灵气潮汐三十年一涨。",
+            "原文不能被覆盖"
+        );
+
+        // 提取入口的哨兵：imports/ 里现在有 3 篇（INDEX.md 不算）
+        assert_eq!(handle.imported_docs().len(), 3);
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(src);
     }
 
     #[test]
@@ -2837,6 +2885,127 @@ impl ProjectHandle {
             }
         }
         Ok((drafts, canons))
+    }
+
+    /// 导入**设定文档**（世界观/人物/大纲等非章节材料）到书内暂存区。
+    ///
+    /// 与 `import_dir`（旧稿 → 章节草稿）的区别：这里**不做任何分类**——
+    /// 所有 .md/.txt 原样拷进 `<书>/imports/`，分类交给总 Agent 提取
+    /// （imports/INDEX.md 是给它看的清单）。作者手选的材料以什么面貌
+    /// 进书，就原样保什么面貌；提取是 AI 的活，存档是作者的活。
+    ///
+    /// 幂等：同名且同内容的文件跳过；同名不同内容加序号后缀，绝不覆盖。
+    pub fn import_settings_docs(&self, dir: &Path) -> Result<ImportedDocs, String> {
+        let mut files = Vec::new();
+        collect_md_files(dir, &mut files);
+        files.sort();
+        if files.is_empty() {
+            return Err("目录里没有 .md/.txt 文件".into());
+        }
+        let dest_dir = self.root.join("imports");
+        std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+        let journal = crate::journal::Journal::new(&self.root);
+        let mut out = ImportedDocs {
+            count: 0,
+            chars: 0,
+            skipped: Vec::new(),
+            names: Vec::new(),
+        };
+        for f in files.iter().take(200) {
+            let Ok(text) = std::fs::read_to_string(f) else { continue };
+            if text.trim().is_empty() {
+                continue;
+            }
+            let name = f
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "未命名".into());
+            let mut dest = dest_dir.join(format!("{}.md", safe_file_name(&name)));
+            // 同名不同内容：加序号，绝不覆盖作者已导入的材料
+            let mut seq = 2;
+            while dest.exists()
+                && std::fs::read_to_string(&dest).map(|t| t == text).unwrap_or(false) == false
+            {
+                dest = dest_dir.join(format!("{}-{}.md", safe_file_name(&name), seq));
+                seq += 1;
+            }
+            if dest.exists() {
+                out.skipped.push(name);
+                continue;
+            }
+            let before = String::new();
+            write_atomic(&dest, &text)?;
+            let rel = dest
+                .strip_prefix(&self.root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| dest.display().to_string());
+            let _ = journal.record(
+                &self.root,
+                &rel,
+                &before,
+                &text,
+                &crate::journal::Actor::Author,
+                "import",
+                &format!("b{}", crate::journal::now_millis()),
+                &format!("导入设定文档：{}", name),
+            );
+            out.count += 1;
+            out.chars += text.chars().count();
+            out.names.push(name);
+        }
+        self.rebuild_import_index()?;
+        Ok(out)
+    }
+
+    /// 重建 imports/INDEX.md：给总 Agent 的阅读清单。
+    ///
+    /// 为什么让 AI 读清单而不是扫目录：一个目录遍历对模型是隐形的成本，
+    /// 一份带字数的清单让它能规划"先读哪篇、分几轮"。
+    fn rebuild_import_index(&self) -> Result<(), String> {
+        let dir = self.root.join("imports");
+        let mut lines = vec!["# 导入材料清单".to_string(), String::new()];
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.extension().and_then(|e| e.to_str()) == Some("md")
+                            && p.file_name().map(|n| n.to_string_lossy() != "INDEX.md").unwrap_or(true)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        for f in files {
+            let chars = std::fs::read_to_string(&f)
+                .map(|t| t.chars().count())
+                .unwrap_or(0);
+            let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            lines.push(format!("- {}（约 {} 字）", name, chars));
+        }
+        lines.push(String::new());
+        lines.push("以上材料为作者导入的原始设定，待总 Agent 提取分类。".to_string());
+        let path = dir.join("INDEX.md");
+        write_atomic(&path, &lines.join("\n"))
+    }
+
+    /// imports/ 里现有几篇待提取材料（0 = 没有，不值得派 AI）。
+    pub fn imported_docs(&self) -> Vec<String> {
+        let dir = self.root.join("imports");
+        let mut out: Vec<String> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.extension().and_then(|e| e.to_str()) == Some("md")
+                            && p.file_name().map(|n| n.to_string_lossy() != "INDEX.md").unwrap_or(true)
+                    })
+                    .map(|p| p.display().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.sort();
+        out
     }
 
     // ───────────────── M7 画板视图态 / 预言书世界线沙盒 ─────────────────

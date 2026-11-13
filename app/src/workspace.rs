@@ -470,6 +470,70 @@ impl Workspace {
             &import_view,
             window,
             |this, _, ev: &ImportEvent, _window, cx| match ev {
+                ImportEvent::ImportSettings(path) => {
+                    if path.trim().is_empty() {
+                        this.import_view.update(cx, |panel, cx| {
+                            panel.set_result("先填设定文档目录".into(), cx);
+                        });
+                        return;
+                    }
+                    let path = std::path::PathBuf::from(path);
+                    let root = this.handle.root.clone();
+                    let title = this.handle.title.clone();
+                    let import_view = this.import_view.clone();
+                    let traj = this.trajectory.clone();
+                    cx.spawn(async move |_, cx| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move {
+                                let h = ProjectHandle { root, title };
+                                h.import_settings_docs(&path)
+                            })
+                            .await;
+                        let _ = cx.update(|cx| {
+                            let msg = match result {
+                                Ok(r) => {
+                                    let mut m = format!(
+                                        "已归档 {} 篇（约 {} 字）到 imports/。",
+                                        r.count, r.chars
+                                    );
+                                    if !r.skipped.is_empty() {
+                                        m.push_str(&format!(
+                                            " 跳过 {} 篇（内容相同）。",
+                                            r.skipped.len()
+                                        ));
+                                    }
+                                    m.push_str(" 下一步：点「让总 Agent 提取并分派」。");
+                                    m
+                                }
+                                Err(e) => format!("导入失败：{e}"),
+                            };
+                            import_view.update(cx, |panel, cx| panel.set_result(msg.clone(), cx));
+                            traj.update(cx, |panel, cx| panel.push(TrajKind::Info(msg), cx));
+                        });
+                    })
+                    .detach();
+                }
+                ImportEvent::Extract => {
+                    // 没材料就明确拦下：派 AI 去读空目录是纯浪费
+                    let docs = this.handle.imported_docs();
+                    if docs.is_empty() {
+                        this.import_view.update(cx, |panel, cx| {
+                            panel.set_result("imports/ 里还没有材料——先「归档到书」".into(), cx);
+                        });
+                        return;
+                    }
+                    let n = docs.len();
+                    this.trajectory.update(cx, |panel, cx| {
+                        panel.push(
+                            TrajKind::Info(format!(
+                                "设定提取：imports/ 共 {n} 篇，已交给总 Agent（提取 → 分派专属 Agent → 全部走提案）"
+                            )),
+                            cx,
+                        );
+                    });
+                    this.on_send(prompts::import_extract_task(n), cx);
+                }
                 ImportEvent::Run(path) => {
                     if path.trim().is_empty() {
                         this.import_view.update(cx, |panel, cx| {

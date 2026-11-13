@@ -3038,6 +3038,10 @@ impl ComponentPanel for SnapshotsPanel {
 #[derive(Debug, Clone)]
 pub enum ImportEvent {
     Run(String),
+    /// 导入设定文档（目录路径）
+    ImportSettings(String),
+    /// 让总 Agent 提取 imports/ 里的材料并分派各专属 Agent
+    Extract,
 }
 
 pub struct ImportPanel {
@@ -3046,6 +3050,8 @@ pub struct ImportPanel {
     #[allow(dead_code)]
     handle: Rc<ProjectHandle>,
     path: Entity<gpui_kit::component::input::InputState>,
+    /// 设定文档目录（导入后交总 Agent 提取）
+    set_path: Entity<gpui_kit::component::input::InputState>,
     last_result: String,
 }
 
@@ -3055,7 +3061,17 @@ impl ImportPanel {
             gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder("要导入的目录（.md/.txt，按「第N章」启发式分类）")
         });
-        Self { focus_handle: cx.focus_handle(), handle, path, last_result: String::new() }
+        let set_path = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("设定文档目录（.md/.txt：世界观/人物/大纲等非章节材料）")
+        });
+        Self {
+            focus_handle: cx.focus_handle(),
+            handle,
+            path,
+            set_path,
+            last_result: String::new(),
+        }
     }
 
     pub fn set_result(&mut self, msg: String, cx: &mut Context<Self>) {
@@ -3108,6 +3124,51 @@ impl Render for ImportPanel {
                             ),
                         )
                         // 成功回执 = GREEN chip（规则 6）。
+                        .when_true(!result.is_empty(), |d| {
+                            d.child(chip(SharedString::from(result.clone()), Tone::Green))
+                        }),
+                )
+                .child(sec_title("导入设定文档（先归档，再让总 Agent 提取分派）"))
+                .child(
+                    div()
+                        .text_size(theme::FONT_META)
+                        .line_height(relative(theme::LINE_HEIGHT_BODY))
+                        .text_color(theme::DIM())
+                        .child("流程：文档原样存进书的 imports/ 暂存区 → 总 Agent 通读后提取
+                            人物/关系/设定/伏笔/大纲 → 分派给对应专属 Agent → 全部落成提案，
+                            去收件箱逐条裁决。材料原样保留，不被覆盖。"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_MD)
+                        .p(theme::PAD_LG)
+                        .bg(theme::PANEL())
+                        .border_1()
+                        .border_color(theme::LINE())
+                        .rounded(theme::RADIUS_CARD)
+                        .child(field("目录", &self.set_path))
+                        .child(
+                            div().flex().items_center().gap(theme::GAP_MD).child(
+                                primary_btn("import-set", "归档到书", cx).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        let p = this.set_path.read(cx).value().to_string();
+                                        cx.emit(ImportEvent::ImportSettings(p));
+                                    }),
+                                ),
+                            ),
+                        )
+                        // 第二步：归档后才有东西可提取。按钮常在，没材料时点了
+                        // 会得到明确提示而不是静默无动作。
+                        .child(
+                            div().flex().items_center().gap(theme::GAP_MD).child(
+                                primary_btn("import-extract", "让总 Agent 提取并分派", cx)
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ImportEvent::Extract);
+                                    })),
+                            ),
+                        )
                         .when_true(!result.is_empty(), |d| {
                             d.child(chip(SharedString::from(result.clone()), Tone::Green))
                         }),

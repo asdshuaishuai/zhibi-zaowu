@@ -120,6 +120,26 @@ pub const SELECTION_BUTTONS: &[(&str, &str)] = &[
     ("去AI味", "deslop"),
 ];
 
+/// 设定提取任务书：读 imports/ 里的作者导入材料，提取分类后分派各专属 Agent。
+///
+/// 这是"老书搬进执笔"的主链路：作者把散落的世界观/人物/大纲文档导进来，
+/// 总 Agent 负责提取和**分派**——落库仍是各专属 Agent 出提案、收件箱裁决，
+/// 总 Agent 自己不写任何台账。
+pub fn import_extract_task(doc_count: usize) -> String {
+    format!(
+        "设定提取：书目录 imports/ 下有 {doc_count} 篇作者导入的原始材料（INDEX.md 有清单）。\n\
+         通读后按内容分类提取，**逐类分派给对应专属 Agent**（subagent，agentPreset 参数）：\n\
+         - 人物档案（外貌/性格/动机/口吻）→ agentPreset=character\n\
+         - 人物关系（谁与谁、从第几章）→ agentPreset=relations\n\
+         - 世界设定/伏笔/大纲故事线 → agentPreset=outline\n\
+         一篇材料可能同时出多类产出，就分派多次。铁律：\n\
+         1. 所有产出一律走提案工具，由作者在收件箱裁决；你不写任何台账或正文。\n\
+         2. 材料里没有的不要编——提取只能基于原文，拿不准就跳过并在汇总里列出。\n\
+         3. 材料互相矛盾的（同一人两个背景）不要取舍，两条都出提案并注明冲突。\n\
+         全部分派完成后，用一段话汇总：每个文档产出了哪些类、各多少条提案。{BASIS_RULE}"
+    )
+}
+
 /// 预言书推演任务书（M7）：全程走 novel-pack 的世界线沙盒工具链，绝不碰正典。
 pub fn oracle_task(premise: &str, fork: u32) -> String {
     format!(
