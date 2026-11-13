@@ -117,7 +117,7 @@ const RING_R: f32 = 210.;
 ///
 /// 换布局算法时 +1：`canvas.json` 里存着每个节点上次被拖到的位置，
 /// 算法一变这些坐标就成了"新图上的旧点"，必须整体作废一次。
-const CANVAS_LAYOUT_VERSION: u64 = 2;
+const CANVAS_LAYOUT_VERSION: u64 = 3;
 
 /// 侧板宽度（关系演变的时间轴要按这个宽度换算像素，所以只能有一个真值）。
 const SIDE_W: f32 = 250.;
@@ -234,7 +234,15 @@ impl CanvasPanel {
             Dim::Turns => "tr",
         };
         let state = self.handle.canvas_state();
-        if let Some(v) = state.get("view") {
+        // 布局版本：变了就说明这一版的位置/视角都是旧算法的，全部作废。
+        // 视角必须一起作废——只换坐标不换视角时，新图会开在旧视角的某个角落，
+        // 看起来就是"打开是一片空白"。
+        let layout_version = state
+            .get("layoutVersion")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let keep_saved = layout_version >= CANVAS_LAYOUT_VERSION;
+        if let Some(v) = state.get("view").filter(|_| keep_saved) {
             self.view = (
                 v.get("x").and_then(|x| x.as_f64()).unwrap_or(0.) as f32,
                 v.get("y").and_then(|x| x.as_f64()).unwrap_or(0.) as f32,
@@ -669,11 +677,6 @@ impl CanvasPanel {
         //
         // 布局算法换代时旧坐标必须作废：`layoutVersion` 变了就整体丢弃一次，
         // 否则作者看到的是旧算法的位置叠在新算法的边上（比不对齐还糟）。
-        let layout_version = state
-            .get("layoutVersion")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let keep_saved = layout_version >= CANVAS_LAYOUT_VERSION;
         if let Some(pos) = state.get("pos").and_then(|p| p.as_object()).filter(|_| keep_saved) {
             let dk = dimkey();
             for n in nodes.iter_mut() {
@@ -1944,16 +1947,6 @@ pub enum OracleEvent {
     /// 在画布上查看该世界线（切到预言维）
     ViewOnCanvas { worldline: String },
 }
-/// 世界线的两种看法：并轨图（横轴=章节的平行线）与世界树（纵向生长的枝）。
-/// 两种并存，默认并轨（旧形态不改），世界树是新增视图。
-#[derive(Clone, Copy, PartialEq)]
-enum WlView {
-    Lanes,
-    Tree,
-    /// 两条线并排对比：共同祖先之后的差异与冲突
-    Compare,
-}
-
 pub struct OraclePanel {
     focus_handle: FocusHandle,
     handle: Rc<ProjectHandle>,
@@ -1961,13 +1954,10 @@ pub struct OraclePanel {
     fork: Entity<InputState>,
     selected: Option<String>,
     message: Option<SharedString>,
-    view: WlView,
     /// 线模式选中的车道（与 selected 分开：一条线可以"选中看影响"但车道另外聚焦）
     lane: Option<String>,
     /// 车道里点开的节点（详情抽屉用）
     node: Option<String>,
-    /// 对比模式的另一条线（lane 是左边那条）
-    compare_with: Option<String>,
 }
 
 impl OraclePanel {
@@ -1989,10 +1979,8 @@ impl OraclePanel {
             fork,
             selected,
             message: None,
-            view: WlView::Lanes,
             lane: None,
             node: None,
-            compare_with: None,
         }
     }
 
@@ -2332,7 +2320,10 @@ impl Render for OraclePanel {
                     .child(
                         Button::new(SharedString::from(format!("see-{wide}")))
                             .xsmall()
-                            .label("在画布查看")
+                            // 这个按钮现在跳到「世界线」页（画布不再有预言维），
+                            // 所以文字也跟着改——按钮写着"在画布查看"却跳到别处，
+                            // 点一次就会怀疑自己点错了。
+                            .label("看时间轴")
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(OracleEvent::ViewOnCanvas { worldline: wide.clone() });
                             })),
@@ -3348,24 +3339,12 @@ impl Render for OraclePanel {
         // 那一页是时间轴（横轴=章节、固化段实线、开放段虚线），
         // 这一页（预言书）只做一件事：选中一条 if 线，推演它，看影响，决定扶不扶正。
 
-        // 页头：并轨 / 世界树 双视图（旧形态默认，世界树是新增看法）
-        let seg = |label: &'static str, on: bool, key: &'static str| {
-            div()
-                .id(key)
-                .px(px(10.))
-                .py(px(3.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(if on { theme::ACCENT_BORDER() } else { theme::LINE() })
-                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL2() })
-                .cursor_pointer()
-                .child(
-                    div()
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(if on { theme::ACCENT() } else { theme::DIM() })
-                        .child(label),
-                )
-        };
+        // 页头。
+        //
+        // 这里**不再**放「并轨 / 世界树 / 对比」三视图——那三个按钮属于「世界线」页，
+        // 留在预言书里会让作者以为这是同一个页面（也真的有人这么问过：
+        // "章节排期为什么也叫世界线"）。预言书只做一件事：
+        // 选中一条 if，推演它、看影响、决定扶不扶正。
         let head = div()
             .flex_shrink_0()
             .px(theme::PAD_LG)
@@ -3378,7 +3357,7 @@ impl Render for OraclePanel {
                     .text_size(theme::FONT_META)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::TEXT())
-                    .child("世界线"),
+                    .child("预言书"),
             )
             .child(
                 div()
@@ -3386,38 +3365,7 @@ impl Render for OraclePanel {
                     .min_w_0()
                     .text_size(theme::FONT_MICRO)
                     .text_color(theme::FAINT())
-                    .child(match self.view {
-                        WlView::Lanes => "并轨：横轴 = 章节，α 是贯穿基线；其他线自分歧章分叉、平行延伸",
-                        WlView::Tree => "世界树：根 = 第 1 章，梢 = 现在；每一次「如果」都在某一章长出一枝",
-                        WlView::Compare => "对比：选两条线，看共同祖先之后各自推演到哪、哪里互相冲突",
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(4.))
-                    .child(seg("并轨", self.view == WlView::Lanes, "wl-view-lanes").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.view = WlView::Lanes;
-                            cx.notify();
-                        }),
-                    ))
-                    .child(seg("世界树", self.view == WlView::Tree, "wl-view-tree").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.view = WlView::Tree;
-                            cx.notify();
-                        }),
-                    ))
-                    .child(seg("对比", self.view == WlView::Compare, "wl-view-compare").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.view = WlView::Compare;
-                            // 进对比时默认拿"当前选中线 vs 正典"，作者立刻看到东西
-                            if this.compare_with.is_none() {
-                                this.compare_with = Some("α".into());
-                            }
-                            cx.notify();
-                        }),
-                    )),
+                    .child("if 工坊：选中一条假设 → 推演卷轴 → 逐条晋升或整条扶正；正典只由作者改"),
             );
 
         // —— 对比视图：两条线并排 ——
@@ -3480,6 +3428,6 @@ impl ComponentPanel for OraclePanel {
             .text_size(theme::FONT_BODY)
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme::TEXT())
-            .child("预言书 · 多重世界线")
+            .child("预言书")
     }
 }
