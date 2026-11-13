@@ -511,7 +511,8 @@ impl Store {
         let from_prose = self.written_chapters();
         lines
             .iter()
-            .filter(|l| l.is_base() || l.kind == Kind::Fixed)
+            // 归档线不再代表"已定剧情"：它被隐藏了，就不该继续把全局边界顶高。
+            .filter(|l| !l.is_archived() && (l.is_base() || l.kind == Kind::Fixed))
             .map(|l| l.fixed_boundary())
             .chain(std::iter::once(from_prose))
             .max()
@@ -906,6 +907,39 @@ impl Store {
     }
 }
 
+/// 正文写到第 `chapter` 章之后，把所有「已采纳」且落在该章及之前的节点
+/// 置为「已写」。
+///
+/// 为什么由正文推动：`Adopted` 是作者承认的"正典后续"，正文追上它才是既成事实。
+/// 之前没有任何写入方，`Written` 永远不会出现——时间轴上"已写/已采纳/计划"
+/// 三态里最关键的一态是死的。这个函数是那条缺失的写入路径。
+///
+/// 幂等；没有可改的节点时不写盘。返回改了几个节点。
+pub fn mark_adopted_written(book_root: &Path, chapter: u32) -> Result<usize, String> {
+    if chapter == 0 {
+        return Ok(0);
+    }
+    let store = Store::new(book_root);
+    let mut lines = store.all()?;
+    let mut n = 0usize;
+    for line in &mut lines {
+        for node in &mut line.nodes {
+            if node.state != NodeState::Adopted {
+                continue;
+            }
+            let ch = node.chapter_or_guess();
+            if ch > 0 && ch <= chapter {
+                node.state = NodeState::Written;
+                n += 1;
+            }
+        }
+    }
+    if n > 0 {
+        store.save(&lines)?;
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1156,6 +1190,51 @@ mod tests {
         // 正文写到第 2 章 → 固化边界必须是 2，不能因为 α 没有节点就是 0
         assert_eq!(s.written_chapters(), 2, "空 prose 不算成稿");
         assert_eq!(s.fixed_boundary(&s.all().unwrap()), 2);
+    }
+
+    #[test]
+    fn adopted_nodes_turn_written_when_prose_catches_up() {
+        let root = book("written-sync");
+        let s = seed(&root);
+        // 第 12 章的节点已采纳；第 16 章的仍是计划
+        s.update_node("α", "n1", NodePatch { state: Some(NodeState::Adopted), ..Default::default() }).unwrap();
+        s.update_node("α", "n2", NodePatch { state: Some(NodeState::Adopted), ..Default::default() }).unwrap();
+
+        // 正文只写到第 12 章：n1 → written，n2 仍是 adopted
+        assert_eq!(mark_adopted_written(&root, 12).unwrap(), 1);
+        let back = s.find("α").unwrap().unwrap();
+        assert_eq!(back.nodes[0].state, NodeState::Written);
+        assert_eq!(back.nodes[1].state, NodeState::Adopted, "正文还没写到第 16 章");
+
+        // 幂等：再跑一次没有新增
+        assert_eq!(mark_adopted_written(&root, 12).unwrap(), 0);
+        // 写到第 16 章：n2 也转 written
+        assert_eq!(mark_adopted_written(&root, 16).unwrap(), 1);
+        assert_eq!(s.find("α").unwrap().unwrap().nodes[1].state, NodeState::Written);
+    }
+
+    #[test]
+    fn planned_nodes_are_not_marked_written_by_prose() {
+        // 作者写过了第 20 章，不代表"计划里但没采纳的节点"发生过——
+        // 只有 Adopted 才随正文转 Written。
+        let root = book("written-planned");
+        let s = seed(&root);
+        assert_eq!(mark_adopted_written(&root, 99).unwrap(), 0);
+        assert_eq!(s.find("α").unwrap().unwrap().nodes[0].state, NodeState::Planned);
+    }
+
+    #[test]
+    fn archived_fixed_lines_do_not_push_the_global_boundary() {
+        let root = book("archived-boundary");
+        let s = seed(&root);
+        let mut line = Line::new("β", "假设", Kind::Fixed, "α", "", 5);
+        line.status = "已归档".into();
+        let mut n = Node::new("b1", "event", "远未来");
+        n.chapter = 90;
+        line.nodes.push(n);
+        let mut lines = s.all().unwrap();
+        lines.push(line);
+        assert_eq!(s.fixed_boundary(&lines), 16, "归档线不该把边界顶到 90");
     }
 
     #[test]

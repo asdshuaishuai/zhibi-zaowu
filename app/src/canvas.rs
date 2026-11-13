@@ -250,8 +250,9 @@ impl CanvasPanel {
             );
         }
         self.reader = state.get("reader").and_then(|r| r.as_bool()).unwrap_or(false);
-        // 滑块上限 = 最新成稿章（不含未来）；关系维按 chapter 过滤区间
-        self.last_chapter = self.handle.next_chapter_number().saturating_sub(1).max(1);
+        // 滑块上限 = 最新**成稿**章（有正文的最大章，不是最后一个目录）：
+        // 关系维按 chapter 过滤区间，空章目录不该把"现在"推到未来。
+        self.last_chapter = self.handle.last_written_chapter();
         if self.chapter == 0 {
             self.chapter = 1;
         }
@@ -319,7 +320,7 @@ impl CanvasPanel {
         }
         if want_events {
             for e in &ev_all {
-                let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
+                let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(false);
                 let fact = s(e, "objectiveFact");
                 let chap = e.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0);
                 push_col(
@@ -382,7 +383,7 @@ impl CanvasPanel {
                 // 线→事件
                 for e in &ev_all {
                     let eid = s(e, "id");
-                    let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
+                    let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(false);
                     if let Some(sids) = e.get("storylineIDs").and_then(|x| x.as_array()).cloned() {
                         for sid in sids.iter().filter_map(|x| x.as_str()) {
                             if let (Some(fi), Some(ti)) = (
@@ -429,7 +430,7 @@ impl CanvasPanel {
                             if e.get("chapter").and_then(|v| v.as_u64()) == ch {
                                 if let Some(ei) = nodes.iter().position(|n| n.id == s(e, "id")) {
                                     let has = edges.iter().any(|x| (x.from == ci && x.to == ei) || (x.from == ei && x.to == ci));
-                                    let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true);
+                                    let revealed = e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(false);
                                     if !has {
                                         edges.push(CEdge {
                                             from: ci,
@@ -509,7 +510,9 @@ impl CanvasPanel {
                     // 一段区间一条边：同期并存的多段关系（如“师门”+“敌对”）都要画出来
                     for iv in rel.active_at(chapter) {
                         let hidden = !iv.public_to_reader;
-                        let kind = match rel.kind.as_str() {
+                        // 着色跟着**这一段**的谓词走，不跟整条关系的粗分类：
+                        // 「师徒 → 仇敌」在同一条关系史里，决裂之后边必须是敌对色。
+                        let kind = match crate::relations::classify(&iv.label).as_str() {
                             "敌对" => "hostile",
                             "亲缘" | "情爱" => "kin",
                             "师承" => "mentor",
@@ -1676,6 +1679,7 @@ impl Render for CanvasPanel {
                                             // 作者亲手建的关系默认读者可见；暗线由 AI 提案或后续编辑标记
                                             public_to_reader: true,
                                             evidence: String::new(),
+                                            extra: Default::default(),
                                         };
                                         let kind = crate::relations::classify(&label);
                                         match web.add_interval(&me, &to, &kind, iv) {

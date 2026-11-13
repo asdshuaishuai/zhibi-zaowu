@@ -331,7 +331,9 @@ mod tests {
     #[test]
     fn chapter_of_path_reads_the_dir_name() {
         assert_eq!(chapter_of_path("chapters/ch-012/prose.md"), Some(12));
-        assert_eq!(chapter_of_path("chapters/ch-003/ai-marks.json"), Some(3));
+        // 章内辅助文件不是"写正文"，不触发代笔越界
+        assert_eq!(chapter_of_path("chapters/ch-003/ai-marks.json"), None);
+        assert_eq!(chapter_of_path("chapters/ch-003/meta.json"), None);
         // 不是正文目录的路径不该被误判
         assert_eq!(chapter_of_path("clues.json"), None);
         assert_eq!(chapter_of_path("chapters/notes.txt"), None);
@@ -575,7 +577,13 @@ pub struct Breach {
 }
 
 /// 从 `chapters/ch-NNN/prose.md` 这种路径里取出章号。
+///
+/// 只认正文文件：`chapters/ch-003/meta.json` 之类的章内辅助文件不是"写正文"，
+/// 不能触发代笔越界告警。
 pub fn chapter_of_path(path: &str) -> Option<u32> {
+    if !path.ends_with("/prose.md") {
+        return None;
+    }
     let dir = path.split('/').find(|seg| seg.starts_with("ch-"))?;
     let digits: String = dir
         .strip_prefix("ch-")?

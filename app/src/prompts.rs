@@ -88,6 +88,8 @@ pub const EDITOR_AI_BUTTONS: &[AiButton] = &[
     AiButton { label: "✦ 续写一句", capability: "continue" },
     AiButton { label: "✦ 给我几个走向", capability: "branches" },
     AiButton { label: "搭骨架", capability: "skeleton" },
+    // 草稿必须在骨架批准之后：工具层会拦，没批准时这里只返回一句提示。
+    AiButton { label: "写草稿", capability: "draft" },
     AiButton { label: "一键验证", capability: "validate" },
     AiButton { label: "去AI味", capability: "deslop" },
     AiButton { label: "让AI记一笔", capability: "memory" },
@@ -121,14 +123,15 @@ pub const SELECTION_BUTTONS: &[(&str, &str)] = &[
 ];
 
 /// 知识库单篇拆分任务书：只处理一篇，拆完源文档保留。
-pub fn knowledge_split_task(doc: &str) -> String {
+pub fn knowledge_split_task(doc: &str, chars: usize) -> String {
     format!(
-        "知识库拆分：书目录 imports/{doc} 是作者导入的一篇原始材料。\n\
+        "知识库拆分：书目录 imports/{doc} 是作者导入的一篇原始材料（约 {chars} 字）。\n\
          先 `skill zhibi-import-extract` 加载规程并照做，本次**只处理这一篇**：\n\
          通读后按内容拆分提取（人物/关系/设定/伏笔/大纲），逐类分派给对应专属 Agent\n\
          （subagent，agentPreset=character/relations/outline），全部产出走提案。铁律：\n\
          只提取不创作；矛盾不上秤（两条都出并注明冲突）；源文档保留在知识库\n\
-         不删除、不改写。完成后汇总拆出了哪些类、各多少条提案。{BASIS_RULE}"
+         不删除、不改写。长文分段读，不要一次读完整篇就下结论。\n\
+         完成后汇总拆出了哪些类、各多少条提案。{BASIS_RULE}"
     )
 }
 

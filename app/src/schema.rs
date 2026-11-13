@@ -36,6 +36,13 @@ pub const LEDGER_FILES: &[&str] = &[
     "relations.json",
 ];
 
+/// 采纳时要一起抓前像、但不做数组结构校验的文件（对象/其它形状）。
+///
+/// 它们不在 `LEDGER_FILES` 里，却会被同一次采纳顺带改写（人物别名的
+/// memory.json、档案卡的 dossiers.json）。不抓前像的话，采纳中途失败会留下
+/// "别名写了、档案没写"的半截状态。
+pub const GUARD_EXTRA: &[&str] = &["memory.json", "dossiers.json"];
+
 /// 一个文件当下的结构问题。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
@@ -217,19 +224,65 @@ pub fn validate_file(root: &Path, rel_path: &str) -> Result<(), Vec<String>> {
 
 /// 一次写入前的内存快照：只保受保护的文件，校验不过就整档还原。
 pub struct Guard {
+    root: std::path::PathBuf,
     saved: Vec<(String, Option<String>)>,
+    /// 抓前像时读不出来的文件。读不出来 ≠ 文件不存在：此时不能继续采纳，
+    /// 否则回滚分支会把一个"暂时读不到"的文件当成"原本没有"删掉。
+    errors: Vec<String>,
 }
 
 impl Guard {
     pub fn capture(root: &Path) -> Self {
-        let saved = LEDGER_FILES
-            .iter()
-            .map(|f| {
-                let content = std::fs::read_to_string(root.join(f)).ok();
-                ((*f).to_string(), content)
-            })
-            .collect();
-        Self { saved }
+        let mut saved = Vec::new();
+        let mut errors = Vec::new();
+        for f in LEDGER_FILES.iter().chain(GUARD_EXTRA.iter()) {
+            match std::fs::read_to_string(root.join(f)) {
+                Ok(text) => saved.push(((*f).to_string(), Some(text))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    saved.push(((*f).to_string(), None));
+                }
+                Err(e) => errors.push(format!("{f}：{e}")),
+            }
+        }
+        Self {
+            root: root.to_path_buf(),
+            saved,
+            errors,
+        }
+    }
+
+    /// 抓前像是否完整。不完整就拒绝采纳——宁可不让改，也不能留半截。
+    pub fn capture_ok(&self) -> Result<(), Vec<String>> {
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(self.errors.clone())
+        }
+    }
+
+    /// 无条件还原全部受保护文件。用于 `apply_payload` 中途报错：
+    /// 那时不是"结构不合法"，而是"业务写到一半失败了"，必须整档退回。
+    /// 返回回滚失败的清单（空 = 全部还原成功）。
+    pub fn restore_all(&self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for (path, before) in &self.saved {
+            let target = self.root.join(path);
+            match before {
+                Some(text) => {
+                    if let Err(e) = crate::store::write_atomic(&target, text) {
+                        failures.push(format!("{path}：{e}"));
+                    }
+                }
+                None => {
+                    if let Err(e) = std::fs::remove_file(&target) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            failures.push(format!("{path}：{e}"));
+                        }
+                    }
+                }
+            }
+        }
+        failures
     }
 
     /// 校验所有变过的文件；有非法就全部还原并返回问题清单。
@@ -240,14 +293,29 @@ impl Guard {
         let mut problems = Vec::new();
         let mut dirty: Vec<&(String, Option<String>)> = Vec::new();
         for entry in &self.saved {
-            let now = std::fs::read_to_string(root.join(&entry.0)).ok();
+            let now = match std::fs::read_to_string(root.join(&entry.0)) {
+                Ok(text) => Some(text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    // 读不出来按"变了且有问题"处理：不能当成空文件放行。
+                    dirty.push(entry);
+                    problems.push(Problem {
+                        path: entry.0.clone(),
+                        issues: vec![format!("写入后读不出来：{e}")],
+                    });
+                    continue;
+                }
+            };
             if now == entry.1 {
                 continue;
             }
             dirty.push(entry);
-            if let Some(text) = &now {
-                if let Err(issues) = validate_text(&entry.0, text) {
-                    problems.push(Problem { path: entry.0.clone(), issues });
+            // 只有数组型台账做结构校验；memory/dossiers 是对象，跳过。
+            if LEDGER_FILES.contains(&entry.0.as_str()) {
+                if let Some(text) = &now {
+                    if let Err(issues) = validate_text(&entry.0, text) {
+                        problems.push(Problem { path: entry.0.clone(), issues });
+                    }
                 }
             }
         }
@@ -256,13 +324,19 @@ impl Guard {
         }
         for (path, before) in dirty {
             let target = root.join(path);
-            match before {
-                Some(text) => {
-                    let _ = crate::store::write_atomic(&target, text);
-                }
-                None => {
-                    let _ = std::fs::remove_file(&target);
-                }
+            let failed = match before {
+                Some(text) => crate::store::write_atomic(&target, text).err(),
+                None => std::fs::remove_file(&target)
+                    .err()
+                    .filter(|e| e.kind() != std::io::ErrorKind::NotFound)
+                    .map(|e| e.to_string()),
+            };
+            if let Some(e) = failed {
+                // 回滚失败必须让作者知道：不能嘴上说"已恢复"。
+                problems.push(Problem {
+                    path: path.clone(),
+                    issues: vec![format!("回滚失败：{e}")],
+                });
             }
         }
         Err(problems)

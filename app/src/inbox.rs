@@ -784,6 +784,30 @@ fn payload_preview(payload: &Value, expanded: bool) -> PayloadPreview {
                 out.push(format!("《{}》  {body}", field(d, "title")));
             }
         }
+        "character" => {
+            let list = arr_any(payload, &["characters", "items"]);
+            out.total = list.len();
+            for c in list.iter().take(limit) {
+                let name = field(c, "name");
+                let mut parts: Vec<String> = Vec::new();
+                for (key, label) in [
+                    ("role", "定位"),
+                    ("appearance", "外貌"),
+                    ("personality", "性格"),
+                    ("motivation", "动机"),
+                    ("voice", "口吻"),
+                ] {
+                    let v = field(c, key);
+                    if !v.is_empty() {
+                        parts.push(format!("{label}：{}", one_line_clip(v, 24)));
+                    }
+                }
+                if parts.is_empty() {
+                    parts.push("（只建卡，字段暂空）".to_string());
+                }
+                out.push(format!("{name}  {}", parts.join(" · ")));
+            }
+        }
         "clues" => {
             let clues = arr(payload, "clues");
             out.total = clues.len();
@@ -1042,6 +1066,7 @@ fn payload_unit(payload: &Value) -> Option<String> {
         "deslop" => arr(payload, "suggestions").len(),
         "memoryPack" => arr(payload, "facts").len(),
         "relations" | "aliases" => arr(payload, "relations").len().max(arr(payload, "aliases").len()),
+        "character" => arr_any(payload, &["characters", "items"]).len(),
         "clueFixes" => arr_any(payload, &["fixes", "clueFixes"]).len(),
         "outlineUpdates" => arr_any(payload, &["updates", "outlineUpdates"]).len(),
         _ => 1,
@@ -1085,8 +1110,12 @@ fn effect_of(payload: &Value) -> (String, String) {
             "首次替换前自动快照；未命中项跳过".into(),
         ),
         "relations" => (
-            "memory.json facts（subject/predicate/object，去重入账）".into(),
-            "采纳前 memory.json 备份到 snapshots/ledger/；关系图与人物卡立即挂边".into(),
+            "relations.json 区间台账 + memory.json facts".into(),
+            "采纳前双份备份到 snapshots/ledger/；关系维按章显示，同一对人物可多段演变".into(),
+        ),
+        "character" => (
+            "characters.json（只补空、尊重 lockedFields）+ memory.aliases".into(),
+            "采纳前 characters.json / memory.json 备份到 snapshots/ledger/；新建人物同步到画布".into(),
         ),
         "memoryPack" => (
             "memory.json facts（去重入账）".into(),
@@ -1788,7 +1817,11 @@ fn summarize_payload(payload: &Value) -> String {
         "report" => format!("验证报告 {} 处发现（只报告不代改）", n("findings")),
         "deslop" => format!("去AI味 {} 处建议（一次采纳全部命中项）", n("suggestions")),
         "memoryPack" => format!("记忆 {} 条事实（双时态）", n("facts")),
-        "relations" => format!("人物关系 {} 条（入关系图）", n("relations")),
+        "relations" => format!("人物关系 {} 条（入区间台账）", n("relations")),
+        "character" => format!(
+            "人物档案 {} 人（只补空，新建进画布）",
+            arr_any(payload, &["characters", "items"]).len()
+        ),
         "aliases" => format!("别名档案 {} 人", n("aliases")),
         "dossier" => format!("档案卡：{} 场景 · {} 锚点", n("scenes"), n("relics")),
         "clueFixes" => format!("埋点修复 {} 条（只改台账）", n("fixes")),

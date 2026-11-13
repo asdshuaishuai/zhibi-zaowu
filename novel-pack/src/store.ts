@@ -145,6 +145,14 @@ export class NovelStore {
     return typeof title === 'string' ? title : null
   }
 
+  /** 章 meta（骨架/报告/审批状态）。只读，坏文件当空对象。 */
+  async chapterMeta(n: number): Promise<Record<string, unknown>> {
+    return await this.readJSON<Record<string, unknown>>(
+      join('chapters', chapterDirName(n), 'meta.json'),
+      {},
+    )
+  }
+
   async writtenChapters(): Promise<number[]> {
     const dir = this.path('chapters')
     if (!existsSync(dir)) return []
@@ -160,6 +168,11 @@ export class NovelStore {
   }
 
   // —— 设定 ——
+
+  /** 人物档案（characters.json）。坏 JSON 当空，只用于读取展示。 */
+  async characters(): Promise<any[]> {
+    return await this.readJSON<any[]>('characters.json', [])
+  }
 
   async canonTitles(): Promise<string[]> {
     const dir = this.path('canon')

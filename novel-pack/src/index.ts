@@ -190,6 +190,68 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
     ),
 
     textTool(
+      'get_characters',
+      '读取人物档案（本名/定位/口吻/动机/状态/锁定字段）。写对白、补人物、理关系前先读：口吻与动机只能从档案与原文来，不能编。',
+      {
+        name: str('按本名或别名过滤（省略 = 全部）', false),
+        limit: num('最多返回人数（默认 30）', false),
+      },
+      (args) =>
+        guard(async () => {
+          const all = await store.characters()
+          const q = String(args.name ?? '').trim()
+          const picked = q
+            ? all.filter(
+                (c: any) =>
+                  String(c?.name ?? '') === q ||
+                  (Array.isArray(c?.aliases) && c.aliases.includes(q)),
+              )
+            : all
+          const limit = Math.max(1, Math.min(80, Number(args.limit) || 30))
+          if (picked.length === 0) {
+            return q ? `没有「${q}」的人物档案。` : '人物档案为空。'
+          }
+          return picked
+            .slice(0, limit)
+            .map((c: any) => {
+              const head = `## ${c?.name ?? '?'}${c?.role ? `（${c.role}）` : ''}`
+              const lines: string[] = [head]
+              const fields: Array<[string, string]> = [
+                ['faction', '阵营'],
+                ['age', '年龄'],
+                ['appearance', '外貌'],
+                ['personality', '性格'],
+                ['motivation', '动机'],
+                ['background', '背景'],
+                ['voice', '口吻'],
+                ['status', '状态'],
+                ['coreStory', '核心剧情'],
+                ['notes', '备注'],
+              ]
+              for (const [key, label] of fields) {
+                const v = c?.[key]
+                if (typeof v === 'string' && v.trim()) lines.push(`- ${label}：${v}`)
+              }
+              if (Array.isArray(c?.goals) && c.goals.length) lines.push(`- 目标：${c.goals.join('、')}`)
+              if (Array.isArray(c?.flaws) && c.flaws.length) lines.push(`- 缺陷：${c.flaws.join('、')}`)
+              if (Array.isArray(c?.aliases) && c.aliases.length) lines.push(`- 别名：${c.aliases.join('、')}`)
+              if (Array.isArray(c?.arc) && c.arc.length) {
+                lines.push(
+                  `- 弧线：${c.arc
+                    .map((p: any) => `第${p?.chapter ?? '?'}章 ${p?.state ?? ''}`)
+                    .join('；')}`,
+                )
+              }
+              if (Array.isArray(c?.lockedFields) && c.lockedFields.length) {
+                lines.push(`- 锁定字段：${c.lockedFields.join('、')}（作者锁定，不得建议修改）`)
+              }
+              return lines.join('\n')
+            })
+            .join('\n\n')
+        }),
+    ),
+
+    textTool(
       'list_proposals',
       '列出提案及状态。默认返回待审 + 已拒绝（含拒收理由，供修正后重提）；可按状态筛选。',
       {
@@ -299,7 +361,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
 
     textTool(
       'propose_relations',
-      '提交人物关系边提案：给定「谁—谓词—谁」（如 沈砚—师从—老周 / 钱九渊—敌对—沈砚），采纳后写入记忆事实，关系图与人物卡立即出现这条边。AI 可主动发现关系（读 get_outline/get_canon 后推断）或补全读者已知关系；作者可拒收、可继续用同一工具修正。',
+      '提交人物关系边提案：给定「谁—谓词—谁」（如 沈砚—师从—老周 / 钱九渊—敌对—沈砚），可选首次成立章。采纳后写入关系区间台账（relations.json）——关系图按章显示、演变条能看出同一对人物从师徒到决裂；同时写一条记忆事实供总览维使用。作者可拒收、可继续用同一工具修正。',
       {
         relations: {
           type: 'array',
@@ -326,10 +388,68 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
           const p = await store.addProposal({
             capability: '人物关系',
             title: `人物关系 ${relations.length} 条`,
-            note: '采纳后入记忆事实（subject=from / predicate / object=to），关系图与人物卡立即挂边。',
+            note: '采纳后写入关系区间台账（relations.json）并同步记忆事实；关系图按章显示。',
             payload: { kind: 'relations', relations },
           })
           return `已登记人物关系提案 ${relations.length} 条（${p.id}），等待作者审阅。`
+        }),
+    ),
+
+    textTool(
+      'propose_character',
+      '提交人物档案提案（补全或新建）。只提交你确认的字段：采纳时**只补空**，作者已写的字段与 lockedFields 一律不动；新建人物会同时出现在画布人物维。外貌/性格/动机/口吻是写对白时最值钱的四条，宁可少填也不要编。',
+      {
+        characters: {
+          type: 'array',
+          description: '人物档案数组',
+          required: true,
+          items: {
+            type: 'object',
+            properties: {
+              name: str('本名（与人物页/别名表一致）'),
+              role: str('角色定位：主角/反派/导师/配角…', false),
+              faction: str('阵营/所属', false),
+              age: str('年龄', false),
+              appearance: str('外貌', false),
+              personality: str('性格', false),
+              motivation: str('动机：想要什么', false),
+              background: str('背景', false),
+              goals: { type: 'array', items: { type: 'string' }, description: '目标（想得到什么）', required: false },
+              flaws: { type: 'array', items: { type: 'string' }, description: '缺陷（挡住他/她的东西）', required: false },
+              voice: str('口吻：说话方式、用词、口头禅', false),
+              status: str('当前状态（活着/受伤/失忆…）', false),
+              statusChapter: num('状态成立的章节号', false),
+              coreStory: str('核心剧情：这个人在故事里承担什么', false),
+              notes: str('备注', false),
+              minor: { type: 'boolean', description: '是否路人/过场角色', required: false },
+              aliases: { type: 'array', items: { type: 'string' }, description: '别名（不含本名）', required: false },
+              arc: {
+                type: 'array',
+                description: '人物弧线：第几章之后变成什么样',
+                required: false,
+                items: {
+                  type: 'object',
+                  properties: { chapter: num('章号'), state: str('这一章之后的状态/立场变化') },
+                  required: ['chapter', 'state'],
+                },
+              },
+              sourceRefs: sourceRefs(),
+            },
+            required: ['name'],
+          },
+        },
+      },
+      (args) =>
+        guard(async () => {
+          const characters: any[] = Array.isArray(args.characters) ? args.characters : []
+          if (characters.length === 0) return '没有可登记的人物档案。'
+          const p = await store.addProposal({
+            capability: '人物档案',
+            title: `人物档案 ${characters.length} 人`,
+            note: '采纳后并入 characters.json：只补空、尊重 lockedFields；新建人物同时进画布。',
+            payload: { kind: 'character', characters },
+          })
+          return `已登记人物档案提案 ${characters.length} 人（${p.id}），等待作者审阅。`
         }),
     ),
 
@@ -452,14 +572,22 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
         guard(async () => {
           const text = String(args.text ?? '');
           if (text.trim().length < 50) return '草稿太短，不登记。'
+          const chapter = Number(args.chapter)
+          if (!Number.isFinite(chapter) || chapter <= 0) return '草稿缺章号。'
+          // 硬闸门：骨架未批准就写，等于绕过"写前契约"。
+          // 提示词里写了不算数——工具层不拦，模型照样能提。
+          const meta = await store.chapterMeta(chapter)
+          if (meta['skeletonApproved'] !== true) {
+            return `第${chapter}章骨架未获作者批准，不能出草稿。先 propose_skeleton，等作者在收件箱采纳。`
+          }
           const p = await store.addProposal({
             capability: '一键写作',
-            chapterNumber: Number(args.chapter),
-            title: `第${args.chapter}章 草稿 v1（${text.length} 字）`,
+            chapterNumber: chapter,
+            title: `第${chapter}章 草稿 v1（${text.length} 字）`,
             note: '采纳 = 自动快照后写入正文；拒绝 = 正文一字不动。',
             payload: {
               kind: 'draft',
-              chapter: Number(args.chapter),
+              chapter,
               text,
               sourceRefs: Array.isArray(args.sourceRefs) ? args.sourceRefs : [],
             },
@@ -701,7 +829,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
       '把推演结果写入世界线沙盒（覆盖式）：节点/边/影响清单 diffs/衍生实体。铁律：diff 只描述「对正典的影响」，本身不改正典；晋升用 promote_diff。',
       {
         worldlineId: str('世界线 id，如 β'),
-        nodes: { type: 'array', required: false, description: '推演节点', items: { type: 'object', properties: { id: str('节点id'), kind: str('storyline|event|character|clue|canon'), label: str('标题'), ref: str('指向正典对象id（可空）', false), x: num('画板横坐标', false), y: num('画板纵坐标', false) }, required: ['id', 'kind', 'label'] } },
+        nodes: { type: 'array', required: false, description: '推演节点', items: { type: 'object', properties: { id: str('节点id'), kind: str('storyline|event|character|clue|canon'), label: str('标题'), ref: str('指向正典对象id（可空）', false), chapter: num('落在第几章（0=未排章）', false), state: { type: 'string', description: 'planned|adopted|written|branch-only（省略则保留原状态）', required: false }, note: str('备注', false), x: num('画板横坐标', false), y: num('画板纵坐标', false) }, required: ['id', 'kind', 'label'] } },
         edges: { type: 'array', required: false, description: '推演边', items: { type: 'object', properties: { from: str('源节点id'), to: str('目标节点id'), kind: str('influence|plant|payoff|involve|conflict|hiddenline'), hidden: { type: 'boolean', description: '暗线（读者视角隐藏）', required: false } }, required: ['from', 'to', 'kind'] } },
         diffs: { type: 'array', required: true, description: '对正典的影响清单', items: { type: 'object', properties: { target: str('设定|伏笔|事件|故事线|人物'), targetRef: str('正典对象标识（标题/编号）'), kind: str('add|change'), before: str('原状（add 填「—」）'), after: str('推演后的新状态'), reason: str('为何连锁至此'), severity: str('high|medium|low', false) }, required: ['target', 'targetRef', 'kind', 'after'] } },
         derived: { type: 'object', required: false, description: '本线衍生（自动标 line 归属）', properties: { characters: { type: 'array', items: { type: 'string' }, required: false }, canon: { type: 'array', items: { type: 'string' }, required: false }, clues: { type: 'array', items: { type: 'string' }, required: false } } },
@@ -711,7 +839,27 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
           const wls = await store.worldlines()
           const w = wls.find((x) => x.id === String(args.worldlineId))
           if (!w) return `世界线不存在：${args.worldlineId}（先 propose_worldline）`
-          w.nodes = Array.isArray(args.nodes) ? args.nodes : []
+          // α 是当前事实基准，不是沙盒。工具描述写着“绝不触碰正典”，
+          // 这里必须真的拦住——否则一次推演就能把正典节点整份覆盖。
+          if (w.id === 'α' || w.kind === 'base') {
+            return 'α 正典线是事实基准，不能用推演覆盖；请对沙盒线（β/γ…）推演，再逐条晋升。'
+          }
+          // 覆盖式写入前按 id 认回旧节点：AI 没重写的 chapter/state/note 保留。
+          // 不合并的话，一次重推演就会把章号和“已采纳/已写”状态抹掉。
+          const oldNodes = new Map<string, any>(
+            (Array.isArray(w.nodes) ? w.nodes : []).map((n: any) => [String(n?.id ?? ''), n]),
+          )
+          w.nodes = (Array.isArray(args.nodes) ? args.nodes : []).map((n: any) => {
+            const old = oldNodes.get(String(n?.id ?? ''))
+            if (!old) return n
+            return {
+              ...old,
+              ...n,
+              chapter: n.chapter ?? old.chapter,
+              state: n.state ?? old.state,
+              note: n.note ?? old.note,
+            }
+          })
           w.edges = Array.isArray(args.edges) ? args.edges : []
           // 覆盖式推演不能把已晋升的 diff 洗回可晋升：按 target/targetRef/kind/after 认回旧条目。
           const promotedPool = (Array.isArray(w.diffs) ? w.diffs : []).filter((d: any) => d?.promoted)
@@ -813,6 +961,7 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
           const wls = await store.worldlines()
           const w = wls.find((x) => x.id === String(args.worldlineId))
           if (!w) return `世界线不存在：${args.worldlineId}`
+          if (w.id === 'α' || w.kind === 'base') return 'α 正典线不可归档。'
           w.status = w.status === '已归档' ? '已推演' : '已归档'
           await store.saveWorldlines(wls)
           return `世界线 ${w.id} 现为「${w.status}」。`

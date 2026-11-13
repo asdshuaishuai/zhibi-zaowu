@@ -451,6 +451,12 @@ impl ProjectHandle {
                 eprintln!("记录今日字数失败：{e}");
             }
         }
+        // 账本跟随正文：正文写到第 N 章，所有「已采纳」且章号 <= N 的节点转「已写」。
+        // 这是"人写正文，AI 理账"的正解——状态由正文事实推动，不靠 AI 声明。
+        if let Err(e) = crate::worldline::mark_adopted_written(&self.root, n) {
+            // 同步失败不阻断正文保存；下次保存会再试一次（幂等）。
+            eprintln!("同步世界线节点状态失败：{e}");
+        }
         Ok(())
     }
 
@@ -628,6 +634,31 @@ mod tests {
         assert_eq!(handle.imported_docs().len(), 3);
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(src);
+    }
+
+    #[test]
+    fn imported_doc_paths_cannot_escape_the_imports_dir() {
+        let (home, _guard) = use_home("import-path");
+        let dir = create_project("导入路径").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        let imports = dir.join("imports");
+        std::fs::create_dir_all(&imports).unwrap();
+        // 书目录外放一份敏感文件
+        std::fs::write(dir.join("secret.md"), "不该被读到").unwrap();
+        assert!(handle.read_imported_doc("../secret.md").is_err(), ".. 必须被拦");
+        assert!(handle.read_imported_doc("/etc/passwd").is_err(), "绝对路径必须被拦");
+        assert!(handle.read_imported_doc("C:secret.md").is_err(), "盘符相对路径必须被拦");
+        assert!(handle.delete_imported_doc("../secret.md").is_err());
+        // 非材料扩展名不认
+        std::fs::write(imports.join("page.html"), "x").unwrap();
+        assert!(handle.read_imported_doc("page.html").is_err());
+        // 符号链接不能逃出 imports/
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("secret.md"), imports.join("evil.md")).unwrap();
+            assert!(handle.read_imported_doc("evil.md").is_err(), "符号链接必须被拦");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -851,17 +882,23 @@ mod tests {
         assert_eq!(p.payload["title"], serde_json::json!("师兄反目"));
         assert_eq!(p.capability, "世界线·逐节点采纳");
 
-        // 节点状态同步改成 adopted——时间轴上要能看出"这条已经承认了"
+        // 生成提案时**不改**节点状态：作者还没裁决，不能先写成"已采纳"
+        // （否则拒收之后节点永久锁死、不能再采纳）。
         let line = handle.worldlines().into_iter().find(|l| l["id"] == serde_json::json!("β")).unwrap();
         let n1 = line["nodes"].as_array().unwrap().iter().find(|n| n["id"] == "n1").unwrap().clone();
-        assert_eq!(n1["state"], serde_json::json!("adopted"));
+        assert_eq!(n1["state"], serde_json::json!("planned"));
 
-        // 重复采纳被拒（不能靠连点造出两条一样的提案）
-        assert!(handle.adopt_node("β", "n1").is_err());
+        // 连点两次复用同一份待审提案（幂等，不堆重复）
+        assert_eq!(handle.adopt_node("β", "n1").unwrap(), pid);
 
         // 采纳仍然只是提案：正典事件没动，要过收件箱
         assert!(handle.events().is_empty(), "采纳 ≠ 直写正典");
         handle.accept_proposal(&pid).unwrap();
+        // 采纳之后才写 adopted——时间轴上这时才显示"这条已经承认了"
+        let line = handle.worldlines().into_iter().find(|l| l["id"] == serde_json::json!("β")).unwrap();
+        let n1 = line["nodes"].as_array().unwrap().iter().find(|n| n["id"] == "n1").unwrap().clone();
+        assert_eq!(n1["state"], serde_json::json!("adopted"));
+        assert_eq!(n1["adoptedProposalId"], serde_json::json!(pid));
         let ev = handle.events();
         assert_eq!(ev.len(), 1);
         assert_eq!(ev[0]["chapter"], serde_json::json!(15));
@@ -1050,12 +1087,98 @@ mod tests {
         assert!(facts.iter().any(|f| f["subject"] == serde_json::json!("沈砚")
             && f["predicate"] == serde_json::json!("师从")
             && f["object"] == serde_json::json!("老周")));
+        // 关系维的事实源是 relations.json 的区间模型——不能只写 facts，
+        // 否则 AI 提的关系在关系图上永远看不见。
+        let rels = crate::relations::Web::new(&h.root).all();
+        assert_eq!(rels.len(), 2, "两条关系都进了区间台账");
+        let mentor = rels.iter().find(|r| r.from == "沈砚" && r.to == "老周").unwrap();
+        assert_eq!(mentor.intervals.len(), 1);
+        assert_eq!(mentor.intervals[0].from_chapter, 7);
+        assert_eq!(mentor.intervals[0].label, "师从");
+        assert_eq!(mentor.kind, "师承", "着色分类由谓词得出");
         // 幂等：同边重复采纳不重复入账
         let (n2, sk) = h.apply_payload(&serde_json::json!({ "kind": "relations", "relations": [
             { "from": "沈砚", "predicate": "师从", "to": "老周" }
         ]})).err().map(|e| (0usize, vec![e])).unwrap_or((0, vec![]));
         assert_eq!(n2, 0);
         assert!(!sk.is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn character_proposal_lands_in_characters_and_canvas_aliases() {
+        let (home, _home_guard) = use_home("character-proposal");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("人物提案").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        let roster = crate::characters::Roster::new(&h.root);
+        let mut mine = crate::characters::Character::new("沈砚");
+        mine.voice = "话少，句短".into();
+        mine.locked_fields = vec!["motivation".into()];
+        roster.upsert(mine).unwrap();
+
+        let pid = h
+            .add_proposal_local(
+                "测试",
+                "人物补全",
+                "",
+                serde_json::json!({
+                    "kind": "character",
+                    "characters": [
+                        { "name": "沈砚", "voice": "AI 想改的口吻", "motivation": "AI 想填的动机",
+                          "appearance": "青衣，佩断刀", "aliases": ["砚哥"] },
+                        { "name": "老周", "role": "导师", "voice": "慢，爱用歇后语" }
+                    ]
+                }),
+            )
+            .unwrap();
+        let (applied, _) = h.accept_proposal(&pid).unwrap();
+        assert_eq!(applied, 2, "一条补全 + 一条新建");
+
+        let all = roster.all();
+        let shen = all.iter().find(|c| c.name == "沈砚").unwrap();
+        assert_eq!(shen.voice, "话少，句短", "作者写的口吻不能被覆盖");
+        assert!(shen.motivation.is_empty(), "锁定字段一律不动");
+        assert_eq!(shen.appearance, "青衣，佩断刀");
+        assert!(shen.aliases.contains(&"砚哥".to_string()));
+        assert!(all.iter().any(|c| c.name == "老周" && c.role == "导师"));
+
+        // 新建的人物要立刻出现在画布：画布人物节点来自 memory.aliases
+        let aliases = h.aliases();
+        assert!(aliases.iter().any(|a| a["canonicalName"] == serde_json::json!("老周")));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn accepting_a_failing_payload_restores_every_ledger_file() {
+        // apply_payload 中途报错（不是结构不合法，而是业务写不进去）时，
+        // 也必须整档回退，不能留下"relations 写了、memory 没写"的半截状态。
+        let (home, _home_guard) = use_home("rollback-on-error");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let dir = create_project("回滚失败路径").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+        // memory.json 坏掉：关系分支会先写 relations.json，再在写 facts 时失败
+        std::fs::write(dir.join("memory.json"), "{ 坏掉").unwrap();
+
+        let pid = h
+            .add_proposal_local(
+                "测试",
+                "半截写入",
+                "",
+                serde_json::json!({
+                    "kind": "relations",
+                    "relations": [{ "from": "沈砚", "predicate": "师从", "to": "老周", "chapter": 7 }]
+                }),
+            )
+            .unwrap();
+        let err = h.accept_proposal(&pid).unwrap_err();
+        assert!(err.contains("回滚") || err.contains("已拒绝"), "{err}");
+        assert!(!dir.join("relations.json").exists(), "先写的 relations.json 要退回删除");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("memory.json")).unwrap(),
+            "{ 坏掉",
+            "坏文件本身不能被悄悄改掉"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1591,6 +1714,7 @@ pub fn payload_kind(payload: &serde_json::Value) -> String {
         ("suggestions", "deslop"),
         ("facts", "memoryPack"),
         ("aliases", "aliases"),
+        ("characters", "character"),
         ("relations", "relations"),
         ("updates", "outlineUpdates"),
         ("outlineUpdates", "outlineUpdates"),
@@ -1673,15 +1797,36 @@ impl ProjectHandle {
         // 一旦发现结构坏了（章号写成“第十二章”、id 撞车），必须整档退回，
         // 不能让作者面对一份"半新半旧"的台账。
         let guard = crate::schema::Guard::capture(&self.root);
-        let (applied, skipped) = match self.apply_payload(&p.payload) {
+        // 前像读不全就拒绝采纳：读失败 ≠ 文件不存在，继续写会让回滚删错东西。
+        if let Err(errs) = guard.capture_ok() {
+            return Err(format!(
+                "台账读取失败，已拒绝采纳（{}）。提案保持待审。",
+                errs.join("；")
+            ));
+        }
+        let (applied, skipped) = match self.apply_payload_for(&p.payload, &p.id) {
             Ok(r) => r,
-            Err(e) => return Err(e),
+            Err(e) => {
+                // 业务写到一半失败：必须整档回退，而不是只报错留下半截。
+                let failures = guard.restore_all();
+                return Err(if failures.is_empty() {
+                    format!("{e}（台账已回滚到采纳前，提案保持待审）")
+                } else {
+                    format!("{e}（回滚失败：{}——请检查台账文件）", failures.join("；"))
+                });
+            }
         };
         if let Err(problems) = guard.verify(&self.root) {
             let why: Vec<String> = problems.iter().map(|p| p.summary()).collect();
+            let restored = if problems.iter().any(|p| p.issues.iter().any(|i| i.starts_with("回滚失败"))) {
+                "部分台账回滚失败，请检查文件"
+            } else {
+                "台账已恢复到采纳前"
+            };
             return Err(format!(
-                "采纳被拒：{}。台账已恢复到采纳前，提案保持待审。",
-                why.join("；")
+                "采纳被拒：{}。{}，提案保持待审。",
+                why.join("；"),
+                restored
             ));
         }
         if applied == 0 {
@@ -1715,7 +1860,17 @@ impl ProjectHandle {
         self.save_proposals(&list)
     }
 
+    /// 测试专用入口：不带 proposal id（promoted/adopted 会记成 test-proposal）。
+    #[cfg(test)]
     fn apply_payload(&self, payload: &serde_json::Value) -> Result<(usize, Vec<String>), String> {
+        self.apply_payload_for(payload, "test-proposal")
+    }
+
+    fn apply_payload_for(
+        &self,
+        payload: &serde_json::Value,
+        proposal_id: &str,
+    ) -> Result<(usize, Vec<String>), String> {
         let kind = payload_kind(payload);
         let kind = kind.as_str();
         let mut applied = 0usize;
@@ -1734,6 +1889,61 @@ impl ProjectHandle {
                     let body = d.get("content").and_then(|c| c.as_str()).unwrap_or("");
                     write_atomic(&file, body)?;
                     applied += 1;
+                }
+            }
+            "character" => {
+                // 人物档案提案：按 name（或已存在的别名）归并，只补空、尊重 lockedFields。
+                // 这是「导入设定 → 人物模块」与人物页补全的落库通道。
+                let incoming = payload_array(payload, &["characters", "items"]);
+                if incoming.is_empty() {
+                    return Err("人物提案没有 characters".into());
+                }
+                let roster = crate::characters::Roster::new(&self.root);
+                let mut list = roster.all_checked()?;
+                let mut touched: Vec<String> = Vec::new();
+                for raw in incoming {
+                    let mut c: crate::characters::Character = match serde_json::from_value(raw) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            skipped.push(format!("人物条目结构不合法：{e}"));
+                            continue;
+                        }
+                    };
+                    let name = c.name.trim().to_string();
+                    if name.is_empty() {
+                        skipped.push("人物条目缺 name".into());
+                        continue;
+                    }
+                    // id 只认已有档案的；提案里的 id 不作为身份依据（AI 不该发明 id）
+                    let pos = list.iter().position(|x| x.matches(&name));
+                    match pos {
+                        Some(i) => {
+                            let changed = list[i].apply_proposal(&c);
+                            if changed > 0 {
+                                applied += 1;
+                                touched.push(list[i].name.clone());
+                            } else {
+                                skipped.push(format!("「{name}」没有可补的字段（已写或已锁）"));
+                            }
+                        }
+                        None => {
+                            c.id = crate::characters::Character::new(&name).id;
+                            c.name = name.clone();
+                            c.extra = Default::default();
+                            // 新档案本身就是"从无到有"，无论字段多少都算一条入库
+                            list.push(c);
+                            applied += 1;
+                            touched.push(name);
+                        }
+                    }
+                }
+                if applied > 0 {
+                    self.snapshot_ledger_files(&["characters.json", "memory.json"])?;
+                    roster.save(&list)?;
+                    // 新建的人物要立刻出现在画布/关系图上：画布的人物节点来自
+                    // memory.aliases，不是 characters.json。不同步的话作者新建完
+                    // 在画布上找不到这个人，关系也挂不上。
+                    self.upsert_alias_names(&touched)?;
                 }
             }
             "clues" => {
@@ -1838,8 +2048,13 @@ impl ProjectHandle {
                 }
                 entry.insert("plannedFrom".into(), payload.get("from").cloned().unwrap_or(serde_json::json!("")));
                 events.push(serde_json::Value::Object(entry));
-                self.snapshot_ledger_files(&["events.json"])?;
+                self.snapshot_ledger_files(&["events.json", "worldlines.json"])?;
                 self.save_array("events.json", &events)?;
+                // 逐节点采纳：采纳的是"这个节点成为正典后续"。状态在**采纳时**才写，
+                // 生成提案时不写——否则作者拒收后节点会永久锁死。
+                if let Some(node_ref) = payload.get("nodeRef").and_then(|v| v.as_str()) {
+                    self.mark_node_adopted(node_ref, proposal_id)?;
+                }
                 applied += 1;
             }
             "outlineUpdates" => {
@@ -2038,19 +2253,88 @@ impl ProjectHandle {
                 applied = hit;
             }
             "relations" => {
-                // 人物关系边 → memory.facts（subject/predicate/object）；关系图与人物卡立即挂边
+                // 关系提案落两处：
+                // 1) relations.json 的区间模型——画布关系维、演变条、按章过滤读它；
+                // 2) memory.json.facts——总览维读它，保留双写避免旧视图丢边。
+                // 先写区间模型：它才是「关系」的事实源，facts 只是兼容视图。
                 let rels = payload.get("relations").and_then(|x| x.as_array()).cloned().unwrap_or_default();
-                let path = self.root.join("memory.json");
-                let mut mem: serde_json::Value = std::fs::read_to_string(&path).ok()
-                    .and_then(|t| serde_json::from_str(&t).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                let mut cur = mem.get("facts").and_then(|f| f.as_array()).cloned().unwrap_or_default();
-                for r in rels {
+                if rels.is_empty() {
+                    return Err("关系提案没有 relations".into());
+                }
+                let web = crate::relations::Web::new(&self.root);
+                let mut list = web.all_checked()?;
+                let mut touched = 0usize;
+                for r in &rels {
                     let from = r.get("from").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
                     let pred = r.get("predicate").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
                     let to = r.get("to").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
                     if from.is_empty() || pred.is_empty() || to.is_empty() {
                         skipped.push("缺 from/predicate/to".into());
+                        continue;
+                    }
+                    let chapter = r.get("chapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                    let public = r.get("publicToReader").and_then(|b| b.as_bool()).unwrap_or(true);
+                    let evidence = r.get("evidence").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let pos = list.iter().position(|x| {
+                        (x.from == from && x.to == to) || (x.from == to && x.to == from)
+                    });
+                    let dup = pos
+                        .map(|i| {
+                            list[i].intervals.iter().any(|iv| {
+                                // 章号缺省时按「同标签」判重：不知道从第几章开始，
+                                // 不能再加一段从第 0 章起的关系（会把时间轴拉错）。
+                                iv.label == pred && (chapter == 0 || iv.from_chapter == chapter)
+                            })
+                        })
+                        .unwrap_or(false);
+                    if dup {
+                        skipped.push(format!("{from}-{pred}-{to} 第{chapter}章已在账"));
+                        continue;
+                    }
+                    let interval = crate::relations::Interval {
+                        from_chapter: chapter,
+                        to_chapter: 0,
+                        label: pred.clone(),
+                        public_to_reader: public,
+                        evidence,
+                        extra: Default::default(),
+                    };
+                    match pos {
+                        Some(i) => {
+                            list[i].intervals.push(interval);
+                            list[i].normalize();
+                            // 颜色跟着最后一段走：决裂之后不该还是师承色
+                            if let Some(last) = list[i].intervals.last() {
+                                list[i].kind = crate::relations::classify(&last.label);
+                            }
+                        }
+                        None => {
+                            let mut rel = crate::relations::Relation::new(&from, &to, &crate::relations::classify(&pred));
+                            rel.directed = false;
+                            rel.intervals.push(interval);
+                            list.push(rel);
+                        }
+                    }
+                    touched += 1;
+                }
+                if touched == 0 {
+                    return Err(format!("没有可入账的关系：{}", skipped.join("、")));
+                }
+                self.snapshot_ledger_files(&["relations.json", "memory.json"])?;
+                web.save(&list)?;
+
+                // facts 双写（总览维兼容）。坏 memory.json 不能当空对象再写回。
+                let path = self.root.join("memory.json");
+                let mut mem = read_json_checked(&path)?.unwrap_or_else(|| serde_json::json!({}));
+                if !mem.is_object() {
+                    return Err("memory.json 顶层不是对象，已拒绝覆盖".into());
+                }
+                let mut cur = mem.get("facts").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+                for r in &rels {
+                    let from = r.get("from").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                    let pred = r.get("predicate").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                    let to = r.get("to").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                    if from.is_empty() || pred.is_empty() || to.is_empty() {
                         continue;
                     }
                     let dup = cur.iter().any(|f| {
@@ -2059,7 +2343,6 @@ impl ProjectHandle {
                             && f.get("object").and_then(|v| v.as_str()) == Some(to.as_str())
                     });
                     if dup {
-                        skipped.push(format!("{from}-{pred}-{to} 已在账"));
                         continue;
                     }
                     cur.push(serde_json::json!({
@@ -2072,11 +2355,10 @@ impl ProjectHandle {
                         "source": "relation",
                         "note": r.get("evidence").and_then(|v| v.as_str()).unwrap_or(""),
                     }));
-                    applied += 1;
                 }
-                if applied == 0 { return Err(format!("没有可入账的关系：{}", skipped.join("、"))); }
                 mem["facts"] = serde_json::json!(cur);
-                std::fs::write(&path, serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)?;
+                applied = touched;
             }
             "memoryPack" => {
                 // 事实入账 memory.json.facts（subject+predicate+object+生效章 去重）
@@ -2294,7 +2576,85 @@ impl ProjectHandle {
             }
             other => return Err(format!("未知提案类型：{other}")),
         }
+        // 世界线影响晋升：同样在采纳时才落 promoted，拒收不回退任何东西
+        //（因为生成提案时就没写）。
+        if let Some(dr) = payload.get("diffRef") {
+            self.mark_diff_promoted(dr, proposal_id)?;
+        }
         Ok((applied, skipped))
+    }
+
+    /// 采纳时把世界线节点置「已采纳」。节点引用格式 `线id:节点id`。
+    ///
+    /// 找不到线/节点只报错不改：采纳创建时的状态检查已经保证它们存在，
+    /// 走到这里说明 worldlines.json 在两次操作之间被手改过。
+    fn mark_node_adopted(&self, node_ref: &str, proposal_id: &str) -> Result<(), String> {
+        let (line_id, node_id) = node_ref
+            .split_once(':')
+            .ok_or_else(|| format!("节点引用格式错误：{node_ref}"))?;
+        let mut lines = self.read_array_checked("worldlines.json")?;
+        let w = lines
+            .iter_mut()
+            .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(line_id))
+            .ok_or_else(|| format!("世界线不存在：{line_id}"))?;
+        let nodes = w
+            .get_mut("nodes")
+            .and_then(|n| n.as_array_mut())
+            .ok_or_else(|| format!("线{line_id}的 nodes 不是数组"))?;
+        let node = nodes
+            .iter_mut()
+            .find(|n| n.get("id").and_then(|i| i.as_str()) == Some(node_id))
+            .ok_or_else(|| format!("线{line_id}没有节点 {node_id}"))?;
+        if let Some(obj) = node.as_object_mut() {
+            obj.insert("state".into(), serde_json::json!("adopted"));
+            obj.insert("adoptedProposalId".into(), serde_json::json!(proposal_id));
+        }
+        self.save_worldlines(&lines)
+    }
+
+    /// 采纳时把一条世界线影响置「已晋升」。`diffRef` 由 promote_diff* 写入。
+    fn mark_diff_promoted(
+        &self,
+        diff_ref: &serde_json::Value,
+        proposal_id: &str,
+    ) -> Result<(), String> {
+        let Some(line_id) = diff_ref.get("worldline").and_then(|v| v.as_str()) else {
+            return Ok(());
+        };
+        let Some(index) = diff_ref.get("index").and_then(|v| v.as_u64()) else {
+            return Ok(());
+        };
+        let chapter = diff_ref.get("scheduledChapter").and_then(|v| v.as_u64());
+        let expected_after = diff_ref.get("after").and_then(|v| v.as_str());
+        let mut lines = self.read_array_checked("worldlines.json")?;
+        let w = lines
+            .iter_mut()
+            .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(line_id))
+            .ok_or_else(|| format!("世界线不存在：{line_id}"))?;
+        let diffs = w
+            .get_mut("diffs")
+            .and_then(|d| d.as_array_mut())
+            .ok_or_else(|| format!("线{line_id}的 diffs 不是数组"))?;
+        let d = diffs
+            .get_mut(index as usize)
+            .ok_or_else(|| format!("线{line_id}没有第 {index} 条影响"))?;
+        // 索引是脆的：两次操作之间 AI 可能重排过 diffs。after 对不上就拒绝，
+        // 不能把 promoted 打到另一条影响上。
+        if let Some(after) = expected_after {
+            if d.get("after").and_then(|v| v.as_str()) != Some(after) {
+                return Err(format!(
+                    "线{line_id}第 {index} 条影响已被改写（after 不一致），拒绝标记晋升"
+                ));
+            }
+        }
+        if let Some(obj) = d.as_object_mut() {
+            obj.insert("promoted".into(), serde_json::json!(true));
+            obj.insert("promotedProposalId".into(), serde_json::json!(proposal_id));
+            if let Some(ch) = chapter {
+                obj.insert("scheduledChapter".into(), serde_json::json!(ch));
+            }
+        }
+        self.save_worldlines(&lines)
     }
 
     fn canon_path(&self, title: &str) -> PathBuf {
@@ -2523,6 +2883,106 @@ impl ProjectHandle {
         }
         write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)
     }
+
+    /// 把人物档案同步进 `memory.json.aliases`（画布人物/关系维的事实源）。
+    ///
+    /// 作者在人物页新建/改别名时也要走这里，否则 characters.json 里有人、
+    /// 画布上却没有这个点，关系也挂不上。
+    pub fn sync_alias_entry(&self, canonical: &str, aliases: &[String]) -> Result<(), String> {
+        let canonical = canonical.trim();
+        if canonical.is_empty() {
+            return Ok(());
+        }
+        let path = self.root.join("memory.json");
+        let mut mem = read_json_checked(&path)?.unwrap_or_else(|| serde_json::json!({}));
+        if !mem.is_object() {
+            return Err("memory.json 顶层不是对象，已拒绝覆盖".into());
+        }
+        let mut cur = mem.get("aliases").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+        let pos = cur
+            .iter()
+            .position(|x| x.get("canonicalName").and_then(|v| v.as_str()) == Some(canonical));
+        match pos {
+            Some(i) => {
+                if let Some(obj) = cur[i].as_object_mut() {
+                    let mut names: Vec<String> = obj
+                        .get("aliases")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    for a in aliases {
+                        let a = a.trim();
+                        if !a.is_empty() && a != canonical && !names.iter().any(|x| x == a) {
+                            names.push(a.to_string());
+                        }
+                    }
+                    obj.insert("aliases".into(), serde_json::json!(names));
+                }
+            }
+            None => {
+                let names: Vec<String> = aliases
+                    .iter()
+                    .map(|a| a.trim())
+                    .filter(|a| !a.is_empty() && *a != canonical)
+                    .map(String::from)
+                    .collect();
+                cur.push(serde_json::json!({ "canonicalName": canonical, "aliases": names }));
+            }
+        }
+        mem["aliases"] = serde_json::json!(cur);
+        write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)
+    }
+
+    /// 人物改名：别名表的本名跟着改，旧名保留为别名（否则旧稿里的称呼就找不着人了）。
+    pub fn rename_alias_canonical(&self, old: &str, new: &str) -> Result<(), String> {
+        let (old, new) = (old.trim(), new.trim());
+        if old.is_empty() || new.is_empty() || old == new {
+            return Ok(());
+        }
+        let path = self.root.join("memory.json");
+        let mut mem = read_json_checked(&path)?.unwrap_or_else(|| serde_json::json!({}));
+        if !mem.is_object() {
+            return Err("memory.json 顶层不是对象，已拒绝覆盖".into());
+        }
+        let mut cur = mem.get("aliases").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+        let Some(pos) = cur
+            .iter()
+            .position(|x| x.get("canonicalName").and_then(|v| v.as_str()) == Some(old))
+        else {
+            return Ok(());
+        };
+        let mut aliases: Vec<String> = cur[pos]
+            .get("aliases")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if !aliases.iter().any(|a| a == old) {
+            aliases.push(old.to_string());
+        }
+        if let Some(obj) = cur[pos].as_object_mut() {
+            obj.insert("canonicalName".into(), serde_json::json!(new));
+            obj.insert("aliases".into(), serde_json::json!(aliases));
+        }
+        mem["aliases"] = serde_json::json!(cur);
+        write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)
+    }
+
+    /// 人物删除：别名表里的条目也删掉，不留一个没有档案的点在画布上。
+    pub fn remove_alias_canonical(&self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let path = self.root.join("memory.json");
+        let mut mem = read_json_checked(&path)?.unwrap_or_else(|| serde_json::json!({}));
+        if !mem.is_object() {
+            return Err("memory.json 顶层不是对象，已拒绝覆盖".into());
+        }
+        let mut cur = mem.get("aliases").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+        cur.retain(|x| x.get("canonicalName").and_then(|v| v.as_str()) != Some(name));
+        mem["aliases"] = serde_json::json!(cur);
+        write_atomic(&path, &serde_json::to_string_pretty(&mem).map_err(|e| e.to_string())?)
+    }
     /// 合并写章 meta（骨架/报告/标题共用）。
     pub(crate) fn meta_patch(&self, n: u32, patch: &[(&str, serde_json::Value)]) -> Result<(), String> {
         let dir = self.root.join("chapters").join(chapter_dir_name(n));
@@ -2582,7 +3042,11 @@ impl ProjectHandle {
     }
 
     /// 最近成稿章（有非空正文的最大章号；无成稿时按 1）。
-    fn last_written_chapter(&self) -> u32 {
+    /// 最新成稿章（有非空正文的最大章；一章没有时为 1，避免滑块/时间轴除零）。
+    ///
+    /// 与"最后一个章目录号"是两回事：建了目录但还没写正文，不该被当成最新章。
+    /// 画布滑块上限、演变条右端都统一用这个口径。
+    pub fn last_written_chapter(&self) -> u32 {
         self.chapters()
             .iter()
             .filter(|c| c.has_prose)
@@ -2914,6 +3378,14 @@ impl ProjectHandle {
             skipped: Vec::new(),
             names: Vec::new(),
         };
+        // 上限是为了不让一次导入把 UI/AI 上下文压垮；但超出的必须告诉作者，
+        // 不能悄悄少几篇（作者会以为全导进来了）。
+        if files.len() > 200 {
+            out.skipped.push(format!(
+                "单次最多 200 篇，本次未处理 {} 篇——可分批再导",
+                files.len() - 200
+            ));
+        }
         for f in files.iter().take(200) {
             let Ok(text) = std::fs::read_to_string(f) else { continue };
             if text.trim().is_empty() {
@@ -2993,14 +3465,35 @@ impl ProjectHandle {
     }
 
     /// 删除一篇知识库文档（作者动作，journal 留痕可撤销）。
-    pub fn delete_imported_doc(&self, name: &str) -> Result<(), String> {
-        if name.contains('/') || name.contains('\\') || name.contains("..") {
+    /// 把 imports/ 里的文件名解析成绝对路径，并挡住越界与符号链接逃逸。
+    ///
+    /// 只检查 `..`/斜杠不够：符号链接可以让 `imports/evil.md` 指向书目录外，
+    /// Windows 的 `C:foo` 是盘符相对路径。这里 canonicalize 后要求仍在 imports/ 内。
+    fn import_path(&self, name: &str) -> Result<PathBuf, String> {
+        let name = name.trim();
+        if name.is_empty()
+            || name.contains('/')
+            || name.contains('\\')
+            || name.contains("..")
+            || name.contains(':')
+        {
             return Err("非法文件名".into());
         }
-        let path = self.root.join("imports").join(name);
-        if !path.exists() {
-            return Err(format!("imports/ 里没有 {name}"));
+        if !(name.ends_with(".md") || name.ends_with(".txt")) {
+            return Err("只支持 .md / .txt 材料".into());
         }
+        let dir = self.root.join("imports");
+        let root = std::fs::canonicalize(&dir).map_err(|e| format!("imports/ 不可用：{e}"))?;
+        let path = std::fs::canonicalize(root.join(name))
+            .map_err(|e| format!("imports/ 里没有 {name}：{e}"))?;
+        if !path.starts_with(&root) {
+            return Err("非法文件名".into());
+        }
+        Ok(path)
+    }
+
+    pub fn delete_imported_doc(&self, name: &str) -> Result<(), String> {
+        let path = self.import_path(name)?;
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
         let _ = crate::journal::Journal::new(&self.root).record(
@@ -3018,11 +3511,8 @@ impl ProjectHandle {
 
     /// 读一篇知识库文档的原文（预览 / 校验存在性）。
     pub fn read_imported_doc(&self, name: &str) -> Result<String, String> {
-        if name.contains('/') || name.contains('\\') || name.contains("..") {
-            return Err("非法文件名".into());
-        }
-        std::fs::read_to_string(self.root.join("imports").join(name))
-            .map_err(|e| format!("读不出来：{e}"))
+        let path = self.import_path(name)?;
+        std::fs::read_to_string(&path).map_err(|e| format!("读不出来：{e}"))
     }
 
     /// imports/ 里现有几篇待提取材料（0 = 没有，不值得派 AI）。
@@ -3080,9 +3570,9 @@ impl ProjectHandle {
     /// 宿主侧晋升一条世界线影响 → 提案进收件箱（与 novel-pack promote_diff 同映射同幂等）。
     /// 返回提案 id。
     pub fn promote_diff(&self, worldline_id: &str, diff_index: usize) -> Result<String, String> {
-        let mut lines = self.read_array_checked("worldlines.json")?;
+        let lines = self.read_array_checked("worldlines.json")?;
         let w = lines
-            .iter_mut()
+            .iter()
             .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(worldline_id))
             .ok_or_else(|| format!("世界线不存在：{worldline_id}"))?;
         let forked = w.get("forkedChapter").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
@@ -3092,19 +3582,31 @@ impl ProjectHandle {
             .and_then(|d| d.as_array())
             .cloned()
             .unwrap_or_default();
-        let mut d = diffs
+        let d = diffs
             .into_iter()
             .nth(diff_index)
             .ok_or("该影响不存在")?;
         if d.get("promoted").and_then(|p| p.as_bool()).unwrap_or(false) {
             return Err("该影响已晋升，拒绝重复".into());
         }
+        // 幂等：同一影响已有待审提案时复用（拒收后 promoted 不会被写脏）。
+        let mut list = self.proposals_checked()?;
+        if let Some(p) = list.iter().find(|p| {
+            p.status == "待确认"
+                && p.payload.get("diffRef").and_then(|r| r.get("worldline")).and_then(|v| v.as_str())
+                    == Some(worldline_id)
+                && p.payload.get("diffRef").and_then(|r| r.get("index")).and_then(|v| v.as_u64())
+                    == Some(diff_index as u64)
+        }) {
+            return Ok(p.id.clone());
+        }
         let target = d.get("target").and_then(|t| t.as_str()).unwrap_or("").to_string();
         let target_ref = d.get("targetRef").and_then(|t| t.as_str()).unwrap_or("未命名").to_string();
         let kind = d.get("kind").and_then(|k| k.as_str()).unwrap_or("change").to_string();
         let after = d.get("after").and_then(|a| a.as_str()).unwrap_or("").to_string();
+        let after_key = after.clone();
         let reason = d.get("reason").and_then(|r| r.as_str()).unwrap_or("").to_string();
-        let payload = match (target.as_str(), kind.as_str()) {
+        let mut payload = match (target.as_str(), kind.as_str()) {
             ("设定", "add") => serde_json::json!({ "kind": "canon", "docs": [{ "title": target_ref, "content": after }], "sourceRefs": [format!("线{worldline_id}"), format!("设定:{target_ref}")] }),
             ("设定", _) => serde_json::json!({ "kind": "canonRevise", "items": [{ "title": target_ref, "content": after }], "sourceRefs": [format!("线{worldline_id}"), format!("设定:{target_ref}")] }),
             ("伏笔", _) => serde_json::json!({ "kind": "clues", "clues": [{ "title": target_ref, "detail": after, "plantedChapter": forked }], "sourceRefs": [format!("线{worldline_id}"), format!("伏笔:{target_ref}")] }),
@@ -3117,8 +3619,13 @@ impl ProjectHandle {
             }
             _ => serde_json::json!({ "kind": "outlineUpdates", "updates": [{ "storylineID": target_ref, "note": after }], "sourceRefs": [format!("线{worldline_id}"), format!("故事线:{target_ref}")] }),
         };
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "diffRef".into(),
+                serde_json::json!({ "worldline": worldline_id, "index": diff_index, "after": after_key }),
+            );
+        }
         let id = uuid_like();
-        let mut list = self.proposals_checked()?;
         list.insert(0, Proposal {
             id: id.clone(),
             capability: "预言书·晋升".into(),
@@ -3133,40 +3640,35 @@ impl ProjectHandle {
             extra: Default::default(),
         });
         self.save_proposals(&list)?;
-        if let Some(obj) = d.as_object_mut() {
-            obj.insert("promoted".into(), serde_json::json!(true));
-            obj.insert("promotedProposalId".into(), serde_json::json!(id));
-        }
-        // 写回该线 diffs
-        for line in lines.iter_mut() {
-            if line.get("id").and_then(|i| i.as_str()) == Some(worldline_id) {
-                if let Some(obj) = line.as_object_mut() {
-                    let cur = obj.get("diffs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
-                    let mut new_diffs = cur;
-                    if diff_index < new_diffs.len() {
-                        new_diffs[diff_index] = d.clone();
-                    }
-                    obj.insert("diffs".into(), serde_json::json!(new_diffs));
-                }
-            }
-        }
-        self.save_worldlines(&lines)?;
+        // promoted 标记移到采纳时（apply_payload → mark_diff_promoted）：
+        // 提案被拒收时该影响仍可再次晋升。
         Ok(id)
     }
 
     /// M8-3：带排期章号的晋升——预测 diff 定向到某章 → plannedEvent 提案。
     pub fn promote_diff_chapter(&self, worldline_id: &str, diff_index: usize, chapter: u32) -> Result<String, String> {
-        let mut lines = self.read_array_checked("worldlines.json")?;
+        let lines = self.read_array_checked("worldlines.json")?;
         let w = lines
-            .iter_mut()
+            .iter()
             .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(worldline_id))
             .ok_or_else(|| format!("世界线不存在：{worldline_id}"))?;
         let diffs = w.get("diffs").and_then(|d| d.as_array()).cloned().unwrap_or_default();
-        let mut d = diffs.into_iter().nth(diff_index).ok_or("该影响不存在")?;
+        let d = diffs.into_iter().nth(diff_index).ok_or("该影响不存在")?;
         if d.get("promoted").and_then(|p| p.as_bool()).unwrap_or(false) {
             return Err("该影响已晋升，拒绝重复".into());
         }
+        let mut plist = self.proposals_checked()?;
+        if let Some(p) = plist.iter().find(|p| {
+            p.status == "待确认"
+                && p.payload.get("diffRef").and_then(|r| r.get("worldline")).and_then(|v| v.as_str())
+                    == Some(worldline_id)
+                && p.payload.get("diffRef").and_then(|r| r.get("index")).and_then(|v| v.as_u64())
+                    == Some(diff_index as u64)
+        }) {
+            return Ok(p.id.clone());
+        }
         let after = d.get("after").and_then(|a| a.as_str()).unwrap_or("").to_string();
+        let after_key = after.clone();
         let tref = d.get("targetRef").and_then(|t| t.as_str()).unwrap_or("").to_string();
         let payload = serde_json::json!({
             "kind": "plannedEvent",
@@ -3174,10 +3676,10 @@ impl ProjectHandle {
             "title": after,
             "storylineID": tref,
             "from": format!("线{worldline_id}"),
+            "diffRef": { "worldline": worldline_id, "index": diff_index, "scheduledChapter": chapter, "after": after_key },
             "sourceRefs": [format!("线{worldline_id}"), format!("故事线:{tref}")],
         });
         let id = uuid_like();
-        let mut plist = self.proposals_checked()?;
         plist.insert(0, Proposal {
             id: id.clone(),
             capability: "预言书·排期".into(),
@@ -3192,23 +3694,7 @@ impl ProjectHandle {
             extra: Default::default(),
         });
         self.save_proposals(&plist)?;
-        if let Some(obj) = d.as_object_mut() {
-            obj.insert("promoted".into(), serde_json::json!(true));
-            obj.insert("promotedProposalId".into(), serde_json::json!(id));
-            obj.insert("scheduledChapter".into(), serde_json::json!(chapter));
-        }
-        for line in lines.iter_mut() {
-            if line.get("id").and_then(|i| i.as_str()) == Some(worldline_id) {
-                if let Some(obj) = line.as_object_mut() {
-                    let mut new_diffs = obj.get("diffs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
-                    if diff_index < new_diffs.len() {
-                        new_diffs[diff_index] = d.clone();
-                    }
-                    obj.insert("diffs".into(), serde_json::json!(new_diffs));
-                }
-            }
-        }
-        self.save_worldlines(&lines)?;
+        // promoted/scheduledChapter 在采纳时写（mark_diff_promoted）。
         Ok(id)
     }
 
@@ -3220,12 +3706,12 @@ impl ProjectHandle {
     ///
     /// 产出仍是提案（`plannedEvent`），不是直写 events.json：采纳是作者的
     /// 决定，落库仍要过收件箱——否则一条 AI 推出来的节点会绕过裁决进正典。
-    /// 节点状态同步置 `adopted`，这样时间轴上能看出"这条已经承认了"，
-    /// 而不是还显示成"计划"。
+    /// 节点状态在**采纳时**才置 `adopted`（见 apply_payload）；生成提案时不写，
+    /// 这样作者拒收后节点仍是计划态，可以继续修改或再次采纳。
     pub fn adopt_node(&self, worldline_id: &str, node_id: &str) -> Result<String, String> {
-        let mut lines = self.read_array_checked("worldlines.json")?;
+        let lines = self.read_array_checked("worldlines.json")?;
         let w = lines
-            .iter_mut()
+            .iter()
             .find(|x| x.get("id").and_then(|i| i.as_str()) == Some(worldline_id))
             .ok_or_else(|| format!("世界线不存在：{worldline_id}"))?;
         let nodes = w.get("nodes").and_then(|n| n.as_array()).cloned().unwrap_or_default();
@@ -3255,6 +3741,15 @@ impl ProjectHandle {
                 crate::worldline::guess_chapter(&format!("{reference0} {label}"))
             })
             .ok_or_else(|| format!("节点「{label}」还没排章，无法采纳——先给它定第几章"))?;
+        let node_ref = format!("{worldline_id}:{node_id}");
+        // 幂等：同一节点已有待审提案时复用它，连点两次不会堆两份。
+        let mut plist = self.proposals_checked()?;
+        if let Some(p) = plist.iter().find(|p| {
+            p.status == "待确认"
+                && p.payload.get("nodeRef").and_then(|v| v.as_str()) == Some(node_ref.as_str())
+        }) {
+            return Ok(p.id.clone());
+        }
         let storyline = if reference0.is_empty() { label.clone() } else { reference0.clone() };
         let payload = serde_json::json!({
             "kind": "plannedEvent",
@@ -3262,10 +3757,10 @@ impl ProjectHandle {
             "title": label,
             "storylineID": storyline,
             "from": format!("线{worldline_id}"),
+            "nodeRef": node_ref,
             "sourceRefs": [format!("线{worldline_id}"), format!("节点:{node_id}")],
         });
         let id = uuid_like();
-        let mut plist = self.proposals_checked()?;
         plist.insert(0, Proposal {
             id: id.clone(),
             capability: "世界线·逐节点采纳".into(),
@@ -3280,19 +3775,6 @@ impl ProjectHandle {
             extra: Default::default(),
         });
         self.save_proposals(&plist)?;
-
-        // 写回节点状态
-        if let Some(arr) = w.get_mut("nodes").and_then(|n| n.as_array_mut()) {
-            for n in arr.iter_mut() {
-                if n.get("id").and_then(|i| i.as_str()) == Some(node_id) {
-                    if let Some(obj) = n.as_object_mut() {
-                        obj.insert("state".into(), serde_json::json!("adopted"));
-                        obj.insert("adoptedProposalId".into(), serde_json::json!(id));
-                    }
-                }
-            }
-        }
-        self.save_worldlines(&lines)?;
         Ok(id)
     }
 

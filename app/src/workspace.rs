@@ -356,6 +356,15 @@ pub struct Workspace {
     pending_question: Option<QuestionRequest>,
     /// 本轮是否已有任务在跑（拦连点，避免并发污染同一会话）
     turn_active: bool,
+    /// 回合开始时的可写文件快照（路径 → 内容）。回合结束时比对，把 AI 直接
+    /// 写盘（write_prose/write_ledger/原生 fs）补记成 `Actor::Ai` 的 journal 记录。
+    /// 没有这一层，"AI 改了什么都可追溯/可撤销"只是一句口号。
+    turn_snapshot: std::collections::BTreeMap<String, String>,
+    /// 回合开始时的写作档位（assist/cowrite/ghostwrite），写进 AI 的 journal 记录。
+    turn_mode: String,
+    /// 回合开始的毫秒时刻。补记前先看这个文件是否已有更晚的作者记录，
+    /// 避免把作者中途采纳写下的内容误记成 AI 直写。
+    turn_started_ms: u64,
     /// 本书的 DSH 会话 id。跨进程重启保持同一个 id，切模式后用 session/resume 接回历史。
     session_id: String,
     /// 新进程已经接过一次会话（避免每次发送都 resume）
@@ -661,7 +670,7 @@ impl Workspace {
                             cx,
                         );
                     });
-                    this.on_send(prompts::knowledge_split_task(doc), cx);
+                    this.on_send(prompts::knowledge_split_task(doc, chars), cx);
                 }
                 KnowledgeEvent::Delete(doc) => match this.handle.delete_imported_doc(doc) {
                     Ok(()) => {
@@ -1306,30 +1315,123 @@ impl Workspace {
                             match roster.upsert(c) {
                                 Ok(()) => {
                                     record(&format!("新建人物 {name}"), &snapshot(&roster.all()));
-                                    Some(format!("已新建人物「{name}」"))
+                                    // 画布的人物节点来自 memory.aliases：不同步就等于没建，
+                                    // 作者在画布/关系维找不到这个人。
+                                    match this.handle.sync_alias_entry(&name, &[]) {
+                                        Ok(()) => Some(format!("已新建人物「{name}」")),
+                                        Err(e) => {
+                                            Some(format!("已新建人物「{name}」，但同步画布失败：{e}"))
+                                        }
+                                    }
                                 }
                                 Err(e) => Some(format!("新建失败：{e}")),
                             }
                         }
                     }
-                    CharacterEvent::Save(c) => match roster.upsert((**c).clone()) {
-                        Ok(()) => {
-                            record(&format!("编辑人物 {}", c.name), &snapshot(&roster.all()));
-                            Some(format!("已保存「{}」", c.name))
+                    CharacterEvent::Save(c) => {
+                        // 改名要同步关系端点与别名表：关系存的是人名，不是 id。
+                        let old_name = roster
+                            .all()
+                            .into_iter()
+                            .find(|x| x.id == c.id)
+                            .map(|x| x.name);
+                        match roster.upsert((**c).clone()) {
+                            Ok(()) => {
+                                record(&format!("编辑人物 {}", c.name), &snapshot(&roster.all()));
+                                let mut warn = String::new();
+                                if let Some(old) = old_name.filter(|o| *o != c.name) {
+                                    let rel_path = this.handle.root.join("relations.json");
+                                    let rel_before = std::fs::read_to_string(&rel_path).unwrap_or_default();
+                                    if let Err(e) = crate::relations::Web::new(&this.handle.root)
+                                        .rename_person(&old, &c.name)
+                                    {
+                                        warn = format!("；关系改名同步失败：{e}");
+                                    }
+                                    let rel_after = std::fs::read_to_string(&rel_path).unwrap_or_default();
+                                    if rel_before != rel_after {
+                                        let _ = journal.record(
+                                            &this.handle.root,
+                                            "relations.json",
+                                            &rel_before,
+                                            &rel_after,
+                                            &crate::journal::Actor::Author,
+                                            "edit",
+                                            &format!("b{}", crate::journal::now_millis()),
+                                            "人物改名同步关系端点",
+                                        );
+                                    }
+                                    let _ = this.handle.rename_alias_canonical(&old, &c.name);
+                                }
+                                let _ = this.handle.sync_alias_entry(&c.name, &c.aliases);
+                                Some(format!("已保存「{}」{warn}", c.name))
+                            }
+                            Err(e) => Some(format!("保存失败：{e}")),
                         }
-                        Err(e) => Some(format!("保存失败：{e}")),
-                    },
-                    CharacterEvent::Delete(id) => match roster.remove(id) {
-                        Ok(()) => {
-                            record("删除人物", &snapshot(&roster.all()));
-                            Some("已删除".to_string())
+                    }
+                    CharacterEvent::Delete(id) => {
+                        let old_name = roster.all().into_iter().find(|x| x.id.as_str() == id.as_str()).map(|x| x.name);
+                        match roster.remove(id) {
+                            Ok(()) => {
+                                record("删除人物", &snapshot(&roster.all()));
+                                if let Some(name) = old_name {
+                                    // 删人时向外的关系边一并清掉，不留孤儿边；
+                                    // 别名表也删，别在画布上留一个没有档案的点。
+                                    let rel_path = this.handle.root.join("relations.json");
+                                    let rel_before = std::fs::read_to_string(&rel_path).unwrap_or_default();
+                                    let _ = crate::relations::Web::new(&this.handle.root)
+                                        .remove_person(&name);
+                                    let rel_after = std::fs::read_to_string(&rel_path).unwrap_or_default();
+                                    if rel_before != rel_after {
+                                        let _ = journal.record(
+                                            &this.handle.root,
+                                            "relations.json",
+                                            &rel_before,
+                                            &rel_after,
+                                            &crate::journal::Actor::Author,
+                                            "edit",
+                                            &format!("b{}", crate::journal::now_millis()),
+                                            "删除人物同步关系",
+                                        );
+                                    }
+                                    let _ = this.handle.remove_alias_canonical(&name);
+                                }
+                                Some("已删除".to_string())
+                            }
+                            Err(e) => Some(format!("删除失败：{e}")),
                         }
-                        Err(e) => Some(format!("删除失败：{e}")),
-                    },
+                    }
                     CharacterEvent::Merge { into, from } => {
+                        let names = roster.all();
+                        let into_name = names.iter().find(|x| x.id.as_str() == into.as_str()).map(|x| x.name.clone());
+                        let from_name = names.iter().find(|x| x.id.as_str() == from.as_str()).map(|x| x.name.clone());
                         match roster.merge(into, from) {
                             Ok(()) => {
                                 record("合并人物", &snapshot(&roster.all()));
+                                if let (Some(target), Some(absorbed)) = (into_name, from_name) {
+                                    // 被合并者的关系边迁到目标名下，别留成孤儿
+                                    let rel_path = this.handle.root.join("relations.json");
+                                    let rel_before = std::fs::read_to_string(&rel_path).unwrap_or_default();
+                                    let _ = crate::relations::Web::new(&this.handle.root)
+                                        .rename_person(&absorbed, &target);
+                                    let rel_after = std::fs::read_to_string(&rel_path).unwrap_or_default();
+                                    if rel_before != rel_after {
+                                        let _ = journal.record(
+                                            &this.handle.root,
+                                            "relations.json",
+                                            &rel_before,
+                                            &rel_after,
+                                            &crate::journal::Actor::Author,
+                                            "edit",
+                                            &format!("b{}", crate::journal::now_millis()),
+                                            "合并人物同步关系端点",
+                                        );
+                                    }
+                                    // 别名表：被合并者成为目标的别名，原条目删除
+                                    if let Some(t) = roster.all().into_iter().find(|x| x.name == target) {
+                                        let _ = this.handle.sync_alias_entry(&target, &t.aliases);
+                                    }
+                                    let _ = this.handle.remove_alias_canonical(&absorbed);
+                                }
                                 Some("已合并（别名并集、空格子补齐）".to_string())
                             }
                             Err(e) => Some(format!("合并失败：{e}")),
@@ -1350,9 +1452,12 @@ impl Workspace {
                             Some("这个别名已经有了".to_string())
                         } else {
                             c.aliases.push(a.clone());
+                            let cname = c.name.clone();
+                            let aliases = c.aliases.clone();
                             match roster.upsert(c) {
                                 Ok(()) => {
                                     record("加别名", &snapshot(&roster.all()));
+                                    let _ = this.handle.sync_alias_entry(&cname, &aliases);
                                     Some(format!("已加别名「{a}」"))
                                 }
                                 Err(e) => Some(format!("加别名失败：{e}")),
@@ -1364,9 +1469,12 @@ impl Workspace {
                             return;
                         };
                         c.aliases.retain(|x| x != alias);
+                        let cname = c.name.clone();
+                        let aliases = c.aliases.clone();
                         match roster.upsert(c) {
                             Ok(()) => {
                                 record("移除别名", &snapshot(&roster.all()));
+                                let _ = this.handle.sync_alias_entry(&cname, &aliases);
                                 Some(format!("已移除别名「{alias}」"))
                             }
                             Err(e) => Some(format!("移除失败：{e}")),
@@ -1698,6 +1806,9 @@ impl Workspace {
             pending_approval: None,
             pending_question: None,
             turn_active: false,
+            turn_snapshot: std::collections::BTreeMap::new(),
+            turn_mode: "assist".into(),
+            turn_started_ms: 0,
             meta_genre,
             meta_premise,
             meta_target,
@@ -2078,6 +2189,13 @@ impl Workspace {
             }
         };
 
+        // 回合前快照：AI 可能用 write_prose/write_ledger 或原生 fs 直接改盘，
+        // 这些写入不经过任何 Rust 落库函数。记下前像，回合结束时补 journal 记录，
+        // 否则"AI 改了什么都可追溯/可撤销"只是一句口号。
+        self.turn_snapshot = snapshot_writable(&self.handle.root);
+        self.turn_mode = self.book_auth.mode().key().to_string();
+        self.turn_started_ms = crate::journal::now_millis();
+
         let weak = cx.weak_entity();
         let session_id = self.session_id.clone();
         let query_text = text;
@@ -2232,6 +2350,73 @@ impl Workspace {
         });
     }
 
+    /// 回合结束补记 AI 直写：把本回合变化过、又没有更晚作者记录的文件
+    /// 写进 journal（Actor::Ai）。
+    ///
+    /// 为什么需要补记：`write_prose`/`write_ledger` 和原生 fs 工具直接改盘，
+    /// 不经过任何 Rust 落库函数；不补记的话，越界检测拿不到数据，
+    /// 改动记录页也撤不回这些改动。
+    fn record_ai_turn_changes(&mut self, cx: &mut Context<Self>) {
+        if self.turn_snapshot.is_empty() {
+            return;
+        }
+        let root = self.handle.root.clone();
+        let now = snapshot_writable(&root);
+        let journal = crate::journal::Journal::new(&root);
+        // 同一文件只看最新一条：AI 多次改同一文件时，前像是回合开始时的状态
+        let mut latest: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        for c in journal.all() {
+            latest.entry(c.path.clone()).or_insert(c.ts);
+        }
+        let actor = crate::journal::Actor::Ai {
+            mode: self.turn_mode.clone(),
+            agent: String::new(),
+        };
+        let batch = format!("turn-{}", crate::journal::now_millis());
+        let mut changed = 0usize;
+        for (path, before) in &self.turn_snapshot {
+            let after = now.get(path).cloned().unwrap_or_default();
+            if *before == after {
+                continue;
+            }
+            // 本回合已有更晚的作者记录：那是作者亲手写的（例如中途采纳），
+            // 不能记成 AI 直写，否则越界检查会误报。
+            if latest.get(path).is_some_and(|ts| *ts >= self.turn_started_ms) {
+                continue;
+            }
+            if journal
+                .record(&root, path, before, &after, &actor, "edit", &batch, "AI 直接写入（回合结束补记）")
+                .is_ok()
+            {
+                changed += 1;
+            }
+        }
+        // 回合内新建的文件（前像不存在）
+        for (path, after) in &now {
+            if self.turn_snapshot.contains_key(path) {
+                continue;
+            }
+            if latest.get(path).is_some_and(|ts| *ts >= self.turn_started_ms) {
+                continue;
+            }
+            if journal
+                .record(&root, path, "", after, &actor, "edit", &batch, "AI 新建文件（回合结束补记）")
+                .is_ok()
+            {
+                changed += 1;
+            }
+        }
+        self.turn_snapshot.clear();
+        if changed > 0 {
+            self.trajectory.update(cx, |panel, cx| {
+                panel.push(
+                    TrajKind::Info(format!("已补记 {changed} 处 AI 直接写入（可在改动记录撤回）")),
+                    cx,
+                )
+            });
+        }
+    }
+
     /// 回合结束后的越界检查：AI 改了没有代笔授权的章 → 通报并给一键撤回。
     ///
     /// 为什么放在回合结束而不是每次写文件时：一次回合可能写很多次，
@@ -2285,6 +2470,8 @@ impl Workspace {
             });
             return;
         }
+        // 手动停止前先把已发生的 AI 直写补记进 journal：turn/end 不会再来了。
+        self.record_ai_turn_changes(cx);
         if let Some(client) = self.client.take() {
             client.shutdown();
         }
@@ -2758,8 +2945,9 @@ impl Workspace {
                 self.turn_active = false;
                 self.inbox.update(cx, |panel, cx| panel.refresh(cx));
                 // 越界检查：事前 write-policy 拦工具调用，但 AI 也可能绕过
-                // novel-pack 直接写文件。回合结束时扫一遍改动日志，
-                // 发现"改了没授权的章"就地通报，作者可以一键撤回。
+                // novel-pack 直接写文件。先把本回合的直写补记进 journal，
+                // 再扫一遍日志——否则"AI 改了没授权的章"根本查不到。
+                self.record_ai_turn_changes(cx);
                 self.check_breaches(cx);
                 let reason = data.get("reason");
                 let kind = reason
@@ -3845,4 +4033,46 @@ impl Workspace {
             )
             .into_any_element()
     }
+}
+
+/// 回合开始前抓“AI 可能直接写”的文件快照（相对路径 → 内容）。
+///
+/// 覆盖三类：七个台账、memory/dossiers、正文与章 meta、canon markdown。
+/// 只抓可读文本；读不出来的文件不进快照（创建时会被当作“新文件”补记）。
+fn snapshot_writable(root: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    use std::collections::BTreeMap;
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    let mut add = |rel: String| {
+        if let Ok(text) = std::fs::read_to_string(root.join(&rel)) {
+            out.insert(rel, text);
+        }
+    };
+    for f in crate::schema::LEDGER_FILES {
+        add((*f).to_string());
+    }
+    // project.json 不进快照：它随每次正文保存更新 dailyWords（作者自己写也会变），
+    // 记成 AI 直写只会制造噪音。
+    for f in ["memory.json", "dossiers.json"] {
+        add(f.to_string());
+    }
+    if let Ok(rd) = std::fs::read_dir(root.join("canon")) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with(".md") {
+                add(format!("canon/{name}"));
+            }
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir(root.join("chapters")) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.starts_with("ch-") {
+                continue;
+            }
+            for f in ["prose.md", "meta.json", "ai-marks.json"] {
+                add(format!("chapters/{name}/{f}"));
+            }
+        }
+    }
+    out
 }

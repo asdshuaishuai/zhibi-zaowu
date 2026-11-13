@@ -23,6 +23,10 @@ whenToUse: 作者用「导入设定文档」归档了旧材料，要求提取并
    - **大纲**：故事线、事件序列
 3. **分派**：提取完一类就分派给对应专属 Agent
    （character / relations / outline），不要攒到最后一起。
+   - 人物 → character 子 Agent（它用 `propose_character` 落档案）
+   - 关系 → relations 子 Agent（`propose_relations`，带首次成立章）
+   - 设定/伏笔/大纲 → outline 子 Agent（`propose_canon` / `propose_clues` / `propose_outline_updates`）
+   - 人物别名/称谓不统一 → 先 `propose_aliases`，再提关系，否则关系端点会挂不上画布。
 
 ## 铁律
 

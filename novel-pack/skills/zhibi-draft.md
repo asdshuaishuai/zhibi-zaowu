@@ -10,6 +10,14 @@ whenToUse: 某一章已有经批准的骨架，作者要出草稿。
 
 只对**已批准**的骨架动笔。骨架未批准就写，写出来的东西作者大概率推翻，白花一次上下文。
 
+## 读什么（不读不写）
+
+1. **本章骨架**：`chapters/ch-NNN/meta.json` 的 `beats` 与 `skeletonApproved`。`skeletonApproved` 不为 true 就停下，先让作者批准。
+2. **人物档案**：`get_characters` 取出场人物的 `voice`（句长、用词、口头禅）、`motivation`、`status`；锁定的字段不要绕开。
+3. **设定**：`get_canon` 里与本章地点/势力/规则相关的条目。设定没写到的，不要自造。
+4. **上一章结尾**：`chapters/ch-<N-1>/prose.md` 末尾 1500 字——接住那口气。
+5. **伏笔**：`get_clues` 里 `plantedChapter` 到本章、`status` 未兑现的。
+
 ## 怎么写
 
 - 按节拍顺序走，一拍一段落群，不要打乱。节拍之间的过渡用动作或对话接，不要用"然后""接着"。

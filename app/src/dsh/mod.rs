@@ -242,14 +242,14 @@ pub fn zhibi_presets() -> Vec<PresetSpec> {
             id: "character",
             label: "人物",
             order: 1,
-            persona: "你负责本书的人物档案：从正文与档案里核对人物信息，补全外貌、性格、动机、背景、目标、缺陷、口吻与弧线，并提出合并/拆分建议。只描述可取证的事实；不确定的标注为待作者确认。开工前先 `skill zhibi-dossier` 加载作业规程。",
+            persona: "你负责本书的人物档案：从正文与档案里核对人物信息，补全外貌、性格、动机、背景、目标、缺陷、口吻与弧线，并提出合并/拆分建议。只描述可取证的事实；不确定的标注为待作者确认。开工前先 `skill zhibi-character` 加载作业规程。",
             deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
         },
         PresetSpec {
             id: "relations",
             label: "关系",
             order: 2,
-            persona: "你负责人物关系网：梳理谁与谁之间的关系、关系类型与方向，标注每段关系从第几章成立、到第几章结束、读者是否已知。同一对人物可以有多段不同区间的关系。开工前先 `skill zhibi-memory` 加载作业规程。",
+            persona: "你负责人物关系网：梳理谁与谁之间的关系、关系类型与方向，标注每段关系从第几章成立、到第几章结束、读者是否已知。同一对人物可以有多段不同区间的关系。开工前先 `skill zhibi-relations` 加载作业规程。",
             deny: &["bash", "write", "edit", "plugin_manager", "workflow"],
         },
         PresetSpec {
@@ -444,6 +444,80 @@ fn rewrite_pack_patch(tpl: &std::path::Path, pack_dir: &std::path::Path) -> Opti
     Some(out.display().to_string())
 }
 
+/// 从 patch YAML 里抽出 `personaPrefix:` 的块文本（`>-` / `|` 都认）。
+///
+/// 这是给“合并 persona 层”用的：能力包 patch 是唯一持有那段人格文本的地方，
+/// 在 Rust 侧另抄一份会随包升级漂移。解析只认缩进块，不引入 YAML 依赖。
+fn extract_persona_prefix(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("personaPrefix:") {
+            continue;
+        }
+        let key_indent = line.len() - trimmed.len();
+        let mut block: Vec<&str> = Vec::new();
+        let mut content_indent = usize::MAX;
+        for l in lines.by_ref() {
+            if l.trim().is_empty() {
+                block.push("");
+                continue;
+            }
+            let ind = l.len() - l.trim_start().len();
+            if ind <= key_indent {
+                break;
+            }
+            content_indent = content_indent.min(ind);
+            block.push(l);
+        }
+        let body: Vec<String> = block
+            .iter()
+            .map(|l| {
+                if l.trim().is_empty() {
+                    String::new()
+                } else {
+                    // 缩进是 ASCII 空格，字节下标必在字符边界
+                    l[content_indent.min(l.len())..].to_string()
+                }
+            })
+            .collect();
+        let joined = body.join("\n").trim().to_string();
+        if !joined.is_empty() {
+            return Some(joined);
+        }
+    }
+    None
+}
+
+/// 拼合 persona：能力包人格 → 路由表 → 本书接管提示。段间空一行。
+fn compose_persona(pack: &str, routing: &str, takeover: Option<&str>) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if !pack.trim().is_empty() {
+        parts.push(pack.trim());
+    }
+    if !routing.trim().is_empty() {
+        parts.push(routing.trim());
+    }
+    if let Some(t) = takeover {
+        if !t.trim().is_empty() {
+            parts.push(t.trim());
+        }
+    }
+    parts.join("\n\n")
+}
+
+/// 本书接管提示：作者在设置页打开 takeover 时才有。
+fn takeover_line(book: &BookPreset) -> Option<String> {
+    if !book.takeover {
+        return None;
+    }
+    Some(format!(
+        "本书另有一位专属助手「{}」（subagent agentPreset=book）：上面列出的所有写作任务\
+         都优先派给它，它了解本书的术语与口味；只有纯工具性的杂活你自己做。",
+        book.name
+    ))
+}
+
 impl DshClient {
     /// 包内运行时定位：.app/Contents/Resources/runtime/{node/bin/node, dsh/lib/bin.js}。
     /// 也兼容从仓库 target 目录运行的开发态（向上找 .vendor）。
@@ -506,6 +580,76 @@ impl DshClient {
             dir = dir.parent()?.to_path_buf();
         }
         None
+    }
+
+    /// 能力包 patch 的最终路径（环境变量 → 包内 → 工作目录 → 仓库上溯）。
+    fn pack_patch() -> Option<String> {
+        std::env::var("ZHIBI_PACK_PATCH")
+            .ok()
+            .or_else(Self::bundled_patch)
+            .or_else(|| {
+                let cwd = std::path::Path::new("novel-pack/cordis.patch.yml");
+                cwd.exists().then(|| cwd.display().to_string())
+            })
+            .or_else(|| {
+                // 从可执行文件位置向上找仓库（target/debug → 仓库根）
+                let exe = std::env::current_exe().ok()?;
+                let mut dir = exe.parent()?;
+                for _ in 0..4 {
+                    let cand = dir.join("novel-pack").join("cordis.patch.yml");
+                    if cand.exists() {
+                        return Some(cand.display().to_string());
+                    }
+                    dir = dir.parent()?;
+                }
+                None
+            })
+    }
+
+    /// 合并 persona 层：能力包 persona + 主 Agent 路由表 + 本书接管提示。
+    ///
+    /// 为什么需要这一层：patch 是按 id **整段覆盖**的（实测
+    /// `dsh --dump-config`：后加载的 `- id: system-prompt` 会把先加载的
+    /// `config.personaPrefix` 整个换掉）。能力包 patch 在 mode patch 之后加载，
+    /// 会把 `routing_hint()` 写的那段路由表吃掉——六个专属 Agent 只剩页面按钮
+    /// 能派，主 Agent 自己永远不知道该派谁。
+    ///
+    /// 解法：把两段文本在 Rust 侧拼好，写成最后加载的一层覆盖。
+    fn persona_merge_patch(home: &std::path::Path, pack: Option<&str>) -> Option<String> {
+        let pack_persona = pack
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| extract_persona_prefix(&t));
+        let takeover = read_book_preset(home).as_ref().and_then(takeover_line);
+        // 没有能力包也没有接管提示时不用写：mode patch 里的路由表已经生效。
+        if pack_persona.is_none() && takeover.is_none() {
+            return None;
+        }
+        let routing = crate::capabilities::routing_hint();
+        let merged = compose_persona(
+            pack_persona.as_deref().unwrap_or(""),
+            &routing,
+            takeover.as_deref(),
+        );
+        let path = home.join("zhibi-persona.patch.yml");
+        let mut lines: Vec<String> = vec![
+            "# 由执笔生成：能力包 persona + 主 Agent 路由表的合并层。".into(),
+            "# 必须最后加载——patch 按 id 整段覆盖，先加载的路由表会被能力包吃掉。".into(),
+            "- id: system-prompt".into(),
+            "  config:".into(),
+            "    personaPrefix: |".into(),
+        ];
+        for l in merged.lines() {
+            if l.trim().is_empty() {
+                lines.push(String::new());
+            } else {
+                lines.push(format!("      {l}"));
+            }
+        }
+        let body = lines.join("\n") + "\n";
+        if std::fs::write(&path, body).is_err() {
+            return None;
+        }
+        Some(path.display().to_string())
     }
 
 
@@ -703,15 +847,8 @@ impl DshClient {
         //
         // 必须和上面的路由表合并成**一条** `- id: system-prompt`：patch 是
         // 按 id 覆盖的，写两段后面那段会把前面整段吃掉（路由表就没了）。
-        if let Some(b) = &book {
-            if b.takeover {
-                let line = format!(
-                    "本书另有一位专属助手「{}」（subagent agentPreset=book）：上面列出的所有写作任务\
-                     都优先派给它，它了解本书的术语与口味；只有纯工具性的杂活你自己做。",
-                    b.name
-                );
-                lines.push(format!("      {line}"));
-            }
+        if let Some(line) = book.as_ref().and_then(takeover_line) {
+            lines.push(format!("      {line}"));
         }
 
         // 预设注册表 + 每个专属 Agent 一行。
@@ -797,34 +934,25 @@ impl DshClient {
         sync_skills(&home);
 
 
-        // 补丁层顺序（后者覆盖前者）：本书覆盖层 mode patch → novel-pack 能力包。
-        // mode patch 由我们生成，负责执行器、专属 Agent 预设与 subagent 允许列表。
+        // 补丁层顺序（后者覆盖前者）：mode patch → novel-pack 能力包 → persona 合并层。
+        // 能力包自带 `- id: system-prompt`，会把 mode patch 里的路由表整段覆盖；
+        // 所以最后再压一层“能力包人格 + 路由表”的合并结果（见 persona_merge_patch）。
         let mut args: Vec<String> = vec!["--profile".into(), "sdk".into()];
+        let mode_override = std::env::var("ZHIBI_MODE_PATCH").is_ok();
         if let Some(patch) = Self::mode_patch(root, mode, &home) {
             args.push("--patch".into());
             args.push(patch);
         }
-        if let Some(patch) = std::env::var("ZHIBI_PACK_PATCH")
-            .ok()
-            .or_else(|| Self::bundled_patch())
-            .or_else(|| {
-                let cwd = std::path::Path::new("novel-pack/cordis.patch.yml");
-                cwd.exists().then(|| cwd.display().to_string())
-            })
-            .or_else(|| {
-                // 从可执行文件位置向上找仓库（target/debug → 仓库根）
-                let exe = std::env::current_exe().ok()?;
-                let mut dir = exe.parent()?;
-                for _ in 0..4 {
-                    let cand = dir.join("novel-pack").join("cordis.patch.yml");
-                    if cand.exists() { return Some(cand.display().to_string()); }
-                    dir = dir.parent()?;
-                }
-                None
-            })
-        {
+        let pack = Self::pack_patch();
+        if let Some(patch) = &pack {
             args.push("--patch".into());
-            args.push(patch);
+            args.push(patch.clone());
+        }
+        if !mode_override {
+            if let Some(patch) = Self::persona_merge_patch(&home, pack.as_deref()) {
+                args.push("--patch".into());
+                args.push(patch);
+            }
         }
         let mut cmd = match &node_prefix {
             Some((node, binjs)) => {
@@ -1438,5 +1566,54 @@ mod tests {
         assert_ne!(a, b, "不同书要隔离");
         assert_eq!(a, a2, "同一书必须稳定（否则每次启动都换 home，凭据与 preset 全丢）");
         assert!(a.to_string_lossy().contains("zhibi/homes"));
+    }
+
+    #[test]
+    fn persona_prefix_is_extracted_from_the_real_pack_patch() {
+        // 用仓库里的真实模板验解析：模板一改形状，这里就会红。
+        let tpl = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("novel-pack")
+            .join("cordis.patch.yml");
+        let text = std::fs::read_to_string(&tpl).expect("能力包 patch 应存在");
+        let persona = extract_persona_prefix(&text).expect("应抽出 personaPrefix");
+        assert!(persona.contains("执笔"), "抽出的应当是人格正文：{persona}");
+        assert!(!persona.contains("personaPrefix"), "不能把 YAML 键带进正文");
+        assert!(!persona.contains("- id:"), "不能把下一条 patch 行吃进来");
+    }
+
+    #[test]
+    fn merged_persona_keeps_both_pack_and_routing() {
+        let pack = "你是「执笔」——理账助手。";
+        let routing = crate::capabilities::routing_hint();
+        let merged = compose_persona(pack, &routing, Some("优先派给本书助手。"));
+        assert!(merged.starts_with(pack), "能力包人格在前");
+        assert!(merged.contains("人物") && merged.contains("世界线"), "路由表不能被吃掉");
+        assert!(merged.contains("优先派给本书助手"));
+        // 两段之间要有空行，模型才能看出这是两段规则
+        assert!(merged.contains("\n\n"));
+    }
+
+    #[test]
+    fn persona_merge_patch_is_written_last_and_wins() {
+        let home = tmp_home("persona-merge");
+        let pack = home.join("pack.patch.yml");
+        std::fs::write(
+            &pack,
+            "- id: system-prompt\n  config:\n    personaPrefix: >-\n      PACK_PERSONA_LINE\n",
+        )
+        .unwrap();
+        let out = DshClient::persona_merge_patch(&home, Some(pack.to_str().unwrap()))
+            .expect("应生成合并层");
+        let yml = std::fs::read_to_string(out).unwrap();
+        assert!(yml.contains("- id: system-prompt"));
+        assert!(yml.contains("personaPrefix: |"), "必须用字面块保留换行");
+        assert!(yml.contains("PACK_PERSONA_LINE"));
+        assert!(yml.contains("人物"), "路由表要合并进来");
+        // 文件已存在时覆盖写，不追加——否则重启后 persona 会重复叠加
+        let again = DshClient::persona_merge_patch(&home, Some(pack.to_str().unwrap())).unwrap();
+        let yml2 = std::fs::read_to_string(again).unwrap();
+        assert_eq!(yml, yml2);
     }
 }

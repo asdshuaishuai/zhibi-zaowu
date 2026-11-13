@@ -330,6 +330,13 @@ gpui 的 `cubic_bezier_to(to, control_a, control_b)` —— **终点是第一个
 第三条靠 `capabilities::routing_hint()` 注入主 Agent 的系统提示：
 **"什么任务 → 派给谁"** 的显式映射表，而不是让模型从 Agent 名字猜。
 
+⚠ **patch 层级陷阱**（2026-11 修复）：DSH 的 `--patch` 按 id **整段覆盖**
+（`dsh --dump-config` 实测）。能力包自带的 `- id: system-prompt` 在 mode patch
+之后加载，会把路由表整段吃掉。现在的层级是 **mode → 能力包 → persona 合并层**
+（`persona_merge_patch`：能力包人格 + 路由表 + takeover 拼好后最后压一层）。
+改这三层里任何一层，都要用 `--dump-config` 验最终 `personaPrefix` 同时含
+能力包人格与路由表；只看自己生成的那份 patch 文本不算数。
+
 技术约束：DSH sdk 协议没有"直接给某个 preset 发消息"的方法，子 agent
 只能由主 agent 通过 `tool-subagent` 派。所以三条路最终都经过主 Agent，
 区别只在路由由谁决定。

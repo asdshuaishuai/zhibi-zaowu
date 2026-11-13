@@ -10,6 +10,7 @@
 //!   迁移只“补空”，不覆盖作者已经写下的字段。
 //! - 出场章节由 dossier 推导，不落盘——它是派生事实，存下来就会和 dossier 冲突。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -92,6 +93,9 @@ pub struct Character {
     /// 卡面视觉上降权（细边、淡题签），但功能一样（能写、能翻、能被 AI 补全）。
     #[serde(default)]
     pub minor: bool,
+    /// 未知字段一律保留：这一版不认识的属性，不能在保存时被整份覆盖丢掉。
+    #[serde(flatten, default)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl Character {
@@ -177,6 +181,99 @@ impl Character {
         let n = name.trim();
         !n.is_empty() && (self.name == n || self.aliases.iter().any(|a| a == n))
     }
+
+    fn locked_any(&self, names: &[&str]) -> bool {
+        names.iter().any(|n| self.is_locked(n))
+    }
+
+    /// 采纳一条 AI 人物提案：**只补空、只增不删，锁定字段一律不动**。
+    ///
+    /// 为什么不是覆盖：提案来自批量扫描或旧稿导入，质量参差；作者已经写下的
+    /// 口吻/动机是全书最贵的东西，不能被一次误采纳洗掉。想改已有字段，
+    /// 作者在人物页手改（或先解锁该字段）。
+    ///
+    /// 返回实际改动的字段数；0 表示这条提案对现档案没有任何增量。
+    pub fn apply_proposal(&mut self, incoming: &Character) -> usize {
+        let mut n = 0usize;
+        // 单值字段：只有现值为空才补。多词字段同时认 camelCase 与 snake_case 的锁定名。
+        macro_rules! fill_str {
+            ($field:ident, [$($lock:expr),*]) => {
+                if !self.locked_any(&[$($lock),*])
+                    && self.$field.trim().is_empty()
+                    && !incoming.$field.trim().is_empty()
+                {
+                    self.$field = incoming.$field.clone();
+                    n += 1;
+                }
+            };
+        }
+        fill_str!(role, ["role"]);
+        fill_str!(faction, ["faction"]);
+        fill_str!(age, ["age"]);
+        fill_str!(appearance, ["appearance"]);
+        fill_str!(personality, ["personality"]);
+        fill_str!(motivation, ["motivation"]);
+        fill_str!(background, ["background"]);
+        fill_str!(voice, ["voice"]);
+        fill_str!(status, ["status"]);
+        fill_str!(notes, ["notes"]);
+        fill_str!(core_story, ["coreStory", "core_story"]);
+
+        if !self.locked_any(&["statusChapter", "status_chapter"])
+            && self.status_chapter == 0
+            && incoming.status_chapter > 0
+        {
+            self.status_chapter = incoming.status_chapter;
+            n += 1;
+        }
+        if !self.locked_any(&["minor"]) && !self.minor && incoming.minor {
+            self.minor = true;
+            n += 1;
+        }
+
+        // 别名：并集，且不让本名重复出现在别名里
+        if !self.locked_any(&["aliases"]) {
+            for a in &incoming.aliases {
+                let a = a.trim();
+                if !a.is_empty() && a != self.name && !self.aliases.iter().any(|x| x == a) {
+                    self.aliases.push(a.to_string());
+                    n += 1;
+                }
+            }
+        }
+
+        // 列表字段：只增不删
+        macro_rules! absorb_list {
+            ($field:ident, [$($lock:expr),*]) => {
+                if !self.locked_any(&[$($lock),*]) {
+                    for v in &incoming.$field {
+                        if !v.trim().is_empty() && !self.$field.iter().any(|x| x == v) {
+                            self.$field.push(v.clone());
+                            n += 1;
+                        }
+                    }
+                }
+            };
+        }
+        absorb_list!(goals, ["goals"]);
+        absorb_list!(flaws, ["flaws"]);
+        absorb_list!(tags, ["tags"]);
+
+        // 弧线：按 (章, 状态) 去重，插完排序
+        if !self.locked_any(&["arc"]) {
+            for p in &incoming.arc {
+                if p.chapter > 0
+                    && !p.state.trim().is_empty()
+                    && !self.arc.iter().any(|x| x.chapter == p.chapter && x.state == p.state)
+                {
+                    self.arc.push(p.clone());
+                    n += 1;
+                }
+            }
+            self.arc.sort_by_key(|p| p.chapter);
+        }
+        n
+    }
 }
 
 /// `characters.json` 的读写。
@@ -196,11 +293,22 @@ impl Roster {
     }
 
     /// 读全部人物。文件不存在 → 空；坏文件 → 空（宁可少显示，不让书打不开）。
+    ///
+    /// 这是**展示路径**的宽松读。任何写路径都必须用 `all_checked`，
+    /// 否则一次保存会把作者的整份人物档案覆盖成空表。
     pub fn all(&self) -> Vec<Character> {
-        std::fs::read_to_string(self.path())
-            .ok()
-            .and_then(|t| serde_json::from_str::<Vec<Character>>(&t).ok())
-            .unwrap_or_default()
+        self.all_checked().unwrap_or_default()
+    }
+
+    /// 写路径的严格读：坏 JSON 报错，绝不返回空表让调用方覆盖。
+    pub fn all_checked(&self) -> Result<Vec<Character>, String> {
+        match std::fs::read_to_string(self.path()) {
+            Ok(t) if t.trim().is_empty() => Ok(Vec::new()),
+            Ok(t) => serde_json::from_str::<Vec<Character>>(&t)
+                .map_err(|e| format!("characters.json 解析失败（{e}），已拒绝覆盖")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(format!("读取 characters.json 失败：{e}")),
+        }
     }
 
     /// 写回。走原子写，并且**先校验再写**：坏数据不该覆盖好档案。
@@ -218,7 +326,7 @@ impl Roster {
     }
 
     pub fn upsert(&self, c: Character) -> Result<(), String> {
-        let mut list = self.all();
+        let mut list = self.all_checked()?;
         match list.iter().position(|x| x.id == c.id) {
             Some(i) => list[i] = c,
             None => list.push(c),
@@ -227,7 +335,7 @@ impl Roster {
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
-        let mut list = self.all();
+        let mut list = self.all_checked()?;
         list.retain(|c| c.id != id);
         self.save(&list)
     }
@@ -237,7 +345,7 @@ impl Roster {
         if into_id == from_id {
             return Err("不能合并到自己".into());
         }
-        let mut list = self.all();
+        let mut list = self.all_checked()?;
         let from = list
             .iter()
             .find(|c| c.id == from_id)
@@ -257,7 +365,13 @@ impl Roster {
     /// 只补空，不覆盖：作者已经在 characters.json 里写下的字段一律不动。
     /// 返回 (新增人数, 补全人数)，供界面告诉作者迁移了什么。
     pub fn migrate_from_memory(&self, facts: &[serde_json::Value], aliases: &[serde_json::Value]) -> (usize, usize) {
-        let mut list = self.all();
+        let mut list = match self.all_checked() {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("迁移人物档案失败：{e}");
+                return (0, 0);
+            }
+        };
         let mut added = 0usize;
 
         let ensure = |list: &mut Vec<Character>, name: &str, added: &mut usize| {
@@ -509,5 +623,54 @@ mod tests {
         assert!(r.all().is_empty(), "坏文件当空读");
         // 读不该改文件：坏数据仍留着，等作者或修复流程处理
         assert!(std::fs::read_to_string(root.join("characters.json")).unwrap().contains("坏掉"));
+    }
+
+    #[test]
+    fn corrupt_file_is_refused_by_write_paths() {
+        let root = book("corrupt-write");
+        std::fs::write(root.join("characters.json"), "{ 坏掉").unwrap();
+        let r = Roster::new(&root);
+        // 写路径必须拒绝，而不是把坏文件覆盖成空表再加一条
+        assert!(r.upsert(Character::new("沈砚")).is_err());
+        assert!(std::fs::read_to_string(root.join("characters.json")).unwrap().contains("坏掉"));
+    }
+
+    #[test]
+    fn proposal_only_fills_empty_and_respects_locks() {
+        let mut mine = Character::new("沈砚");
+        mine.voice = "话少，句短".into();
+        mine.motivation = String::new();
+        mine.locked_fields = vec!["motivation".into()];
+
+        let mut incoming = Character::new("沈砚");
+        incoming.voice = "AI 想改掉的口吻".into();
+        incoming.motivation = "AI 想填的动机".into();
+        incoming.appearance = "青衣，佩断刀".into();
+
+        let n = mine.apply_proposal(&incoming);
+        assert_eq!(n, 1, "只有 appearance 是合法增量：voice 已有值、motivation 被锁");
+        assert_eq!(mine.voice, "话少，句短", "作者写下的口吻不能被提案覆盖");
+        assert!(mine.motivation.is_empty(), "锁定字段一律不动");
+        assert_eq!(mine.appearance, "青衣，佩断刀");
+    }
+
+    #[test]
+    fn proposal_merges_aliases_and_arcs_without_duplicates() {
+        let mut mine = Character::new("沈砚");
+        mine.aliases = vec!["砚哥".into()];
+        mine.arc.push(ArcPoint { chapter: 5, state: "拜师".into(), note: String::new() });
+
+        let mut incoming = Character::new("沈砚");
+        incoming.aliases = vec!["砚哥".into(), "沈兄".into(), "沈砚".into()];
+        incoming.arc = vec![
+            ArcPoint { chapter: 5, state: "拜师".into(), note: String::new() },
+            ArcPoint { chapter: 20, state: "决裂".into(), note: String::new() },
+        ];
+
+        let n = mine.apply_proposal(&incoming);
+        assert_eq!(n, 2, "只新增一个别名与一个弧线点");
+        assert_eq!(mine.aliases, vec!["砚哥", "沈兄"], "重复别名与本名都不进别名表");
+        assert_eq!(mine.arc.len(), 2);
+        assert_eq!(mine.arc[1].chapter, 20);
     }
 }

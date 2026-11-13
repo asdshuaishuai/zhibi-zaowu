@@ -114,8 +114,9 @@ impl DirectorPanel {
                 id: s(&e, "id"),
                 label: s(&e, "objectiveFact").chars().take(18).collect(),
                 chapter: ch,
-                hidden: !e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(true),
-                planned: !e.get("happened").and_then(|v| v.as_bool()).unwrap_or(true),
+                // 缺省 = 未揭示 / 未发生：与台账、画布同一套保守语义。
+                hidden: !e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(false),
+                planned: !e.get("happened").and_then(|v| v.as_bool()).unwrap_or(false),
             };
             if ch >= self.current && ch < end {
                 cards.push(card);

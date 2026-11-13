@@ -98,6 +98,7 @@ fn relation_interval_covers_matches_the_shared_fixture() {
             label: "x".into(),
             public_to_reader: true,
             evidence: String::new(),
+            extra: Default::default(),
         };
         assert_eq!(
             iv.covers(chapter),

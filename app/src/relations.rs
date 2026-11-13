@@ -15,6 +15,7 @@
 //! 兼容：旧的 facts 里 `source=relation` 或能归一成人名的三元组，迁移时转成
 //! 单区间关系（fromChapter 起、无终点），原 facts 不动。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,9 @@ pub struct Interval {
     /// 依据：哪一章哪一段。
     #[serde(default)]
     pub evidence: String,
+    /// 未知字段保留：这一版不认识的属性不能在保存时丢掉。
+    #[serde(flatten, default)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl Interval {
@@ -70,6 +74,9 @@ pub struct Relation {
     pub kind: String,
     #[serde(default)]
     pub note: String,
+    /// 未知字段保留。
+    #[serde(flatten, default)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl Relation {
@@ -132,11 +139,20 @@ impl Web {
         self.root.join("relations.json")
     }
 
+    /// 展示路径的宽松读：坏文件当空，页面还能打开。
     pub fn all(&self) -> Vec<Relation> {
-        std::fs::read_to_string(self.path())
-            .ok()
-            .and_then(|t| serde_json::from_str::<Vec<Relation>>(&t).ok())
-            .unwrap_or_default()
+        self.all_checked().unwrap_or_default()
+    }
+
+    /// 写路径的严格读：坏 JSON 报错，绝不返回空表让调用方覆盖。
+    pub fn all_checked(&self) -> Result<Vec<Relation>, String> {
+        match std::fs::read_to_string(self.path()) {
+            Ok(t) if t.trim().is_empty() => Ok(Vec::new()),
+            Ok(t) => serde_json::from_str::<Vec<Relation>>(&t)
+                .map_err(|e| format!("relations.json 解析失败（{e}），已拒绝覆盖")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(format!("读取 relations.json 失败：{e}")),
+        }
     }
 
     pub fn save(&self, list: &[Relation]) -> Result<(), String> {
@@ -151,7 +167,7 @@ impl Web {
     #[allow(dead_code)]
     pub fn upsert(&self, mut rel: Relation) -> Result<(), String> {
         rel.normalize();
-        let mut list = self.all();
+        let mut list = self.all_checked()?;
         match list.iter().position(|r| r.id == rel.id) {
             Some(i) => list[i] = rel,
             None => list.push(rel),
@@ -160,7 +176,7 @@ impl Web {
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
-        let mut list = self.all();
+        let mut list = self.all_checked()?;
         list.retain(|r| r.id != id);
         self.save(&list)
     }
@@ -188,7 +204,7 @@ impl Web {
         if interval.label.trim().is_empty() {
             return Err("关系标签不能为空".into());
         }
-        let mut list = self.all();
+        let mut list = self.all_checked()?;
         // 找到同一对（有方向时按方向匹配，无向时两个方向都算）
         let found = list.iter().position(|r| {
             if r.directed {
@@ -201,6 +217,10 @@ impl Web {
             let id = list[i].id.clone();
             list[i].intervals.push(interval);
             list[i].normalize();
+            // 着色跟着"最后一段"走：师徒 → 决裂之后，边不该还是师承色。
+            if let Some(last) = list[i].intervals.last() {
+                list[i].kind = classify(&last.label);
+            }
             self.save(&list)?;
             Ok(id)
         } else {
@@ -223,13 +243,13 @@ impl Web {
         &self,
         facts: &[serde_json::Value],
         known_people: &[String],
-    ) -> usize {
+    ) -> Result<usize, String> {
         const RELATIONAL: &[&str] = &[
             "师从", "师父", "徒弟", "父子", "父女", "母子", "母女", "兄弟", "姐妹", "夫妻",
             "敌对", "仇敌", "同乡", "共谋", "暗恋", "主仆", "盟友", "部下", "上司", "相识",
             "结义", "背叛", "信任", "利用", "喜欢", "恨", "救过", "杀过", "暗杀",
         ];
-        let mut list = self.all();
+        let mut list = self.all_checked()?;
         let mut added = 0usize;
         for f in facts {
             let Some(subject) = f.get("subject").and_then(|v| v.as_str()) else {
@@ -275,6 +295,7 @@ impl Web {
                     label: predicate.to_string(),
                     public_to_reader: public,
                     evidence: String::new(),
+                    extra: Default::default(),
                 }),
                 None => {
                     let kind = classify(predicate);
@@ -285,6 +306,7 @@ impl Web {
                         label: predicate.to_string(),
                         public_to_reader: public,
                         evidence: String::new(),
+                        extra: Default::default(),
                     });
                     list.push(rel);
                 }
@@ -295,9 +317,54 @@ impl Web {
             for r in &mut list {
                 r.normalize();
             }
-            let _ = self.save(&list);
+            self.save(&list)?;
         }
-        added
+        Ok(added)
+    }
+
+    /// 人物改名：把所有关系的端点从旧名改成新名。
+    ///
+    /// 关系端点存的是人名而不是 id，角色改名不同步就会留下孤儿边。
+    /// 返回改动的关系条数。
+    pub fn rename_person(&self, old: &str, new: &str) -> Result<usize, String> {
+        let old = old.trim();
+        let new = new.trim();
+        if old.is_empty() || new.is_empty() || old == new {
+            return Ok(0);
+        }
+        let mut list = self.all_checked()?;
+        let mut n = 0usize;
+        for r in &mut list {
+            if r.from == old {
+                r.from = new.to_string();
+                n += 1;
+            }
+            if r.to == old {
+                r.to = new.to_string();
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.save(&list)?;
+        }
+        Ok(n)
+    }
+
+    /// 人物删除：对外的边一并删掉，不留指向不存在人物的孤儿关系。
+    /// 返回删掉的关系条数。
+    pub fn remove_person(&self, name: &str) -> Result<usize, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(0);
+        }
+        let mut list = self.all_checked()?;
+        let before = list.len();
+        list.retain(|r| r.from != name && r.to != name);
+        let removed = before - list.len();
+        if removed > 0 {
+            self.save(&list)?;
+        }
+        Ok(removed)
     }
 }
 
@@ -367,17 +434,33 @@ pub fn evolution(web: &Web, person: &str, horizon: u32) -> Vec<EvolutionRow> {
                 .collect();
             spans.sort_by_key(|(a, _, _, _)| *a);
             let first = spans.iter().map(|(a, _, _, _)| *a).min().unwrap_or(0);
-            let last = spans
+            // `last` 与 span_text 同一套语义：有开放段（to=0）就是"至今"（0）；
+            // 否则取最后一个有限终点。把 0 混进 max 会让"至今"被 20 盖掉。
+            let last = if spans.iter().any(|(_, b, _, _)| *b == 0) {
+                0
+            } else {
+                spans.iter().map(|(_, b, _, _)| *b).max().unwrap_or(0)
+            };
+            // 断档：先合并重叠/相接的区间再看缝。长区间覆盖下的短区间之间
+            // 不是断档，不合并会误报（1–100 + 10–20 + 30–40 其实连续）。
+            let mut covered: Vec<(u32, u32)> = spans
                 .iter()
-                .map(|(_, b, _, _)| *b)
-                .filter(|b| *b > 0)
-                .max()
-                .unwrap_or(0);
-            // 断档：相邻两段之间，前一段有明确终点、后一段起点明显更晚
-            let has_gap = spans.windows(2).any(|w| {
-                let end_prev = w[0].1;
-                end_prev > 0 && w[1].0 > end_prev
-            });
+                .map(|(a, b, _, _)| (*a, if *b == 0 { u32::MAX } else { *b }))
+                .collect();
+            covered.sort_unstable();
+            let mut has_gap = false;
+            let mut reach: Option<u32> = None;
+            for (a, b) in covered {
+                if let Some(end) = reach {
+                    if a > end {
+                        has_gap = true;
+                        break;
+                    }
+                    reach = Some(end.max(b));
+                } else {
+                    reach = Some(b);
+                }
+            }
             EvolutionRow { rid: r.id.clone(), other, kind: r.kind.clone(), spans, first, last, has_gap }
         })
         .collect();
@@ -446,10 +529,12 @@ mod tests {
         w.add_interval("沈砚", "老周", "师承", Interval {
             from_chapter: 5, to_chapter: 20, label: "师徒".into(),
             public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
         w.add_interval("沈砚", "老周", "敌对", Interval {
             from_chapter: 20, to_chapter: 0, label: "仇敌".into(),
             public_to_reader: false, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
 
         assert_eq!(w.all().len(), 1, "同一对人物只有一条关系史");
@@ -485,7 +570,7 @@ mod tests {
             serde_json::json!({"subject":"沈砚","predicate":"获得","object":"断刀","fromChapter":1}),
             serde_json::json!({"subject":"沈砚","predicate":"师从","object":"老周","fromChapter":5}),
         ];
-        let added = w.migrate_from_facts(&facts, &[]);
+        let added = w.migrate_from_facts(&facts, &[]).unwrap();
         assert_eq!(added, 1, "只迁移真正的两人关系");
         let all = w.all();
         assert_eq!(all.len(), 1);
@@ -501,8 +586,8 @@ mod tests {
         let facts = vec![
             serde_json::json!({"subject":"沈砚","predicate":"师从","object":"老周","fromChapter":5}),
         ];
-        assert_eq!(w.migrate_from_facts(&facts, &[]), 1);
-        assert_eq!(w.migrate_from_facts(&facts, &[]), 0, "重复迁移不该再增");
+        assert_eq!(w.migrate_from_facts(&facts, &[]).unwrap(), 1);
+        assert_eq!(w.migrate_from_facts(&facts, &[]).unwrap(), 0, "重复迁移不该再增");
     }
 
     #[test]
@@ -534,10 +619,12 @@ mod tests {
         w.add_interval("沈砚", "老周", "师承", Interval {
             from_chapter: 5, to_chapter: 10, label: "师徒".into(),
             public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
         w.add_interval("沈砚", "老周", "敌对", Interval {
             from_chapter: 20, to_chapter: 0, label: "仇敌".into(),
             public_to_reader: false, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
 
         let rows = evolution(&w, "沈砚", 40);
@@ -558,10 +645,12 @@ mod tests {
         w.add_interval("A", "B", "师承", Interval {
             from_chapter: 1, to_chapter: 10, label: "师徒".into(),
             public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
         w.add_interval("A", "B", "敌对", Interval {
             from_chapter: 10, to_chapter: 0, label: "仇敌".into(),
             public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
         let rows = evolution(&w, "A", 30);
         assert!(!rows[0].has_gap, "首尾相接不算断档");
@@ -574,6 +663,7 @@ mod tests {
         w.add_interval("甲", "乙", "其他", Interval {
             from_chapter: 1, to_chapter: 0, label: "相识".into(),
             public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
         // 从两边的角度都能看到这条关系
         assert_eq!(evolution(&w, "甲", 10).len(), 1);
@@ -588,10 +678,12 @@ mod tests {
         w.add_interval("我", "后认识", "其他", Interval {
             from_chapter: 20, to_chapter: 0, label: "相识".into(),
             public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
         w.add_interval("我", "先认识", "其他", Interval {
             from_chapter: 3, to_chapter: 0, label: "相识".into(),
             public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
         }).unwrap();
         let rows = evolution(&w, "我", 30);
         assert_eq!(rows[0].other, "先认识", "先出现的排前面");
@@ -606,5 +698,74 @@ mod tests {
         assert_eq!(classify("暗恋"), "情爱");
         assert_eq!(classify("利用"), "利益");
         assert_eq!(classify("路过"), "其他");
+    }
+
+    #[test]
+    fn corrupt_file_is_refused_by_write_paths() {
+        let root = book("corrupt-write");
+        std::fs::write(root.join("relations.json"), "{ 坏掉").unwrap();
+        let w = Web::new(&root);
+        assert!(w.all().is_empty(), "展示路径当空读");
+        assert!(w.add_interval("A", "B", "其他", Interval {
+            from_chapter: 1, to_chapter: 0, label: "相识".into(),
+            public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
+        }).is_err(), "写路径必须拒绝覆盖坏文件");
+        assert!(std::fs::read_to_string(root.join("relations.json")).unwrap().contains("坏掉"));
+    }
+
+    #[test]
+    fn rename_and_remove_person_update_relations() {
+        let root = book("rename");
+        let w = Web::new(&root);
+        w.add_interval("沈砚", "老周", "师承", Interval {
+            from_chapter: 5, to_chapter: 0, label: "师徒".into(),
+            public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
+        }).unwrap();
+        assert_eq!(w.rename_person("老周", "周伯").unwrap(), 1);
+        let all = w.all();
+        assert_eq!(all[0].to, "周伯", "改名后关系边不能悬空");
+        assert_eq!(w.remove_person("周伯").unwrap(), 1);
+        assert!(w.all().is_empty(), "删人时向外的边一并清掉");
+    }
+
+    #[test]
+    fn gap_detection_merges_overlapping_intervals() {
+        let root = book("gap-overlap");
+        let w = Web::new(&root);
+        // 一条长区间覆盖了两条短区间之间的"缝"：不是断档
+        let rel = Relation {
+            id: "r1".into(),
+            from: "A".into(),
+            to: "B".into(),
+            intervals: vec![
+                Interval { from_chapter: 1, to_chapter: 100, label: "同盟".into(), public_to_reader: true, evidence: String::new(), extra: Default::default() },
+                Interval { from_chapter: 10, to_chapter: 20, label: "并肩".into(), public_to_reader: true, evidence: String::new(), extra: Default::default() },
+                Interval { from_chapter: 30, to_chapter: 40, label: "分歧".into(), public_to_reader: true, evidence: String::new(), extra: Default::default() },
+            ],
+            ..Default::default()
+        };
+        w.save(&[rel]).unwrap();
+        let rows = evolution(&w, "A", 50);
+        assert!(!rows[0].has_gap, "长区间覆盖下不应误报断档");
+    }
+
+    #[test]
+    fn open_ended_span_means_present_not_last_finite() {
+        let root = book("last-open");
+        let w = Web::new(&root);
+        w.add_interval("A", "B", "师承", Interval {
+            from_chapter: 5, to_chapter: 20, label: "师徒".into(),
+            public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
+        }).unwrap();
+        w.add_interval("A", "B", "其他", Interval {
+            from_chapter: 30, to_chapter: 0, label: "陌路".into(),
+            public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
+        }).unwrap();
+        let rows = evolution(&w, "A", 40);
+        assert_eq!(rows[0].last, 0, "有开放段时 last=0（至今），不能被 20 盖掉");
     }
 }
