@@ -329,7 +329,7 @@ impl Render for WorldlinePanel {
             track_rows.push(
                 div()
                     .id(SharedString::from(format!("wltr-{}", t.id)))
-                    .h(px(30.))
+                    .h(px(24.))
                     .flex()
                     .items_center()
                     .gap(px(4.))
@@ -424,14 +424,12 @@ impl Render for WorldlinePanel {
         let labels_tr = tr.clone();
         let picked_c = self.picked.clone();
         let sel = self.selected.clone();
-        let head_h = 48.;
         // —— 扇形布局 ——
         //
         // 时间轴要表达的是"前面是一条线，后面是无数种可能"：
         // 正典是一根横贯的主干，每条 if 从它的分叉章弯出去，然后各自平走。
         // 旧实现把每条线摆成一行平行的车道——那看着像五条并列的线，
         // 表达不出"从一条线上长出来的"这层关系。
-        let fan_step = 44.;
         let mut branches: Vec<&Track> = tr_c
             .iter()
             .filter(|t| !(t.kind == Kind::Base || t.id == "α"))
@@ -457,23 +455,37 @@ impl Render for WorldlinePanel {
             };
             slots.push((t.id.clone(), off));
         }
-        // 主干以下所有分支从它往下排，主干上方的留出空间
-        let trunk_y = head_h + 24. + up * fan_step;
-        let mut fan: BTreeMap<String, f32> = BTreeMap::new();
-        for (id, off) in slots {
-            fan.insert(id, trunk_y + off * fan_step);
-        }
-        for t in tr_c.iter().filter(|t| t.kind == Kind::Base || t.id == "α") {
-            fan.insert(t.id.clone(), trunk_y);
-        }
-        let canvas_h = trunk_y + down * fan_step + 26.;
-        let fan_c = fan.clone();
+        let _ = (up, down);
+        // —— 时间轴：**整页**画布 ——
+        //
+        // 世界线这一页只干一件事：让作者看见"现在是一条线，前面是无数种可能"。
+        // 所以画布铺满整个内容区，轨道列表与详情都做成浮层——不再各占一条边。
+        //
+        // 版式参照定稿的线构图：左=现在，向右=未来；确定的是实线、可能是虚线；
+        // 每个节点是一颗有光晕的点，分叉是平滑外弯的曲线。
+        let fractions = {
+            let mut m: BTreeMap<String, f32> = BTreeMap::new();
+            let max_off = slots.iter().map(|(_, o)| o.abs()).fold(0.0f32, f32::max).max(1.0);
+            // 纵向只用中间 84%：上下留出标题与图例
+            let step = 0.42 / max_off;
+            for (id, off) in &slots {
+                m.insert(id.clone(), 0.5 + off * step);
+            }
+            m
+        };
+        let frac_c = fractions.clone();
+        let y_of_frac = move |id: &str, is_base: bool| -> f32 {
+            if is_base {
+                0.5
+            } else {
+                frac_c.get(id).copied().unwrap_or(0.5)
+            }
+        };
+        let frac_lbl = fractions.clone();
 
-        let mut timeline = div()
-            .relative()
-            .flex_1()
-            .min_w_0()
-            .h(px(canvas_h))
+        let timeline = div()
+            .absolute()
+            .size_full()
             .child(
                 canvas(
                     |_, _, _| {},
@@ -483,21 +495,45 @@ impl Render for WorldlinePanel {
                         let ox = bounds.origin.x.as_f32();
                         let oy = bounds.origin.y.as_f32();
                         let p = |x: f32, y: f32| point(px(ox + x), px(oy + y));
-                        let pad_r = 13.0;
-                        let track_w = (w - pad_r).max(1.);
+                        let pad_l = 34.0f32;
+                        let pad_r = 26.0f32;
+                        let axis_w = (w - pad_l - pad_r).max(1.);
                         let x_of = |ch: u32| {
                             let rel = (ch.saturating_sub(from_ch)) as f32 / span as f32;
-                            rel.clamp(0., 1.) * track_w
+                            pad_l + rel.clamp(0., 1.) * axis_w
                         };
-                        // 每条轨道在扇形上的纵坐标（主干恒为 trunk_y）
-                        let y_of = |ti: usize| {
-                            tr_c.get(ti)
-                                .and_then(|t| fan_c.get(&t.id).copied())
-                                .unwrap_or(trunk_y)
-                        };
-                        let purple = theme::PURPLE();
+                        let y_of = |id: &str, is_base: bool| y_of_frac(id, is_base) * h;
 
-                        // 幕带
+                        // —— 深空底：星点 + 从"现在"散开的轨道弧 ——
+                        //
+                        // 确定性伪随机（LCG），不用 rand：同一本书每次打开星图一样，
+                        // 不会因为随机种子让画面每次"抖"一下。
+                        let mut seed = 0x2545_f491u32;
+                        let mut next = || {
+                            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                            (seed >> 8) as f32 / 16_777_216.0
+                        };
+                        for _ in 0..110 {
+                            let x = next() * w;
+                            let y = next() * h;
+                            let a = 0.03 + next() * 0.09;
+                            let r = 0.6 + next() * 1.1;
+                            let mut dot = PathBuilder::fill();
+                            let k = 0.5523 * r;
+                            dot.move_to(p(x + r, y));
+                            dot.cubic_bezier_to(p(x + k, y + r), p(x, y + r), p(x + r, y + k));
+                            dot.cubic_bezier_to(p(x - r, y + k), p(x - r, y), p(x - k, y + r));
+                            dot.cubic_bezier_to(p(x - k, y - r), p(x, y - r), p(x - r, y - k));
+                            dot.cubic_bezier_to(p(x + r, y - k), p(x + r, y), p(x + k, y - r));
+                            if let Ok(path) = dot.build() {
+                                window.paint_path(path, hsla(theme::TEXT()).opacity(a));
+                            }
+                        }
+                        // 装饰性的轨道弧不画：它和"这是一条线"的视觉语言冲突——
+                        // 试过一版从"现在"发散的同心弧，作者第一眼以为那是几条世界线。
+                        // 世界线页只该有数据，不该有会冒充数据的装饰。
+
+                        // 幕带：竖向交替底色，标出卷/幕的范围
                         for (bi, b) in bands_c.iter().enumerate() {
                             let x0 = x_of(b.start.saturating_sub(1));
                             let x1 = x_of(b.end);
@@ -512,101 +548,114 @@ impl Render for WorldlinePanel {
                             r.close();
                             if let Ok(path) = r.build() {
                                 let a = if bi % 2 == 0 { 0.05 } else { 0.022 };
-                                window.paint_path(path, hsla(purple).opacity(a));
+                                window.paint_path(path, hsla(theme::PURPLE()).opacity(a));
                             }
                         }
 
-                        // 章节刻度
-                        for ch in (from_ch..=to_ch).step_by(5) {
-                            if ch == 0 {
-                                continue;
+                        // 章节刻度：每 5 章一道细线
+                        let mut tick = from_ch;
+                        while tick <= to_ch {
+                            if tick > 0 && tick % 5 == 0 {
+                                let x = x_of(tick);
+                                let mut t = PathBuilder::stroke(px(1.));
+                                t.move_to(p(x, 8.));
+                                t.line_to(p(x, h - 8.));
+                                if let Ok(path) = t.build() {
+                                    window.paint_path(path, hsla(theme::LINE()).opacity(0.45));
+                                }
                             }
-                            let x = x_of(ch);
-                            let mut t = PathBuilder::stroke(px(1.));
-                            t.move_to(p(x, head_h - 10.));
-                            t.line_to(p(x, h - 2.));
-                            if let Ok(path) = t.build() {
-                                window.paint_path(path, hsla(theme::LINE()).opacity(0.6));
-                            }
+                            tick += 1;
                         }
 
-                        // 固化边界：整条竖线，最粗最实——这是这一页的主线索
+                        // 固化边界：一条竖向实线，标"剧情确定到这儿"
                         if boundary > 0 {
                             let x = x_of(boundary);
-                            let mut b1 = PathBuilder::stroke(px(2.));
-                            b1.move_to(p(x, head_h - 14.));
-                            b1.line_to(p(x, h - 2.));
-                            if let Ok(path) = b1.build() {
-                                window.paint_path(path, hsla(theme::ACCENT()).opacity(0.85));
+                            let mut b = PathBuilder::stroke(px(1.6));
+                            b.move_to(p(x, 10.));
+                            b.line_to(p(x, h - 10.));
+                            if let Ok(path) = b.build() {
+                                window.paint_path(path, hsla(theme::ACCENT()).opacity(0.75));
                             }
                         }
 
-                        // 各轨道的段。
+                        // —— 线本身 ——
                         //
-                        // 主干（正典）水平横贯；分支的第一段先从主干**弯出来**，
-                        // 之后才沿着自己的高度平走。弯出去的那一小段就是
-                        // "它是从这条线上分出来的"的视觉证据——没有它，
-                        // 五条线只是五条平行的线。
+                        // 每条线画两遍：先一条宽而淡的（光晕），再一条细而实的。
+                        // 这是最省事的"发光"——真滤波在 GPUI 里没有现成 API。
                         for seg in segs_c.iter() {
-                            let Some(ti) = tr_c.iter().position(|t| t.id == seg.track) else {
+                            let Some(t) = tr_c.iter().find(|t| t.id == seg.track) else {
                                 continue;
                             };
-                            let t = &tr_c[ti];
-                            let y = y_of(ti);
+                            let is_base = t.kind == Kind::Base || t.id == "α";
+                            let y = y_of(&t.id, is_base);
                             let x0 = x_of(seg.from);
                             let x1 = x_of(seg.to);
                             if x1 <= x0 {
                                 continue;
                             }
                             let color = track_color(t);
-                            let on = sel.as_deref() == Some(seg.track.as_str());
-                            let mut line_p = PathBuilder::stroke(px(if on {
-                                2.6
-                            } else if seg.fixed {
-                                2.2
-                            } else {
-                                1.5
-                            }));
-                            if !seg.fixed {
-                                line_p = line_p.dash_array(&[px(5.), px(4.)]);
-                            }
-                            let is_branch = !(t.kind == Kind::Base || t.id == "α");
+                            let on = sel.as_deref() == Some(t.id.as_str());
                             let fork_ch = t.fork_chapter.max(1);
-                            if is_branch && seg.from == fork_ch {
-                                // 从主干的分叉点（或父线的高度）接到自己这一层。
-                                //
-                                // 用两段直线画"肘"，不用贝塞尔：曲线在这个尺度上
-                                // （横向 26px、纵向 44px）只会糊成一段斜线，
-                                // 反而看不出"从哪分出来的"。直角肘更清楚。
+                            let mut path = PathBuilder::stroke(px(if on { 2.6 } else { 1.9 }));
+                            if !seg.fixed {
+                                path = path.dash_array(&[px(5.), px(5.)]);
+                            }
+                            if !is_base && seg.from == fork_ch {
+                                // 从父线的高度平滑地弯到自己这一层
                                 let fx = x_of(fork_ch);
-                                let from_y = parent_y(&t.parent_id, &tr_c, &fan_c).unwrap_or(trunk_y);
-                                let join = fx + 18.;
-                                line_p.move_to(p(fx, from_y));
-                                line_p.line_to(p(join, y));
+                                let py = tr_c
+                                    .iter()
+                                    .find(|p2| p2.id == t.parent_id)
+                                    .map(|p2| {
+                                        y_of(&p2.id, p2.kind == Kind::Base || p2.id == "α")
+                                    })
+                                    .unwrap_or(h * 0.5);
+                                let join = fx + 70.;
+                                path.move_to(p(fx, py));
+                                path.cubic_bezier_to(p(join, y), p(fx + 30., py), p(fx + 40., y));
                                 if x1 > join {
-                                    line_p.line_to(p(x1, y));
+                                    path.line_to(p(x1, y));
                                 }
                             } else {
-                                line_p.move_to(p(x0, y));
-                                line_p.line_to(p(x1, y));
+                                path.move_to(p(x0, y));
+                                path.line_to(p(x1, y));
                             }
-                            if let Ok(path) = line_p.build() {
-                                // 固化段实、开放段淡：一眼分出"已定"与"未定"
-                                let op = if seg.fixed { 1.0 } else { 0.6 };
+                            if let Ok(path) = path.build() {
+                                let op = if seg.fixed { 1.0 } else { 0.62 };
                                 window.paint_path(path, hsla(color).opacity(op));
                             }
                         }
 
-                        // 节点：绿实心 = 已写进正文，蓝实心 = 已采纳待写，空心 = 仅计划/推演
-                        for (ti, t) in tr_c.iter().enumerate() {
-                            let y = y_of(ti);
+                        // 节点：圆形 + 外圈光晕；已写实心、已采纳蓝实心、计划空心
+                        for t in tr_c.iter() {
                             let Some(ns) = nodes_c.get(&t.id) else { continue };
+                            let is_base = t.kind == Kind::Base || t.id == "α";
+                            let y = y_of(&t.id, is_base);
+                            let color = track_color(t);
                             for (ch, nid, _label, state) in ns {
                                 if *ch < from_ch || *ch > to_ch {
                                     continue;
                                 }
                                 let x = x_of(*ch);
-                                let r = 3.2;
+                                let picked = picked_c
+                                    .as_ref()
+                                    .map(|(l, n)| l == &t.id && n == nid)
+                                    .unwrap_or(false);
+                                let halo = if picked { 9.0 } else { 7.0 };
+                                // 光晕
+                                let mut g = PathBuilder::fill();
+                                let k = 0.5523 * halo;
+                                g.move_to(p(x + halo, y));
+                                g.cubic_bezier_to(p(x + k, y + halo), p(x, y + halo), p(x + halo, y + k));
+                                g.cubic_bezier_to(p(x - halo, y + k), p(x - halo, y), p(x - k, y + halo));
+                                g.cubic_bezier_to(p(x - k, y - halo), p(x, y - halo), p(x - halo, y - k));
+                                g.cubic_bezier_to(p(x + halo, y - k), p(x + halo, y), p(x + k, y - halo));
+                                if let Ok(path) = g.build() {
+                                    let c = if picked { theme::ACCENT() } else { color };
+                                    window.paint_path(path, hsla(c).opacity(0.16));
+                                }
+                                // 本体
+                                let r = if picked { 5.2 } else { 4.0 };
                                 let k = 0.5523 * r;
                                 if state.is_canon() {
                                     let fill = if *state == crate::worldline::NodeState::Written {
@@ -616,38 +665,22 @@ impl Render for WorldlinePanel {
                                     };
                                     let mut d = PathBuilder::fill();
                                     d.move_to(p(x + r, y));
-                                    d.cubic_bezier_to(p(x + r, y + k), p(x + k, y + r), p(x, y + r));
-                                    d.cubic_bezier_to(p(x - k, y + r), p(x - r, y + k), p(x - r, y));
-                                    d.cubic_bezier_to(p(x - r, y - k), p(x - k, y - r), p(x, y - r));
-                                    d.cubic_bezier_to(p(x + k, y - r), p(x + r, y - k), p(x + r, y));
+                                    d.cubic_bezier_to(p(x + k, y + r), p(x, y + r), p(x + r, y + k));
+                                    d.cubic_bezier_to(p(x - r, y + k), p(x - r, y), p(x - k, y + r));
+                                    d.cubic_bezier_to(p(x - k, y - r), p(x, y - r), p(x - r, y - k));
+                                    d.cubic_bezier_to(p(x + r, y - k), p(x + r, y), p(x + k, y - r));
                                     if let Ok(path) = d.build() {
                                         window.paint_path(path, hsla(fill));
                                     }
                                 } else {
-                                    let mut d = PathBuilder::stroke(px(1.1));
+                                    let mut d = PathBuilder::stroke(px(1.3));
                                     d.move_to(p(x + r, y));
-                                    d.cubic_bezier_to(p(x + r, y + k), p(x + k, y + r), p(x, y + r));
-                                    d.cubic_bezier_to(p(x - k, y + r), p(x - r, y + k), p(x - r, y));
-                                    d.cubic_bezier_to(p(x - r, y - k), p(x - k, y - r), p(x, y - r));
-                                    d.cubic_bezier_to(p(x + k, y - r), p(x + r, y - k), p(x + r, y));
+                                    d.cubic_bezier_to(p(x + k, y + r), p(x, y + r), p(x + r, y + k));
+                                    d.cubic_bezier_to(p(x - r, y + k), p(x - r, y), p(x - k, y + r));
+                                    d.cubic_bezier_to(p(x - k, y - r), p(x, y - r), p(x - r, y - k));
+                                    d.cubic_bezier_to(p(x + r, y - k), p(x + r, y), p(x + k, y - r));
                                     if let Ok(path) = d.build() {
-                                        window.paint_path(path, hsla(theme::FAINT()).opacity(0.8));
-                                    }
-                                }
-                                // 选中的节点加一圈：抽屉开着但时间轴上看不出指的是哪个点，
-                                // 作者就得自己回忆刚才点的是哪一个。
-                                if picked_c.as_ref().map(|(l, n)| l == &t.id && n == nid)
-                                    == Some(true)
-                                {
-                                    let mut ring = PathBuilder::stroke(px(1.4));
-                                    let rr = r + 2.6;
-                                    ring.move_to(p(x + rr, y));
-                                    ring.cubic_bezier_to(p(x + rr, y + rr * 0.55), p(x + rr * 0.55, y + rr), p(x, y + rr));
-                                    ring.cubic_bezier_to(p(x - rr * 0.55, y + rr), p(x - rr, y + rr * 0.55), p(x - rr, y));
-                                    ring.cubic_bezier_to(p(x - rr, y - rr * 0.55), p(x - rr * 0.55, y - rr), p(x, y - rr));
-                                    ring.cubic_bezier_to(p(x + rr * 0.55, y - rr), p(x + rr, y - rr * 0.55), p(x + rr, y));
-                                    if let Ok(path) = ring.build() {
-                                        window.paint_path(path, hsla(theme::ACCENT()).opacity(0.9));
+                                        window.paint_path(path, hsla(color).opacity(0.9));
                                     }
                                 }
                             }
@@ -657,14 +690,14 @@ impl Render for WorldlinePanel {
                 .absolute()
                 .size_full(),
             )
-            // 幕名
+            // 幕名（顶部）
             .child(
                 div()
                     .absolute()
-                    .left_0()
-                    .right(px(13.))
+                    .left(px(34.))
+                    .right(px(26.))
                     .top(px(6.))
-                    .h(px(16.))
+                    .h(px(14.))
                     .relative()
                     .children(band_list.iter().map(|b| {
                         let start = (b.start.saturating_sub(from_ch)) as f32 / span as f32;
@@ -681,50 +714,28 @@ impl Render for WorldlinePanel {
                             .child(SharedString::from(b.name.clone()))
                     })),
             )
-            // 章号 + 固化边界标注
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right(px(13.))
-                    .top(px(24.))
-                    .h(px(16.))
-                    .relative()
-                    .child(
-                        div()
-                            .absolute()
-                            .left(relative(
-                                (boundary.saturating_sub(from_ch)) as f32 / span as f32,
-                            ))
-                            .text_size(theme::FONT_MICRO)
-                            .font_family(theme::FAMILY_MONO)
-                            .text_color(theme::ACCENT())
-                            .child(SharedString::from(if boundary > 0 {
-                                format!("固化至 {boundary}")
-                            } else {
-                                "尚未固化".to_string()
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .right(px(16.))
-                    .bottom(px(2.))
-                    .text_size(theme::FONT_MICRO)
-                    .text_color(theme::FAINT())
-                    .child(SharedString::from(format!(
-                        "第 {from_ch}–{to_ch} 章 · 实线=已固化 虚线=开放的 if · ● 已写 ○ 计划"
-                    ))),
-            )
-            // 分支线号：贴在每根分支的右端。
-            // 没有它就是"五条不知道是谁的线"——左列表虽然有序号，但图上一一对应
-            // 起来要来回扫视。
+            // 固化边界标注
+            .when(boundary > 0, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left(relative(
+                            ((boundary.saturating_sub(from_ch)) as f32 / span as f32).clamp(0., 1.),
+                        ))
+                        .top(px(22.))
+                        .ml(px(34.))
+                        .text_size(theme::FONT_MICRO)
+                        .font_family(theme::FAMILY_MONO)
+                        .text_color(theme::ACCENT())
+                        .child(SharedString::from(format!("固化至 {boundary}"))),
+                )
+            })
+            // 线名：贴在每根线的右端
             .children(labels_tr.iter().filter_map(|t| {
                 if t.kind == Kind::Base || t.id == "α" {
                     return None;
                 }
-                let y = fan.get(&t.id).copied()?;
+                let f = frac_lbl.get(&t.id).copied()?;
                 let id = t.id.clone();
                 let color = track_color(t);
                 let on = self.selected.as_deref() == Some(t.id.as_str());
@@ -733,14 +744,15 @@ impl Render for WorldlinePanel {
                     div()
                         .id(SharedString::from(format!("wllbl-{}", t.id)))
                         .absolute()
-                        .right(px(16.))
-                        .top(px(y - 7.))
+                        .right(px(20.))
+                        .top(relative(f))
+                        .mt(px(-8.))
                         .cursor_pointer()
-                        .px(px(3.))
+                        .px(px(4.))
                         .rounded(px(3.))
                         .bg(theme::BG())
                         .font_family(theme::FAMILY_MONO)
-                        .text_size(px(9.))
+                        .text_size(px(10.))
                         .text_color(if on { theme::ACCENT() } else { color })
                         .child(SharedString::from(id))
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -752,268 +764,84 @@ impl Render for WorldlinePanel {
                         .into_any_element(),
                 )
             }))
-            // 节点的命中区。
-            //
-            // canvas 画出来的圆是路径，没有元素身份，收不到点击。所以在同样的位置
-            // 铺一层透明 div 当靶子：位置用百分比（章节比例）+ 固定像素（行高），
-            // 与 paint 里的 x_of / y_of 是同一套算法，不需要等布局回填。
-            // 靶子比圆大（14px 对 6px 的直径）：直径 6px 的点用鼠标点，手指更点不中。
+            // 节点命中区：点节点 → 抽屉
             .child(
                 div()
                     .absolute()
-                    .left_0()
-                    .right(px(13.))
+                    .left(px(34.))
+                    .right(px(26.))
                     .top_0()
                     .bottom_0()
                     .children({
                         let mut hits: Vec<gpui_kit::AnyElement> = Vec::new();
                         for t in hits_tr.iter() {
                             let Some(ns) = hits_nodes.get(&t.id) else { continue };
+                            let is_base = t.kind == Kind::Base || t.id == "α";
+                            let f = if is_base {
+                                0.5
+                            } else {
+                                frac_lbl.get(&t.id).copied().unwrap_or(0.5)
+                            };
                             for (ch, nid, label, _state) in ns {
                                 if *ch < from_ch || *ch > to_ch {
                                     continue;
                                 }
                                 let ratio = (*ch).saturating_sub(from_ch) as f32 / span as f32;
                                 let hid = SharedString::from(format!("wlhit-{}-{nid}", t.id));
-                                let (lid, nid2, label2) =
-                                    (t.id.clone(), nid.clone(), label.clone());
+                                let (lid, nid2, label2) = (t.id.clone(), nid.clone(), label.clone());
                                 hits.push(
                                     div()
                                         .id(hid)
                                         .absolute()
-                                        .left(relative(ratio))
-                                        .top(px(fan.get(&t.id).copied().unwrap_or(trunk_y) - 7.))
-                                        .w(px(14.))
-                                        .h(px(14.))
+                                        .left(relative(ratio.clamp(0., 1.)))
+                                        .top(relative(f))
+                                        .ml(px(-9.))
+                                        .mt(px(-9.))
+                                        .w(px(18.))
+                                        .h(px(18.))
                                         .cursor_pointer()
-                                        .on_click(cx.listener(
-                                            move |this, _, _, cx| {
-                                                // 点同一个点 = 收起抽屉（与关系演变那边一致）
-                                                let same = this
-                                                    .picked
-                                                    .as_ref()
-                                                    .map(|(a, b)| {
-                                                        a == &lid && b == &nid2
-                                                    })
-                                                    .unwrap_or(false);
-                                                this.picked = if same {
-                                                    None
-                                                } else {
-                                                    Some((lid.clone(), nid2.clone()))
-                                                };
-                                                let _ = &label2;
-                                                cx.notify();
-                                            },
-                                        ))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let same = this
+                                                .picked
+                                                .as_ref()
+                                                .map(|(a, b)| a == &lid && b == &nid2)
+                                                .unwrap_or(false);
+                                            this.picked = if same {
+                                                None
+                                            } else {
+                                                Some((lid.clone(), nid2.clone()))
+                                            };
+                                            let _ = &label2;
+                                            cx.notify();
+                                        }))
                                         .into_any_element(),
                                 );
                             }
                         }
                         hits
                     }),
-            );
-
-        // —— 节点抽屉：点时间轴上的点后浮在底部 ——
-        //
-        // 只回答"这个点是什么、能对它做什么"。线的操作（扶正/归档/改名）
-        // 在右侧详情里，两者不混：作者点一个点不该把整条线的操作挤走。
-        let drawer: Option<gpui_kit::AnyElement> = self.picked.as_ref().and_then(|(lid, nid)| {
-            let line = lines.iter().find(|l| &l.id == lid)?;
-            let node = line.nodes.iter().find(|n| &n.id == nid)?;
-            let ch = node.chapter_or_guess();
-            let state = node.state;
-            let state_color = if state == crate::worldline::NodeState::Written {
-                theme::GREEN()
-            } else if state == crate::worldline::NodeState::Adopted {
-                theme::BLUE()
-            } else {
-                theme::FAINT()
-            };
-            // 这个节点连着哪些边：进来和出去的都算，"因果链"要能两头看
-            let mut ins: Vec<String> = Vec::new();
-            let mut outs: Vec<String> = Vec::new();
-            for e in &line.edges {
-                let label_of = |id: &str| {
-                    line.nodes
-                        .iter()
-                        .find(|n| n.id == id)
-                        .map(|n| n.label.clone())
-                        .unwrap_or_else(|| id.to_string())
-                };
-                if e.to == *nid {
-                    ins.push(format!("{}（{}）", label_of(&e.from), if e.hidden { "暗" } else { "明" }));
-                }
-                if e.from == *nid {
-                    outs.push(format!("{}（{}）", label_of(&e.to), if e.hidden { "暗" } else { "明" }));
-                }
-            }
-            let nid2 = nid.clone();
-            let lid2 = lid.clone();
-            let nid3 = nid.clone();
-            let lid3 = lid.clone();
-            let nid4 = nid.clone();
-            let lid4 = lid.clone();
-            let ndesc = format!("世界线 {}「{}」的第{ch}章节点「{}」", line.id, line.name, node.label);
-            let canvas_ref = node.canvas_ref.clone();
-            let note = node.note.clone();
-            let label = node.label.clone();
-            let can_adopt = ch > 0 && !state.is_canon();
-            Some(
+            )
+            // 图例（左下角）
+            .child(
                 div()
                     .absolute()
-                    .left_0()
-                    .right(px(13.))
-                    .bottom(px(18.))
-                    .mx(px(8.))
-                    .p(theme::PAD_SM)
-                    .rounded(theme::RADIUS_PANEL)
-                    .border_1()
-                    .border_color(theme::ACCENT_BORDER())
-                    .bg(theme::PANEL())
+                    .left(px(20.))
+                    .bottom(px(10.))
                     .flex()
-                    .flex_col()
-                    .gap(px(3.))
+                    .items_center()
+                    .gap(theme::GAP_MD)
+                    .text_size(theme::FONT_MICRO)
+                    .text_color(theme::FAINT())
+                    .child("—— 已确定")
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .child(
-                                div()
-                                    .font_family(theme::FAMILY_MONO)
-                                    .text_size(theme::FONT_MICRO)
-                                    .text_color(theme::ACCENT())
-                                    .child(SharedString::from(format!("{} 第{ch}章", line.id))),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_ellipsis()
-                                    .text_size(theme::FONT_LABEL)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme::TEXT())
-                                    .child(SharedString::from(label.clone())),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme::FONT_MICRO)
-                                    .text_color(state_color)
-                                    .child(state.label()),
-                            )
-                            .child(
-                                div()
-                                    .id("wl-drawer-close")
-                                    .cursor_pointer()
-                                    .text_size(theme::FONT_MICRO)
-                                    .text_color(theme::FAINT())
-                                    .child("×")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.picked = None;
-                                        cx.notify();
-                                    })),
-                            ),
+                            .text_color(theme::PURPLE())
+                            .child("- - - 开放的 if"),
                     )
-                    .when(!note.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_size(theme::FONT_MICRO)
-                                .line_height(relative(1.4))
-                                .text_color(theme::DIM())
-                                .child(SharedString::from(note.clone())),
-                        )
-                    })
-                    // 因果链：两头都列，作者才看得出这个点在链条中的位置
-                    .when(!ins.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::FAINT())
-                                .child(SharedString::from(format!("← {}", ins.join("、")))),
-                        )
-                    })
-                    .when(!outs.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::FAINT())
-                                .child(SharedString::from(format!("→ {}", outs.join("、")))),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .pt(px(2.))
-                            .child(
-                                // 章号 ±1：排章是最常做的调整
-                                Button::new("wl-drawer-ch")
-                                    .xsmall()
-                                    .label(format!("第{ch}章 ＋"))
-                                    .on_click(cx.listener(move |_this, _, _, cx| {
-                                        cx.emit(WorldlineEvent::NodePatch {
-                                            line: lid2.clone(),
-                                            node: nid2.clone(),
-                                            patch: crate::worldline::NodePatch::chapter(ch + 1),
-                                        });
-                                        cx.notify();
-                                    })),
-                            )
-                            .when(can_adopt, |d| {
-                                d.child(
-                                    Button::new("wl-drawer-adopt")
-                                        .xsmall()
-                                        .label("采纳进正典")
-                                        .on_click(cx.listener(move |_this, _, _, cx| {
-                                            cx.emit(WorldlineEvent::NodeAdopt {
-                                                line: lid3.clone(),
-                                                node: nid3.clone(),
-                                            });
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .when(!canvas_ref.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .text_size(theme::FONT_MICRO)
-                                        .text_color(theme::BLUE())
-                                        .child(SharedString::from(format!("画布 {canvas_ref}"))),
-                                )
-                            })
-                            .child(
-                                // 推演：从这个点往后让 AI 接着想
-                                Button::new("wl-drawer-sim")
-                                    .xsmall()
-                                    .label("从这儿推演")
-                                    .on_click(cx.listener(move |_t, _, _, cx| {
-                                        cx.emit(WorldlineEvent::Delegate {
-                                            agent: "worldline",
-                                            key: "wl-from-node",
-                                            target: Some(ndesc.clone()),
-                                        });
-                                    })),
-                            )
-                            .child(
-                                Button::new("wl-drawer-del")
-                                    .xsmall()
-                                    .label("删节点")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        // 先收抽屉再删：节点没了，抽屉指向的东西也不在了
-                                        this.picked = None;
-                                        cx.emit(WorldlineEvent::NodeRemove {
-                                            line: lid4.clone(),
-                                            node: nid4.clone(),
-                                        });
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .into_any_element(),
-            )
-        });
-        timeline = timeline.when_some(drawer, |d, dr| d.child(dr));
+                    .child("● 已写")
+                    .child("○ 计划")
+                    .child(SharedString::from(format!("第 {from_ch}–{to_ch} 章"))),
+            );
 
         // —— 右侧详情：选中线的操作 ——
         let mut detail = div().flex().flex_col().gap(theme::GAP_SM);
@@ -1659,10 +1487,10 @@ impl Render for WorldlinePanel {
                                 let k = 0.5523 * r;
                                 let mut d = PathBuilder::fill();
                                 d.move_to(p(x + r, y_fork));
-                                d.cubic_bezier_to(p(x + r, y_fork + k), p(x + k, y_fork + r), p(x, y_fork + r));
-                                d.cubic_bezier_to(p(x - k, y_fork + r), p(x - r, y_fork + k), p(x - r, y_fork));
-                                d.cubic_bezier_to(p(x - r, y_fork - k), p(x - k, y_fork - r), p(x, y_fork - r));
-                                d.cubic_bezier_to(p(x + k, y_fork - r), p(x + r, y_fork - k), p(x + r, y_fork));
+                                d.cubic_bezier_to(p(x + k, y_fork + r), p(x, y_fork + r), p(x + r, y_fork + k));
+                                d.cubic_bezier_to(p(x - r, y_fork + k), p(x - r, y_fork), p(x - k, y_fork + r));
+                                d.cubic_bezier_to(p(x - k, y_fork - r), p(x, y_fork - r), p(x - r, y_fork - k));
+                                d.cubic_bezier_to(p(x + r, y_fork - k), p(x + r, y_fork), p(x + k, y_fork - r));
                                 if let Ok(path) = d.build() {
                                     window.paint_path(path, hsla(c));
                                 }
@@ -1680,10 +1508,10 @@ impl Render for WorldlinePanel {
                                     let kk = 0.5523 * rr;
                                     let mut g = PathBuilder::fill();
                                     g.move_to(p(x + rr, fy));
-                                    g.cubic_bezier_to(p(x + rr, fy + kk), p(x + kk, fy + rr), p(x, fy + rr));
-                                    g.cubic_bezier_to(p(x - kk, fy + rr), p(x - rr, fy + kk), p(x - rr, fy));
-                                    g.cubic_bezier_to(p(x - rr, fy - kk), p(x - kk, fy - rr), p(x, fy - rr));
-                                    g.cubic_bezier_to(p(x + kk, fy - rr), p(x + rr, fy - kk), p(x + rr, fy));
+                                    g.cubic_bezier_to(p(x + kk, fy + rr), p(x, fy + rr), p(x + rr, fy + kk));
+                                    g.cubic_bezier_to(p(x - rr, fy + kk), p(x - rr, fy), p(x - kk, fy + rr));
+                                    g.cubic_bezier_to(p(x - kk, fy - rr), p(x, fy - rr), p(x - rr, fy - kk));
+                                    g.cubic_bezier_to(p(x + rr, fy - kk), p(x + rr, fy), p(x + kk, fy - rr));
                                     if let Ok(path) = g.build() {
                                         window.paint_path(path, hsla(green).opacity(0.65));
                                     }
@@ -2211,42 +2039,56 @@ impl Render for WorldlinePanel {
             .when_some(compare_el, |d, cmp| d.child(cmp))
             .when_some(tree_el, |d, t| d.child(t))
             .when(self.view == WlTab::Timeline, |d| {
-                d.child(div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .gap(theme::GAP_GROUP)
-                    .p(theme::PAD_MD)
-                    // 左：轨道名（与画布行高对齐）
-                    .child(
-                        div()
-                            .w(px(160.))
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().h(px(head_h)))
-                            .children(track_rows),
-                    )
-                    // 中：时间轴
-                    .child(timeline)
-                    // 右：详情
-                    .child(
-                        div()
-                            .id("wl-detail")
-                            .w(px(268.))
-                            .flex_shrink_0()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap(theme::GAP_SM)
-                            .p(theme::PAD_SM)
-                            .rounded(theme::RADIUS_PANEL)
-                            .border_1()
-                            .border_color(theme::LINE())
-                            .bg(theme::PANEL())
-                            .child(detail),
-                    ),
+                // 整页都是时间轴。轨道列表与详情做成浮层：
+                // 线名贴在各自的线尾，选中某条才在右侧浮出它的操作面板。
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .relative()
+                        .child(timeline)
+                        // 右下：选中线的详情浮层（不占版面）
+                        .when(self.selected.is_some(), |d| {
+                            d.child(
+                                div()
+                                    .id("wl-detail")
+                                    .absolute()
+                                    .right(px(16.))
+                                    .top(px(48.))
+                                    .w(px(272.))
+                                    .max_h(relative(0.72))
+                                    .overflow_y_scroll()
+                                    .p(theme::PAD_SM)
+                                    .rounded(theme::RADIUS_PANEL)
+                                    .border_1()
+                                    .border_color(theme::LINE())
+                                    // 半透明底：盖住的内容还能透出来一点，
+                                    // 作者看得出"这是浮层，不是版面"
+                                    .bg(theme::PANEL())
+                                    .child(detail),
+                            )
+                        })
+                        // 左上：线列表（紧凑，可折叠）
+                        .child(
+                            div()
+                                .id("wl-lines")
+                                .absolute()
+                                .left(px(14.))
+                                .top(px(14.))
+                                .w(px(196.))
+                                .max_h(relative(0.62))
+                                .overflow_y_scroll()
+                                .p(px(6.))
+                                .rounded(theme::RADIUS_PANEL)
+                                .border_1()
+                                .border_color(theme::LINE())
+                                .bg(theme::PANEL())
+                                .flex()
+                                .flex_col()
+                                .gap(px(1.))
+                                .children(track_rows),
+                        ),
                 )
             })
     }
@@ -2287,18 +2129,6 @@ fn field(label: &str, state: &Entity<gpui_kit::component::input::InputState>) ->
         )
         .child(gpui_kit::component::input::Input::new(state))
         .into_any_element()
-}
-
-/// 父线在扇形上的高度（用于把分叉曲线接到父线那一层而不是永远接主干）。
-fn parent_y(parent: &str, tracks: &[Track], fan: &BTreeMap<String, f32>) -> Option<f32> {
-    if parent.is_empty() {
-        return None;
-    }
-    tracks
-        .iter()
-        .any(|t| t.id == parent)
-        .then(|| fan.get(parent).copied())
-        .flatten()
 }
 
 fn track_color(t: &Track) -> gpui_kit::Rgba {

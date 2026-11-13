@@ -1200,26 +1200,10 @@ impl Render for CanvasPanel {
                                 let mut circ = PathBuilder::stroke(px(1.));
                                 circ = circ.dash_array(&[px(2.), px(7.)]);
                                 circ.move_to(point(c.x + px(rr), c.y));
-                                circ.cubic_bezier_to(
-                                    point(c.x + px(rr), c.y + px(kk)),
-                                    point(c.x + px(kk), c.y + px(rr)),
-                                    point(c.x, c.y + px(rr)),
-                                );
-                                circ.cubic_bezier_to(
-                                    point(c.x - px(kk), c.y + px(rr)),
-                                    point(c.x - px(rr), c.y + px(kk)),
-                                    point(c.x - px(rr), c.y),
-                                );
-                                circ.cubic_bezier_to(
-                                    point(c.x - px(rr), c.y - px(kk)),
-                                    point(c.x - px(kk), c.y - px(rr)),
-                                    point(c.x, c.y - px(rr)),
-                                );
-                                circ.cubic_bezier_to(
-                                    point(c.x + px(kk), c.y - px(rr)),
-                                    point(c.x + px(rr), c.y - px(kk)),
-                                    point(c.x + px(rr), c.y),
-                                );
+                                circ.cubic_bezier_to(point(c.x, c.y + px(rr)), point(c.x + px(rr), c.y + px(kk)), point(c.x + px(kk), c.y + px(rr)));
+                                circ.cubic_bezier_to(point(c.x - px(rr), c.y), point(c.x - px(kk), c.y + px(rr)), point(c.x - px(rr), c.y + px(kk)));
+                                circ.cubic_bezier_to(point(c.x, c.y - px(rr)), point(c.x - px(rr), c.y - px(kk)), point(c.x - px(kk), c.y - px(rr)));
+                                circ.cubic_bezier_to(point(c.x + px(rr), c.y), point(c.x + px(kk), c.y - px(rr)), point(c.x + px(rr), c.y - px(kk)));
                                 if let Ok(path) = circ.build() {
                                     window.paint_path(path, hsla(theme::LINE()).opacity(0.55));
                                 }
@@ -2971,10 +2955,10 @@ impl Render for OraclePanel {
                         let k = 0.5523 * r;
                         let mut b = PathBuilder::fill();
                         b.move_to(p(x + r, y));
-                        b.cubic_bezier_to(p(x + r, y + k), p(x + k, y + r), p(x, y + r));
-                        b.cubic_bezier_to(p(x - k, y + r), p(x - r, y + k), p(x - r, y));
-                        b.cubic_bezier_to(p(x - r, y - k), p(x - k, y - r), p(x, y - r));
-                        b.cubic_bezier_to(p(x + k, y - r), p(x + r, y - k), p(x + r, y));
+                        b.cubic_bezier_to(p(x + k, y + r), p(x, y + r), p(x + r, y + k));
+                        b.cubic_bezier_to(p(x - r, y + k), p(x - r, y), p(x - k, y + r));
+                        b.cubic_bezier_to(p(x - k, y - r), p(x, y - r), p(x - r, y - k));
+                        b.cubic_bezier_to(p(x + r, y - k), p(x + r, y), p(x + k, y - r));
                         b
                     };
                     let leaf = |bx: f32, by: f32, ang: f32, len: f32| {
@@ -2983,22 +2967,14 @@ impl Render for OraclePanel {
                         let hw = len * 0.30;
                         let mut b = PathBuilder::fill();
                         b.move_to(p(bx, by));
-                        b.cubic_bezier_to(
-                            p(bx + dx * len * 0.30 + nx * hw, by + dy * len * 0.30 + ny * hw),
-                            p(
+                        b.cubic_bezier_to(p(bx + dx * len, by + dy * len), p(bx + dx * len * 0.30 + nx * hw, by + dy * len * 0.30 + ny * hw), p(
                                 bx + dx * len * 0.82 + nx * hw * 0.65,
                                 by + dy * len * 0.82 + ny * hw * 0.65,
-                            ),
-                            p(bx + dx * len, by + dy * len),
-                        );
-                        b.cubic_bezier_to(
-                            p(
+                            ));
+                        b.cubic_bezier_to(p(bx, by), p(
                                 bx + dx * len * 0.82 - nx * hw * 0.65,
                                 by + dy * len * 0.82 - ny * hw * 0.65,
-                            ),
-                            p(bx + dx * len * 0.30 - nx * hw, by + dy * len * 0.30 - ny * hw),
-                            p(bx, by),
-                        );
+                            ), p(bx + dx * len * 0.30 - nx * hw, by + dy * len * 0.30 - ny * hw));
                         b
                     };
                     let cubic = |p0: (f32, f32), c1: (f32, f32), c2: (f32, f32), p1: (f32, f32), t: f32| {
@@ -3020,11 +2996,7 @@ impl Render for OraclePanel {
                         let a = 0.40 - sd.abs() * 0.09;
                         let mut r = PathBuilder::stroke(px(1.0));
                         r.move_to(p(trunk_x, base_y));
-                        r.cubic_bezier_to(
-                            p(trunk_x + sd * 3., base_y + 8.),
-                            p(trunk_x + off * 1.2, TH - 14.),
-                            p(trunk_x + off * 2.2, TH - 4.),
-                        );
+                        r.cubic_bezier_to(p(trunk_x + off * 2.2, TH - 4.), p(trunk_x + sd * 3., base_y + 8.), p(trunk_x + off * 1.2, TH - 14.));
                         if let Ok(path) = r.build() {
                             window.paint_path(path, hsla(blue).opacity(a));
                         }
@@ -3082,7 +3054,7 @@ impl Render for OraclePanel {
                             bp = bp.dash_array(&[px(3.), px(3.)]);
                         }
                         bp.move_to(p(trunk_x, b.fork_y));
-                        bp.cubic_bezier_to(p(b.c1.0, b.c1.1), p(b.c2.0, b.c2.1), p(b.tip.0, b.tip.1));
+                        bp.cubic_bezier_to(p(b.c2.0, b.c2.1), p(b.tip.0, b.tip.1), p(b.c1.0, b.c1.1));
                         if let Ok(path) = bp.build() {
                             window.paint_path(
                                 path,
@@ -3142,7 +3114,7 @@ impl Render for OraclePanel {
                                 (bx + ang.cos() * len * 0.45, by + ang.sin() * len * 0.45 - 4.);
                             let mut tp = PathBuilder::stroke(px(if b.on { 1.15 } else { 0.95 }));
                             tp.move_to(p(bx, by));
-                            tp.cubic_bezier_to(p(cx, cy), p(cx, cy - 3.), p(ex, ey));
+                            tp.cubic_bezier_to(p(cx, cy - 3.), p(ex, ey), p(cx, cy));
                             if let Ok(path) = tp.build() {
                                 window.paint_path(path, hsla(c).opacity(if b.on { 0.80 } else { 0.66 }));
                             }
