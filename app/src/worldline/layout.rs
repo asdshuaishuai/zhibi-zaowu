@@ -72,30 +72,7 @@ pub struct Tree {
     pub max_chapter: u32,
 }
 
-/// 树形布局：纵轴 = 章节，横轴 = 按子树宽度分配。
-///
-/// 与旧实现的关键差别：旧的 x 是"id 字符和取模"抖动出来的，看着随机、
-/// 每次不一定一样，也没有"子树占多少宽度"的概念——枝会互相压。这里
-/// 用标准的 tidy-tree 分配：叶 1 槽，父 = 子之和，父的 x = 自己区间的中心。
 pub fn tree(lines: &[Line]) -> Tree {
-    tree_with_horizon(lines, 0)
-}
-
-/// 同 `tree`，但由调用方给出**全书的章节上界**。
-///
-/// 世界线文件自己不知道书写到第几章：一条 if 线可能一个排章节点都没有。
-/// 只从 lines 推 horizon 会得到 1，于是所有分支都被截成一根短桩——
-/// 树看起来像被砍过。调用方（世界线页）手上有成稿章数与固化边界，交给它算。
-pub fn tree_with_horizon(lines: &[Line], horizon_hint: u32) -> Tree {
-    tree_full(lines, horizon_hint, 0)
-}
-
-/// 同 `tree_with_horizon`，并给出**已写进正文的章数**。
-///
-/// 正典的主干是实线到成稿处、虚线到未来：作者一眼看出"哪些是写下来的、
-/// 哪些还只是打算"。只靠 worldlines.json 推不出来——α 常常一个节点都没有，
-/// 但正文写了 30 章。
-pub fn tree_full(lines: &[Line], horizon_hint: u32, base_solid: u32) -> Tree {
     // 只画有血缘的：正典为根，其余按 parentId 挂上去。
     // 父不存在（被删/手改坏了）就当根，不至于整条线消失。
     let ids: std::collections::BTreeSet<&str> = lines.iter().map(|l| l.id.as_str()).collect();
@@ -194,7 +171,6 @@ pub fn tree_full(lines: &[Line], horizon_hint: u32, base_solid: u32) -> Tree {
         .map(|l| l.last_chapter().max(l.fixed_boundary()))
         .max()
         .unwrap_or(0)
-        .max(horizon_hint)
         .max(1);
 
     let mut out: Vec<TreeNode> = Vec::new();
@@ -269,11 +245,7 @@ pub fn tree_full(lines: &[Line], horizon_hint: u32, base_solid: u32) -> Tree {
                     x: (start + end) / 2.,
                     fork_chapter,
                     end_chapter,
-                    end_scheduled: if line.is_base() {
-                        line.last_chapter().max(base_solid)
-                    } else {
-                        line.last_chapter()
-                    },
+                    end_scheduled: line.last_chapter(),
                     archived: line.is_archived(),
                     forecast: line.kind == Kind::Forecast,
                     node_count: line.nodes.len(),
@@ -313,45 +285,6 @@ pub fn tree_full(lines: &[Line], horizon_hint: u32, base_solid: u32) -> Tree {
         }
     }
     Tree { nodes: out, slots, max_chapter }
-}
-
-/// 只保留以 `root` 为根的子树（树模式的「钻取」）。
-///
-/// 作者有一堆 if 时，整棵树会挤成一片。钻取到某条线，只看它的后代。
-/// 返回的 `lines` 里，root 的 parent 被清空——这样 `tree()` 会把它当根，
-/// 槽位从 0 重新排，画面填满而不是挤在角落。
-pub fn subtree(lines: &[Line], root: &str) -> Vec<Line> {
-    if root.is_empty() {
-        return lines.to_vec();
-    }
-    let mut keep: Vec<String> = vec![root.to_string()];
-    // 逐层往下收集：作者的树不会很深，但也不能假设
-    let mut frontier = vec![root.to_string()];
-    for _ in 0..lines.len() {
-        let mut next: Vec<String> = Vec::new();
-        for l in lines {
-            if frontier.iter().any(|f| *f == l.parent_id) && !keep.contains(&l.id) {
-                keep.push(l.id.clone());
-                next.push(l.id.clone());
-            }
-        }
-        if next.is_empty() {
-            break;
-        }
-        frontier = next;
-    }
-    lines
-        .iter()
-        .filter(|l| keep.contains(&l.id))
-        .map(|l| {
-            let mut c = l.clone();
-            if c.id == root {
-                c.parent_id.clear();
-                c.fork_node.clear();
-            }
-            c
-        })
-        .collect()
 }
 
 /// 时间轴上的一条轨道。
@@ -986,31 +919,7 @@ mod tests {
         assert_eq!((b[0].start, b[0].end), (1, 4), "缺起始章按第 1 章算");
     }
 
-    #[test]
-    fn a_line_with_no_scheduled_nodes_runs_to_the_horizon() {
-        // AI 推演出的节点常常没排章（chapter=0）。一条世界线是"另一种未来"，
-        // 不能在第 7 章就断成一根短桩——它应该一直延伸到全书的最高章。
-        let mut l = line("β", "α", 7, Kind::WhatIf, false);
-        l.nodes.push(crate::worldline::Node::new("n1", "event", "某件事"));
-        let t = tree_with_horizon(&[l], 30);
-        let n = t.nodes.iter().find(|n| n.id == "β").unwrap();
-        assert_eq!(n.end_chapter, 30, "没排章的分支要长到全书最高处");
-        assert!(n.end_chapter > n.fork_chapter);
-    }
 
-    #[test]
-    fn the_canon_trunk_spans_the_whole_book() {
-        // 主干必须到顶：不然子线在第 7/12/27 章分叉时，分叉点悬在主干之外，
-        // 画出来就是几根并排的柱子。
-        let lines = vec![
-            line("α", "", 0, Kind::Base, false),
-            line("β", "α", 12, Kind::WhatIf, false),
-        ];
-        let t = tree_with_horizon(&lines, 40);
-        let a = t.nodes.iter().find(|n| n.id == "α").unwrap();
-        assert_eq!(a.end_chapter, 40);
-        assert_eq!(a.fork_chapter, 1);
-    }
 
     #[test]
     fn zoom_keeps_the_centre_and_the_span() {

@@ -606,16 +606,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod probe_real {
-    use super::*;
-    #[test]
-    fn probe_book_overview() {
-        let root = std::path::Path::new("/Users/kelthas/Documents/执笔/断刀记验证.zhibi");
-        if !root.exists() { return; }
-        let roster = crate::characters::Roster::new(root);
-        let people = roster.all();
-        eprintln!("characters: {}", people.len());
-        for c in people.iter().take(5) { eprintln!("  {} role={:?} minor={}", c.name, c.role, c.minor); }
-    }
-}

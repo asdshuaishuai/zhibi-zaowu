@@ -1223,27 +1223,6 @@ mod tests {
         assert_eq!(s.find("β").unwrap().unwrap().name, "新名");
     }
 
-    #[test]
-    fn subtree_keeps_only_descendants() {
-        let root = book("subtree");
-        let s = seed(&root);
-        s.fork("α", "n2", "β", "β", "", Kind::WhatIf).unwrap();
-        let mut bn = Node::new("b1", "event", "x");
-        bn.chapter = 18;
-        s.add_node("β", bn).unwrap();
-        s.fork("β", "b1", "γ", "γ", "", Kind::WhatIf).unwrap();
-        s.fork("α", "n1", "δ", "δ", "", Kind::WhatIf).unwrap();
-        let lines = s.all().unwrap();
-
-        // 钻取 β：只剩 β 与 γ（δ 是 α 的另一个孩子，不该进来）
-        let sub = crate::worldline::layout::subtree(&lines, "β");
-        let ids: Vec<&str> = sub.iter().map(|l| l.id.as_str()).collect();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&"β") && ids.contains(&"γ"));
-        assert!(!ids.contains(&"δ"));
-        // 钻取根要变成新树根，槽位才会从 0 重排
-        assert!(sub.iter().find(|l| l.id == "β").unwrap().parent_id.is_empty());
-    }
 
     #[test]
     fn canvas_link_is_bidirectional_and_weak() {
