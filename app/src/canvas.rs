@@ -20,8 +20,8 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, PathBuilder, Pixels, Point, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, div, point, px, relative,
+    MouseUpEvent, ParentElement, PathBuilder, Pixels, Point, Render, ScrollDelta, ScrollEvent,
+    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, point, px, relative,
 };
 
 use crate::store::ProjectHandle;
@@ -151,12 +151,11 @@ pub struct CanvasPanel {
     last_chapter: u32,
     /// 展开了详情的关系 id（一次只展开一条：侧板窄，展开两条就看不到别的了）
     evo_open: Option<String>,
-    /// 基因图：主角节点下标与孤儿节点下标。
+    /// 基因图：主角节点下标。
     ///
-    /// 画布要知道"哪些节点还没接上主线"，才能在图下方画那块孤儿区。
-    /// 这两个值由 `refresh()` 的布局算出，不落盘——它们是布局结果，不是数据。
+    /// 画布要知道"谁在中心"，才能画同心环与主角钉点。
+    /// 这个值由 `refresh()` 的布局算出，不落盘——它是布局结果，不是数据。
     graph_center: Option<usize>,
-    graph_orphans: Vec<usize>,
     /// 基因图的包围盒（布局算出来的，用于"适应窗口"）
     graph_size: (f32, f32),
     /// 每个节点离主角几跳（None = 孤儿）；画同心圆与分环着色用
@@ -213,7 +212,6 @@ impl CanvasPanel {
             last_chapter: 1,
             evo_open: None,
             graph_center: None,
-            graph_orphans: Vec::new(),
             graph_size: (0., 0.),
             graph_rings: Vec::new(),
             stage_size: Rc::new(RefCell::new(None)),
@@ -678,8 +676,7 @@ impl CanvasPanel {
                     nodes[i].y = *y;
                 }
             }
-            self.graph_center = laid.center;
-            self.graph_orphans = laid.orphans.clone();
+                    self.graph_center = laid.center;
             self.graph_size = laid.size;
             self.graph_rings = laid.ring.clone();
             if std::env::var("ZHIBI_DEBUG_LAYOUT").is_ok() {
@@ -1140,24 +1137,6 @@ impl Render for CanvasPanel {
         let marquee_now = self.marquee;
         let origin_cell = self.stage_origin.clone();
         let size_cell = self.stage_size.clone();
-        // 孤儿区与主角：基因图的两块"额外语义"，paint 里要画出来
-        let orphan_zone: Option<(f32, f32, f32, f32)> = if self.graph_orphans.is_empty() {
-            None
-        } else {
-            let mut x0 = f32::MAX;
-            let mut y0 = f32::MAX;
-            let mut x1 = f32::MIN;
-            let mut y1 = f32::MIN;
-            for &i in &self.graph_orphans {
-                if let Some(n) = self.nodes.get(i) {
-                    x0 = x0.min(n.x);
-                    y0 = y0.min(n.y);
-                    x1 = x1.max(n.x + NODE_W);
-                    y1 = y1.max(n.y + NODE_H);
-                }
-            }
-            (x0 != f32::MAX).then_some((x0, y0, x1, y1))
-        };
         let center_i = self.graph_center;
         // 主角中心与最大环数：画同心圆用（圆以节点中心为心）
         let ring_center: Option<(f32, f32)> = center_i
@@ -1230,29 +1209,8 @@ impl Render for CanvasPanel {
                                 }
                             }
                         }
-                        // 孤儿区：主图下方的一块虚线围栏 + 标题。
-                        // 画在最底层（边之前），免得盖住连线。
-                        if let Some((x0, y0, x1, y1)) = orphan_zone {
-                            let pad = 26.;
-                            let k = view_k;
-                            let bo = bounds.origin;
-                            let r = |x: f32, y: f32| {
-                                point(
-                                    px(bo.x.as_f32() + (x + view_x) * k),
-                                    px(bo.y.as_f32() + (y + view_y) * k),
-                                )
-                            };
-                            let mut box_p = PathBuilder::stroke(px(1.));
-                            box_p = box_p.dash_array(&[px(6.), px(6.)]);
-                            box_p.move_to(r(x0 - pad, y0 - pad));
-                            box_p.line_to(r(x1 + pad, y0 - pad));
-                            box_p.line_to(r(x1 + pad, y1 + pad));
-                            box_p.line_to(r(x0 - pad, y1 + pad));
-                            box_p.close();
-                            if let Ok(path) = box_p.build() {
-                                window.paint_path(path, hsla(theme::LINE()).opacity(0.9));
-                            }
-                        }
+                        // 孤儿区虚线框已移除：它不参与布局/命中，只在视觉上多一圈
+                        // 与数据无关的框，容易让作者误以为那是一块可操作区域。
                         for (x1, y1, x2, y2, kind, hidden, alpha) in &segs {
                             let color = if *hidden {
                                 theme::PURPLE()
@@ -1390,6 +1348,34 @@ impl Render for CanvasPanel {
 
         // 舞台级手势：空白按下=平移开始；移动=拖拽；抬起=落盘
         stage = stage
+            // 滚轮 / 触控板缩放：向上放大、向下缩小，以指针为锚。
+            // 只做按钮缩放时，作者得先找按钮再点，长书里调整视野很别扭。
+            .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| {
+                let dy = match ev.delta {
+                    ScrollDelta::Pixels(p) => p.y.as_f32(),
+                    ScrollDelta::Lines(p) => p.y * 24.0,
+                };
+                if dy.abs() < 0.5 {
+                    return;
+                }
+                let old = this.view.2;
+                let factor = if dy < 0.0 { 1.12 } else { 0.89 };
+                let new = (old * factor).clamp(0.4, 1.8);
+                if (new - old).abs() < 1e-4 {
+                    return;
+                }
+                // 保持指针下的世界点不动：view.0/1 是屏幕偏移，
+                // 缩放前 (p - v0)/k = 缩放后 (p - v0')/k'。
+                if let Some((ox, oy)) = *this.stage_origin.borrow() {
+                    let px_x = ev.position.x.as_f32() - ox;
+                    let px_y = ev.position.y.as_f32() - oy;
+                    this.view.0 = px_x - (px_x - this.view.0) * (new / old);
+                    this.view.1 = px_y - (px_y - this.view.1) * (new / old);
+                }
+                this.view.2 = new;
+                this.save_state();
+                cx.notify();
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, _| {
                 // 节点按下处理器先执行（bubble）：已消费的点击不再进入舞台手势
                 if this.absorb_click {
@@ -1736,19 +1722,6 @@ impl Render for CanvasPanel {
                                     })),
                             ),
                     )
-            })
-            .when(!self.graph_orphans.is_empty(), |d| {
-                // 孤儿区说明：告诉作者这块是什么、为什么在这儿
-                d.child(
-                    div()
-                        .pt(theme::GAP_SM)
-                        .text_size(theme::FONT_MICRO)
-                        .text_color(theme::FAINT())
-                        .child(SharedString::from(format!(
-                            "虚线框里是 {} 个还没接上主角的节点（孤儿区）",
-                            self.graph_orphans.len()
-                        ))),
-                )
             })
             .child(div().pt(theme::GAP_MD).when(rows.is_empty(), |d| {
                 d.child(

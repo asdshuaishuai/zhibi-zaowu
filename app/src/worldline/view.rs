@@ -13,6 +13,7 @@
 //! 为什么拆出来：旧的实现把这三件事全塞进 `OraclePanel`（"预言书"），
 //! 结果"世界线"这个词在侧栏出现两次、而真正的世界线没有自己的页面。
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -22,7 +23,8 @@ use gpui_kit::component::Sizable;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, PathBuilder, Render, SharedString,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, PathBuilder, Render, ScrollDelta, ScrollEvent, SharedString,
     StatefulInteractiveElement, Styled, Window, canvas, div, point, px, relative,
 };
 
@@ -129,6 +131,14 @@ pub struct WorldlinePanel {
     /// 的信息（名字、假设、扶正/归档），节点是**线上的一个点**。两者混在一起，
     /// 作者点一个点就会把整条线的操作挤掉。抽屉只回答"这个点是什么、能对它做什么"。
     picked: Option<(String, String)>,
+    /// 时间轴拖拽平移：上一次指针 x、累计未换算成章的像素、是否已拖动。
+    drag: Option<(f32, f32, bool)>,
+    /// 滚轮缩放累计：触控板是连续小增量，一事件一缩放会飞。
+    scroll_acc: f32,
+    /// 当前每根线的时间轴纵向比例（render 时写入，点击选线用）。
+    track_fracs: Rc<RefCell<Vec<(String, f32)>>>,
+    /// 时间轴画布在窗口里的 bounds（prepaint 每帧写回）。
+    stage_bounds: Rc<RefCell<Option<(f32, f32, f32, f32)>>>,
 }
 
 impl WorldlinePanel {
@@ -149,6 +159,10 @@ impl WorldlinePanel {
             ed_premise,
             collapsed: Default::default(),
             picked: None,
+            drag: None,
+            scroll_acc: 0.,
+            track_fracs: Rc::new(RefCell::new(Vec::new())),
+            stage_bounds: Rc::new(RefCell::new(None)),
             message: None,
             view: match std::env::var("ZHIBI_WL_TAB").as_deref() {
                 Ok("compare") => WlTab::Compare,
@@ -468,6 +482,18 @@ impl Render for WorldlinePanel {
             m
         };
         let frac_c = fractions.clone();
+        // 点击选线用：把每根线的纵向比例留在面板状态里，命中时不必重算布局。
+        *self.track_fracs.borrow_mut() = tr_c
+            .iter()
+            .map(|t| {
+                let f = if t.kind == Kind::Base || t.id == "α" {
+                    0.5
+                } else {
+                    fractions.get(&t.id).copied().unwrap_or(0.5)
+                };
+                (t.id.clone(), f)
+            })
+            .collect();
         let y_of_frac = move |id: &str, is_base: bool| -> f32 {
             if is_base {
                 0.5
@@ -477,12 +503,20 @@ impl Render for WorldlinePanel {
         };
         let frac_lbl = fractions.clone();
 
+        let bounds_cell = self.stage_bounds.clone();
         let timeline = div()
             .absolute()
             .size_full()
             .child(
                 canvas(
-                    |_, _, _| {},
+                    move |bounds, _, _| {
+                        *bounds_cell.borrow_mut() = Some((
+                            bounds.origin.x.as_f32(),
+                            bounds.origin.y.as_f32(),
+                            bounds.size.width.as_f32(),
+                            bounds.size.height.as_f32(),
+                        ));
+                    },
                     move |bounds, _, window, _| {
                         let w = bounds.size.width.as_f32();
                         let h = bounds.size.height.as_f32();
@@ -683,6 +717,96 @@ impl Render for WorldlinePanel {
                 )
                 .absolute()
                 .size_full(),
+            )
+            // 手势层：拖拽平移、滚轮缩放、点线选中。
+            //
+            // 放在画布之上、线名/节点命中区之下：空白拖动不会误触节点，
+            // 而节点与线名仍然优先拿到点击。
+            .child(
+                div()
+                    .id("wl-pan-layer")
+                    .absolute()
+                    .size_full()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                        this.drag = Some((ev.position.x.as_f32(), 0., false));
+                    }))
+                    .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
+                        let step = {
+                            let Some((last_x, residual, moved)) = &mut this.drag else {
+                                return;
+                            };
+                            let dx = ev.position.x.as_f32() - *last_x;
+                            *last_x = ev.position.x.as_f32();
+                            if dx.abs() > 0.5 {
+                                *moved = true;
+                            }
+                            *residual += dx;
+                            // 18px ≈ 一章：拖动时按整章平移，避免窗口反复重排。
+                            let step = (*residual / 18.0).trunc();
+                            if step != 0.0 {
+                                *residual -= step * 18.0;
+                            }
+                            step
+                        };
+                        if step != 0.0 {
+                            // 向右拖 = 看更早的章节（内容跟手）
+                            this.pan(-(step as i32), horizon);
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_up(MouseButton::Left, cx.listener(|this, ev: &MouseUpEvent, window, cx| {
+                        let Some((_, _, moved)) = this.drag.take() else {
+                            return;
+                        };
+                        if moved {
+                            return;
+                        }
+                        // 没拖动 = 点击：按纵坐标找最近的那条线。
+                        // 这样点线上任意位置都能选中，不用正好点到右端的线名小标签。
+                        let Some((ox, oy, w, h)) = *this.stage_bounds.borrow() else {
+                            return;
+                        };
+                        let x = ev.position.x.as_f32();
+                        let y = ev.position.y.as_f32();
+                        if x < ox || x > ox + w || y < oy || y > oy + h {
+                            return;
+                        }
+                        let frac = ((y - oy) / h.max(1.)).clamp(0., 1.);
+                        let best = this
+                            .track_fracs
+                            .borrow()
+                            .iter()
+                            .map(|(id, f)| (id.clone(), (f - frac).abs()))
+                            .min_by(|a, b| {
+                                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                            });
+                        let Some((id, dist)) = best else { return };
+                        if dist > 0.06 {
+                            return;
+                        }
+                        this.selected = Some(id.clone());
+                        cx.emit(WorldlineEvent::Select(id));
+                        this.fill_meta(window, cx);
+                        cx.notify();
+                    }))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| {
+                        this.drag = None;
+                    }))
+                    .on_scroll(cx.listener(move |this, ev: &ScrollEvent, _, cx| {
+                        let dy = match ev.delta {
+                            ScrollDelta::Pixels(p) => p.y.as_f32(),
+                            ScrollDelta::Lines(p) => p.y * 24.0,
+                        };
+                        this.scroll_acc += dy;
+                        // 触控板一次手势会发很多小增量，累计到阈值再缩一档。
+                        if this.scroll_acc.abs() >= 30.0 {
+                            // zoom_window: factor>1 看得更远，factor<1 放大
+                            let factor = if this.scroll_acc > 0.0 { 1.25 } else { 0.8 };
+                            this.zoom(factor, horizon);
+                            this.scroll_acc = 0.;
+                            cx.notify();
+                        }
+                    })),
             )
             // 幕名（顶部）
             .child(
@@ -928,6 +1052,86 @@ impl Render for WorldlinePanel {
                                 forks_here.len()
                             ))),
                     )
+                    // 发展路线：点中一条线，右栏直接列出它按章排开的节点。
+                    // 时间轴上只有点；作者要回答"这条 if 到底往哪走"，需要一串有顺序的标题。
+                    .when(!l.nodes.is_empty(), |d| {
+                        let mut ns = l.nodes.clone();
+                        ns.sort_by_key(|n| n.chapter_or_guess());
+                        let state_color = |s: crate::worldline::NodeState| {
+                            if s == crate::worldline::NodeState::Written {
+                                theme::GREEN()
+                            } else {
+                                theme::FAINT()
+                            }
+                        };
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .pt(theme::GAP_SM)
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_MICRO)
+                                        .text_color(theme::FAINT())
+                                        .child("发展路线"),
+                                )
+                                .child({
+                                    let total = ns.len();
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .children(ns.into_iter().take(12).map(|n| {
+                                            let ch = n.chapter_or_guess();
+                                            let st = n.state;
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(theme::GAP_SM)
+                                                .text_size(theme::FONT_MICRO)
+                                                .text_color(theme::DIM())
+                                                .child(
+                                                    div()
+                                                        .flex_shrink_0()
+                                                        .font_family(theme::FAMILY_MONO)
+                                                        .text_color(theme::FAINT())
+                                                        .child(SharedString::from(format!(
+                                                            "第{ch}章"
+                                                        ))),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .text_ellipsis()
+                                                        .child(SharedString::from(
+                                                            n.label.clone(),
+                                                        )),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_shrink_0()
+                                                        .text_size(px(9.))
+                                                        .text_color(state_color(st))
+                                                        .child(st.label()),
+                                                )
+                                        }))
+                                        .when(total > 12, |d| {
+                                            d.child(
+                                                div()
+                                                    .pt(px(2.))
+                                                    .text_size(px(9.))
+                                                    .text_color(theme::FAINT())
+                                                    .child(SharedString::from(format!(
+                                                        "…还有 {} 个节点",
+                                                        total - 12
+                                                    ))),
+                                            )
+                                        })
+                                }),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
