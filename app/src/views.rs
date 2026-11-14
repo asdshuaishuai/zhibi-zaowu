@@ -1792,8 +1792,25 @@ impl Render for CharactersPanel {
                                             let now_minor = c.minor;
                                             let roster =
                                                 crate::characters::Roster::new(&this.handle.root);
+                                            // 这个开关也是落库：不记 journal 的话，
+                                            // 作者点错了在「改动记录」里撤不回来。
+                                            let path = this.handle.root.join("characters.json");
+                                            let before = std::fs::read_to_string(&path).unwrap_or_default();
                                             match roster.upsert(c) {
                                                 Ok(()) => {
+                                                    let after = std::fs::read_to_string(&path).unwrap_or_default();
+                                                    if before != after {
+                                                        let _ = crate::journal::Journal::new(&this.handle.root).record(
+                                                            &this.handle.root,
+                                                            "characters.json",
+                                                            &before,
+                                                            &after,
+                                                            &crate::journal::Actor::Author,
+                                                            "edit",
+                                                            &format!("b{}", crate::journal::now_millis()),
+                                                            if now_minor { "标记为过场/路人" } else { "移出过场" },
+                                                        );
+                                                    }
                                                     this.message = Some(if now_minor {
                                                         "已标记为过场 / 路人".into()
                                                     } else {

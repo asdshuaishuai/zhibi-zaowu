@@ -862,6 +862,49 @@ mod tests {
     }
 
     #[test]
+    fn accepted_ledger_proposal_lands_in_journal_and_can_be_undone() {
+        // 「一切可撤销」不能只覆盖正文：台账提案采纳后也要能在改动记录里退回。
+        let (home, _guard) = use_home("journal-adopt");
+        let dir = create_project("采纳可撤销").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+        handle
+            .save_array(
+                "clues.json",
+                &[serde_json::json!({ "id": "F01", "title": "旧伏笔", "plantedChapter": 3, "status": "埋下" })],
+            )
+            .unwrap();
+        let pid = handle
+            .add_proposal_local(
+                "测试",
+                "补一条伏笔",
+                "",
+                serde_json::json!({
+                    "kind": "clues",
+                    "clues": [{ "id": "F02", "title": "新伏笔", "plantedChapter": 5 }]
+                }),
+            )
+            .unwrap();
+        handle.accept_proposal(&pid).unwrap();
+        assert_eq!(handle.ledger(Ledger::Clues).unwrap().len(), 2);
+
+        let journal = crate::journal::Journal::new(&dir);
+        let change = journal
+            .all()
+            .into_iter()
+            .find(|c| c.path == "clues.json" && c.op == "adopt")
+            .expect("采纳必须进改动记录");
+        assert_eq!(change.actor, crate::journal::Actor::Author);
+        assert!(change.batch.starts_with("acc"), "采纳批次号：{}", change.batch);
+
+        let outcome = journal.undo(&dir, &change.id).unwrap();
+        assert_eq!(outcome, crate::journal::UndoOutcome::Restored);
+        let clues = handle.ledger(Ledger::Clues).unwrap();
+        assert_eq!(clues.len(), 1, "撤销后只剩采纳前那条：{clues:?}");
+        assert_eq!(clues[0]["id"], serde_json::json!("F01"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn adopt_single_node_turns_it_into_a_planned_event_proposal() {
         let (home, _guard) = use_home("adopt-node");
         let dir = create_project("逐节点采纳").unwrap();
@@ -1809,6 +1852,9 @@ impl ProjectHandle {
         // 一旦发现结构坏了（章号写成“第十二章”、id 撞车），必须整档退回，
         // 不能让作者面对一份"半新半旧"的台账。
         let guard = crate::schema::Guard::capture(&self.root);
+        // 与 Guard 并行再抓一份「可撤销范围」：Guard 只活到这次调用结束，
+        // 作者之后还想去改动记录里撤销，靠的是这份前像写进 journal。
+        let revocable = self.revocable_snapshot();
         // 前像读不全就拒绝采纳：读失败 ≠ 文件不存在，继续写会让回滚删错东西。
         if let Err(errs) = guard.capture_ok() {
             return Err(format!(
@@ -1816,7 +1862,7 @@ impl ProjectHandle {
                 errs.join("；")
             ));
         }
-        let (applied, skipped) = match self.apply_payload_for(&p.payload, &p.id) {
+        let (applied, mut skipped) = match self.apply_payload_for(&p.payload, &p.id) {
             Ok(r) => r,
             Err(e) => {
                 // 业务写到一半失败：必须整档回退，而不是只报错留下半截。
@@ -1844,6 +1890,15 @@ impl ProjectHandle {
         if applied == 0 {
             return Err(format!("未入库：{}——提案保持待审", skipped.join("、")));
         }
+        // 采纳成功后才写 journal：先把业务写成，再把「这次改了什么」记成
+        // 一个可整批撤销的批次。写日志失败不回滚业务——台账已经对了，
+        // 丢的是可追溯性；把失败如实塞进 apply_result 让作者看见。
+        let batch = format!("acc{}", crate::journal::now_millis());
+        skipped.extend(
+            self.journal_accepted(&revocable, &p, &batch)
+                .into_iter()
+                .map(|e| format!("改动记录写入失败：{e}")),
+        );
         list[idx].status = "已采纳".into();
         list[idx].decided_at = Some(iso_now());
         list[idx].apply_result = Some(ApplyRecord {
@@ -2770,6 +2825,91 @@ impl ProjectHandle {
     /// 非正文落库快照：采纳前把将被覆盖的原文件复制到
     /// `snapshots/ledger/<批次>/<原相对路径>`。meta.beats/report、dossiers、memory、
     /// storylines、clues、events 没有正文快照页那样的恢复入口，但原文件必须可找回。
+    /// 采纳可撤销范围：台账、记忆/档案、设定、章 meta。
+    ///
+    /// 正文不在此列——`draft`/`deslop` 走 `save_prose_as` 自己写 journal，
+    /// 这里再抓一次会让同一次采纳在改动记录里出现两条。
+    fn revocable_snapshot(&self) -> std::collections::BTreeMap<String, Option<String>> {
+        let mut out = std::collections::BTreeMap::new();
+        for f in crate::schema::LEDGER_FILES
+            .iter()
+            .chain(crate::schema::GUARD_EXTRA.iter())
+        {
+            let rel = (*f).to_string();
+            out.insert(rel.clone(), std::fs::read_to_string(self.root.join(&rel)).ok());
+        }
+        // canon/*.md：新增/修订/归类改名都落在这里。
+        if let Ok(entries) = std::fs::read_dir(self.root.join("canon")) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if !p.is_file() || p.extension().map(|x| x != "md").unwrap_or(true) {
+                    continue;
+                }
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    let rel = format!("canon/{name}");
+                    out.insert(rel.clone(), std::fs::read_to_string(self.root.join(&rel)).ok());
+                }
+            }
+        }
+        // chapters/ch-NNN/meta.json：骨架/报告/草稿标记都会动它。
+        if let Ok(entries) = std::fs::read_dir(self.root.join("chapters")) {
+            for e in entries.flatten() {
+                let p = e.path();
+                let Some(dir_name) = p.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if !p.is_dir() || !dir_name.starts_with("ch-") {
+                    continue;
+                }
+                let rel = format!("chapters/{dir_name}/meta.json");
+                out.insert(rel.clone(), std::fs::read_to_string(self.root.join(&rel)).ok());
+            }
+        }
+        out
+    }
+
+    /// 采纳成功后把实际变动的文件补记进 journal，返回写日志失败清单。
+    ///
+    /// 这是「一切可撤销」在提案路径上的落点：此前只有正文（draft/deslop）记日志，
+    /// 其余台账提案采纳后只留在 `snapshots/ledger/`，GUI 里没有任何恢复入口。
+    fn journal_accepted(
+        &self,
+        before: &std::collections::BTreeMap<String, Option<String>>,
+        proposal: &Proposal,
+        batch: &str,
+    ) -> Vec<String> {
+        let journal = crate::journal::Journal::new(&self.root);
+        let now = self.revocable_snapshot();
+        let mut paths: Vec<&String> = before.keys().collect();
+        paths.extend(now.keys().filter(|k| !before.contains_key(*k)));
+        paths.sort();
+        paths.dedup();
+        let note = format!("采纳提案：{}", proposal.title);
+        let mut failures = Vec::new();
+        for rel in paths {
+            let old = before.get(rel).cloned().unwrap_or(None);
+            let new = now.get(rel).cloned().unwrap_or(None);
+            if old == new {
+                continue;
+            }
+            let old_text = old.unwrap_or_default();
+            let new_text = new.unwrap_or_default();
+            if let Err(e) = journal.record(
+                &self.root,
+                rel,
+                &old_text,
+                &new_text,
+                &crate::journal::Actor::Author,
+                "adopt",
+                batch,
+                &note,
+            ) {
+                failures.push(format!("{rel}：{e}"));
+            }
+        }
+        failures
+    }
+
     fn snapshot_ledger_files(&self, rels: &[&str]) -> Result<(), String> {
         let base = self.root.join("snapshots").join("ledger");
         let nanos = std::time::SystemTime::now()

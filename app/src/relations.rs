@@ -344,10 +344,16 @@ impl Web {
                 n += 1;
             }
         }
-        if n > 0 {
+        // 合并两个人时，若他们原本彼此有关系，改名后会得到 A—A 自环。
+        // 画布对 from==to 直接跳过渲染，留着就是一条永远读不出来的死数据；
+        // 这里顺手清掉（自环在这个模型里本来就不合法）。
+        let before = list.len();
+        list.retain(|r| r.from != r.to);
+        let dropped = before.saturating_sub(list.len());
+        if n > 0 || dropped > 0 {
             self.save(&list)?;
         }
-        Ok(n)
+        Ok(n + dropped)
     }
 
     /// 人物删除：对外的边一并删掉，不留指向不存在人物的孤儿关系。
@@ -728,6 +734,21 @@ mod tests {
         assert_eq!(all[0].to, "周伯", "改名后关系边不能悬空");
         assert_eq!(w.remove_person("周伯").unwrap(), 1);
         assert!(w.all().is_empty(), "删人时向外的边一并清掉");
+    }
+
+    #[test]
+    fn rename_that_would_create_a_self_relation_drops_it() {
+        // 合并人物：沈砚之 → 沈砚，而两人原本互指。改名后不能留下 A—A 自环——
+        // 画布跳过 from==to，数据却还在，等于一条永远看不见的死边。
+        let root = book("rename-self");
+        let w = Web::new(&root);
+        w.add_interval("沈砚", "沈砚之", "其他", Interval {
+            from_chapter: 1, to_chapter: 0, label: "旧识".into(),
+            public_to_reader: true, evidence: String::new(),
+            extra: Default::default(),
+        }).unwrap();
+        w.rename_person("沈砚之", "沈砚").unwrap();
+        assert!(w.all().is_empty(), "自环必须清掉：{:?}", w.all());
     }
 
     #[test]

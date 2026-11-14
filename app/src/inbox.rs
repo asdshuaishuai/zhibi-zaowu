@@ -960,6 +960,24 @@ fn payload_preview(payload: &Value, expanded: bool) -> PayloadPreview {
                 out.push(line);
             }
         }
+        "aliases" => {
+            let list = arr_any(payload, &["aliases", "items"]);
+            out.total = list.len();
+            for a in list.iter().take(limit) {
+                let canon = field(a, "canonicalName");
+                let aka = arr(a, "aliases")
+                    .iter()
+                    .copied()
+                    .filter_map(value_text)
+                    .collect::<Vec<_>>()
+                    .join("、");
+                if aka.is_empty() {
+                    out.push(format!("{canon}（本名）"));
+                } else {
+                    out.push(format!("{canon} ← {aka}"));
+                }
+            }
+        }
         "dossier" => {
             let headline = field(payload, "headline");
             if !headline.is_empty() {
@@ -1120,6 +1138,10 @@ fn effect_of(payload: &Value) -> (String, String) {
         "memoryPack" => (
             "memory.json facts（去重入账）".into(),
             "采纳前 memory.json 备份到 snapshots/ledger/；不触正文".into(),
+        ),
+        "aliases" => (
+            "memory.json.aliases（本名 ↔ 别名，画布关系端点归一见此）".into(),
+            "采纳前 memory.json 备份到 snapshots/ledger/；同名归并，不改人物档案".into(),
         ),
         "dossier" => (
             "dossiers.json（同章覆盖）+ memory.aliases".into(),

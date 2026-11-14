@@ -915,42 +915,52 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
           if (d.promoted) return `该影响已晋升（提案 ${d.promotedProposalId ?? ''}），拒绝重复。`
           const after = String(d.after ?? '')
           const reason = String(d.reason ?? '')
+          // 已有一条待裁决的提案就不要再开一张：promoted 现在是「采纳后才置真」，
+          // 不能靠它防重复，否则作者拒收后这条影响就永远卡死。
+          const pending = (await store.proposals()).find((p) => {
+            const dr = (p.payload as any)?.diffRef
+            return (
+              p.status === '待确认' &&
+              dr?.worldline === w.id &&
+              dr?.index === idx &&
+              dr?.after === after
+            )
+          })
+          if (pending) return `该影响已有待裁决提案 ${pending.id}，请先去收件箱裁决，不重复登记。`
+          // diffRef 是采纳端（Rust accept_proposal）回写 promoted 的唯一凭据。
+          // 这里只登记，不提前标记——拒收后这条影响还能再次晋升。
+          const diffRef = { worldline: w.id, index: idx, after }
           const schedChap = Number(args.targetChapter) || 0
           let p
           if (schedChap > 0 && (d.target === '事件' || d.target === '故事线') && d.kind === 'add') {
             // M8-3 排期晋升：计划事件提案（采纳才入 events.json，happened=false）
-            p = await store.addProposal({ capability: '预言书·排期', title: `计划事件 → 第${schedChap}章（线${w.id}）`, note: `预测排期晋升：${after}`, payload: { kind: 'plannedEvent', chapter: schedChap, title: after, storylineID: String(d.targetRef ?? ''), from: `线${w.id}`, sourceRefs: [`线${w.id}`, `故事线:${d.targetRef}`] } })
-            d.promoted = true
-            d.scheduledChapter = schedChap
+            p = await store.addProposal({ capability: '预言书·排期', title: `计划事件 → 第${schedChap}章（线${w.id}）`, note: `预测排期晋升：${after}`, payload: { kind: 'plannedEvent', chapter: schedChap, title: after, storylineID: String(d.targetRef ?? ''), from: `线${w.id}`, sourceRefs: [`线${w.id}`, `故事线:${d.targetRef}`], diffRef: { ...diffRef, scheduledChapter: schedChap } } })
           } else
           switch (String(d.target)) {
             case '设定':
               if (d.kind === 'add') {
-                p = await store.addProposal({ capability: '预言书·晋升', title: `新设定《${d.targetRef}》（线${w.id}）`, note: `世界线 ${w.id}「${w.name}」推演晋升：${reason}`, payload: { kind: 'canon', docs: [{ title: String(d.targetRef), content: after }], sourceRefs: [`线${w.id}`, `设定:${d.targetRef}`] } })
+                p = await store.addProposal({ capability: '预言书·晋升', title: `新设定《${d.targetRef}》（线${w.id}）`, note: `世界线 ${w.id}「${w.name}」推演晋升：${reason}`, payload: { kind: 'canon', docs: [{ title: String(d.targetRef), content: after }], sourceRefs: [`线${w.id}`, `设定:${d.targetRef}`], diffRef } })
               } else {
-                p = await store.addProposal({ capability: '预言书·晋升', title: `修订设定《${d.targetRef}》（线${w.id}）`, note: `世界线 ${w.id} 晋升修订；采纳前自动备份原文。理由：${reason}`, payload: { kind: 'canonRevise', items: [{ title: String(d.targetRef), content: after }], sourceRefs: [`线${w.id}`, `设定:${d.targetRef}`] } })
+                p = await store.addProposal({ capability: '预言书·晋升', title: `修订设定《${d.targetRef}》（线${w.id}）`, note: `世界线 ${w.id} 晋升修订；采纳前自动备份原文。理由：${reason}`, payload: { kind: 'canonRevise', items: [{ title: String(d.targetRef), content: after }], sourceRefs: [`线${w.id}`, `设定:${d.targetRef}`], diffRef } })
               }
               break
             case '伏笔':
-              p = await store.addProposal({ capability: '预言书·晋升', title: `伏笔入账（线${w.id}）`, note: `晋升自世界线推演：${reason}`, payload: { kind: 'clues', clues: [{ title: String(d.targetRef), detail: after, plantedChapter: w.forkedChapter }], sourceRefs: [`线${w.id}`, `伏笔:${d.targetRef}`] } })
+              p = await store.addProposal({ capability: '预言书·晋升', title: `伏笔入账（线${w.id}）`, note: `晋升自世界线推演：${reason}`, payload: { kind: 'clues', clues: [{ title: String(d.targetRef), detail: after, plantedChapter: w.forkedChapter }], sourceRefs: [`线${w.id}`, `伏笔:${d.targetRef}`], diffRef } })
               break
             case '人物':
               // 人物新增 → 别名档案提案（人物/关系维事实源）
-              p = await store.addProposal({ capability: '预言书·晋升', title: `人物档案（线${w.id}）`, note: `晋升自世界线推演：${reason}`, payload: { kind: 'aliases', aliases: [{ canonicalName: String(d.targetRef), aliases: [] }], sourceRefs: [`线${w.id}`, `人物:${d.targetRef}`] } })
+              p = await store.addProposal({ capability: '预言书·晋升', title: `人物档案（线${w.id}）`, note: `晋升自世界线推演：${reason}`, payload: { kind: 'aliases', aliases: [{ canonicalName: String(d.targetRef), aliases: [] }], sourceRefs: [`线${w.id}`, `人物:${d.targetRef}`], diffRef } })
               break
             case '事件':
               if (d.kind === 'add' && !(Number(args.targetChapter) > 0)) {
                 return '事件类新增影响请用「排期晋升」（带 targetChapter → plannedEvent），避免生成找不到故事线的空洞更新。'
               }
-              p = await store.addProposal({ capability: '预言书·晋升', title: `大纲更新（线${w.id}）`, note: `晋升自世界线推演 ${d.target}·${d.targetRef}：${reason}`, payload: { kind: 'outlineUpdates', updates: [{ storylineID: String(d.targetRef), note: after }], sourceRefs: [`线${w.id}`, `故事线:${d.targetRef}`] } })
+              p = await store.addProposal({ capability: '预言书·晋升', title: `大纲更新（线${w.id}）`, note: `晋升自世界线推演 ${d.target}·${d.targetRef}：${reason}`, payload: { kind: 'outlineUpdates', updates: [{ storylineID: String(d.targetRef), note: after }], sourceRefs: [`线${w.id}`, `故事线:${d.targetRef}`], diffRef } })
               break
             default:
-              p = await store.addProposal({ capability: '预言书·晋升', title: `大纲更新（线${w.id}）`, note: `晋升自世界线推演 ${d.target}·${d.targetRef}：${reason}`, payload: { kind: 'outlineUpdates', updates: [{ storylineID: String(d.targetRef), note: after }], sourceRefs: [`线${w.id}`, `故事线:${d.targetRef}`] } })
+              p = await store.addProposal({ capability: '预言书·晋升', title: `大纲更新（线${w.id}）`, note: `晋升自世界线推演 ${d.target}·${d.targetRef}：${reason}`, payload: { kind: 'outlineUpdates', updates: [{ storylineID: String(d.targetRef), note: after }], sourceRefs: [`线${w.id}`, `故事线:${d.targetRef}`], diffRef } })
           }
-          d.promoted = true
-          d.promotedProposalId = p.id
-          await store.saveWorldlines(wls)
-          return `影响已晋升为提案 ${p.id}（收件箱待裁决）。正典仍未动。`
+          return `影响已登记为提案 ${p.id}（收件箱待裁决；采纳后才标记为已晋升，拒收后仍可再晋升）。`
         }),
     ),
 

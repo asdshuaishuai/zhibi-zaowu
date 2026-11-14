@@ -1740,6 +1740,17 @@ impl Workspace {
                 EditorEvent::SendRequested(text) => this.on_send(text.clone(), cx),
                 EditorEvent::SaveRequested => this.save_current(cx),
                 EditorEvent::RunCapability(cap) => {
+                    // 「一键验证」是单章验收：页面写死 reviewer 路由，别让主 Agent
+                    // 猜（猜错会自己硬做）。capabilities 里的 review-chapter 就是它。
+                    if cap == "validate" {
+                        this.delegate(
+                            "reviewer",
+                            "review-chapter",
+                            Some(format!("第{}章", this.chapter)),
+                            cx,
+                        );
+                        return;
+                    }
                     let mut task = prompts::task_for(cap, this.chapter);
                     if cap == "memory" {
                         let notes = this.editor.read(cx).notes.read(cx).value().to_string();
