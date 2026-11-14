@@ -140,6 +140,14 @@ fn main() {
                 window_bounds: Some(bounds),
                 window_min_size: Some(Size { width: px(960.), height: px(600.) }),
                 kind: WindowKind::Normal,
+                // 拖动必须交回 AppKit。
+                //
+                // gpui-component 的 TitleBar 默认 app_owns_titlebar_drag=true，期望
+                // 自己调 start_window_move。但当前 GPUI 的 macOS 实现是在 mouse_move
+                // 阶段才调 performWindowDragWithEvent:，而 AppKit 只认 mouseDown 事件
+                // ——结果是整个窗口拖不动（书架页连 TitleBar 都没有，更没得拖）。
+                // false = 标题栏区域由 AppKit 原生拖动，点击事件仍照常送到内容区。
+                app_owns_titlebar_drag: false,
                 ..TitleBar::window_options()
             };
 
