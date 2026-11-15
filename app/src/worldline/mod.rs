@@ -22,19 +22,20 @@ use serde::{Deserialize, Serialize};
 
 /// 线的性质。决定时间轴上的线型与分组。
 ///
-/// 这里最容易混的一点：`Base`（正典）与 `Fixed`（被扶正的 if）**不是**一回事。
-/// - `Base` 是唯一那条「已经写进正文」的线（α）。
-/// - `Fixed` 是作者从某条 if 里选定、正式收进正文后续的那条线。
-///   它扶正之后 alpha 的固化边界会推到它的末尾，它自己留作"这一版是怎么来的"。
+/// **只有一条线是"已固化"的：正典 `Base`（α）。** 它代表已经写进正文的剧情，
+/// 由正文文件决定，不由任何预演动作决定。
+///
+/// 其余全部是**预演**（`Forecast` 往未来推、`WhatIf` 改过去看会怎样），
+/// 它们只存在于预言书，是给作者将来写番外留的素材，**永远不会被扶正成正典**。
+/// 旧版有一个 `Fixed`（已扶正）形态，那条路已经整条拆掉：它让"推演一下"
+/// 就能把时间轴顶上第二条实线，和作者定的规则直接冲突。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Kind {
-    /// 正典基准（唯一，id 固定为 α）
+    /// 正典基准（唯一，id 固定为 α）：已经写进正文的那条线
     Base,
-    /// 已扶正：从 if 线里被作者选定，成了正典的后续
-    Fixed,
-    /// 预测线：按大纲/成稿往前推演"会怎样"
+    /// 预测线：从固化点往未来推演（预演剧情，不进正典）
     Forecast,
-    /// 假设线：what-if
+    /// 假设线：what-if（预演改动，不进正典）
     #[default]
     WhatIf,
 }
@@ -43,7 +44,6 @@ impl Kind {
     pub fn key(self) -> &'static str {
         match self {
             Kind::Base => "base",
-            Kind::Fixed => "fixed",
             Kind::Forecast => "forecast",
             Kind::WhatIf => "what-if",
         }
@@ -52,8 +52,9 @@ impl Kind {
     pub fn from_key(s: &str) -> Self {
         match s {
             "base" => Kind::Base,
-            "fixed" => Kind::Fixed,
             "forecast" => Kind::Forecast,
+            // 老数据里可能还有 "fixed"（旧版的"已扶正"）。它现在只能退成
+            // 一条预演线——绝不能再被当成"已定剧情"的一员。
             _ => Kind::WhatIf,
         }
     }
@@ -62,7 +63,6 @@ impl Kind {
     pub fn label(self) -> &'static str {
         match self {
             Kind::Base => "正典",
-            Kind::Fixed => "已固化",
             Kind::Forecast => "预测",
             Kind::WhatIf => "假设",
         }
@@ -306,17 +306,14 @@ pub struct Line {
     /// 兼容字段：分叉发生在第几章
     #[serde(default)]
     pub forked_chapter: u32,
-    /// 这条线**自己**固化到第几章（0 = 还没固化任何部分）。
+    /// 旧版的「这条线自己固化到第几章」。**已不参与任何判断，只为读旧数据保留。**
     ///
-    /// 对正典 α：等于最新成稿章——写出来的都固化了，之后都是开放的 if 空间。
-    /// 对 if 线：等于「这条线自己认为已经确定的部分」；通常是它的分叉章
-    /// （分叉点之前与父线共用，不必重复记），往后推多少算作者的自由。
-    ///
-    /// 关键：**它不是全局边界**。全局固化边界由 `fixed_through()` 算：
-    /// 正典的边界 + 所有已扶正（Kind::Fixed）线的边界。
+    /// 现在的规则：固化边界只来自正文（`Store::fixed_boundary`）。
+    /// 这条字段留着只是为了不改老文件的形状——反序列化进来、原样写回去，
+    /// 从不算进时间轴的实段，也不改变"哪些线已定"。
     #[serde(default)]
     pub fixed_through: u32,
-    /// 这条线被扶正为正典后续时，写了哪条线（空 = 没扶正过）
+    /// 旧版的「被扶正时顶替了哪条线」。**已废弃，只为读旧数据保留。**
     #[serde(default)]
     pub took_over: String,
     #[serde(default)]
@@ -434,6 +431,38 @@ impl Line {
     pub fn pending_diffs(&self) -> usize {
         self.diffs.iter().filter(|d| !d.promoted).count()
     }
+
+    /// 这条预演"动得有多狠"：所有影响里最严重的一档。
+    ///
+    /// 0 = 没写影响（或全是无关紧要的改动）、1 = low、2 = medium、3 = high。
+    /// 作者挑未来时最先要比的就是这个：动到设定层（high）和加一场戏（medium）
+    /// 是完全不同的代价，界面上必须能一眼分开。
+    pub fn max_severity(&self) -> u8 {
+        self.diffs
+            .iter()
+            .map(|d| match d.severity.as_str() {
+                "high" => 3u8,
+                "medium" => 2,
+                "low" => 1,
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// 牵扯到的正典条目数（人物 + 线索 + 设定）。
+    ///
+    /// 来自推演结果里的 `derived` 三个清单。它回答"选这条会波及多大一片"，
+    /// 和 `max_severity`（动得多狠）是两个维度：可以只改一处设定但波及全书。
+    pub fn touched(&self) -> usize {
+        let Some(d) = self.extra.get("derived").and_then(|v| v.as_object()) else {
+            return 0;
+        };
+        ["characters", "clues", "canon"]
+            .iter()
+            .filter_map(|k| d.get(*k).and_then(|v| v.as_array()).map(|a| a.len()))
+            .sum()
+    }
 }
 
 /// 节点局部更新。`None` = 不改这个字段。
@@ -497,26 +526,58 @@ impl Store {
 
     /// 全局固化边界：剧情已经确定到第几章，之后全是开放的 if 空间。
     ///
-    /// 三个来源取最大：
-    /// 1. **已经写进正文的章数**（`chapters/` 里有 prose.md 的最大章号）。
-    ///    这是最硬的事实——写出来了就是定了。⚠ 不能只看 worldlines.json：
-    ///    实测一本写了 30 章的书，α 在 worldlines.json 里可能是 0 个节点，
-    ///    只看那里会把边界算成 0，整条时间轴全被标成"开放的 if"（真的踩过）。
-    /// 2. 正典自己的边界（作者可能预先标了"到第 N 章已定"）。
-    /// 3. 所有已扶正（Kind::Fixed）线的边界——扶正后真正定下的内容在它们身上。
+    /// **只有一个来源：已经写进正文的章数**（作者在书设置里手动标注的
+    /// 「已定剧情到第 N 章」也应折算进来，见 `confirmed_through`）。
     ///
-    /// 为什么要并集而不是只看正文：作者把 β 扶正后，正文还没写，
-    /// 但剧情已经定了；不认 β 会让时间轴把已定的东西画成开放 if。
-    pub fn fixed_boundary(&self, lines: &[Line]) -> u32 {
-        let from_prose = self.written_chapters();
-        lines
-            .iter()
-            // 归档线不再代表"已定剧情"：它被隐藏了，就不该继续把全局边界顶高。
-            .filter(|l| !l.is_archived() && (l.is_base() || l.kind == Kind::Fixed))
-            .map(|l| l.fixed_boundary())
-            .chain(std::iter::once(from_prose))
-            .max()
-            .unwrap_or(0)
+    /// 这条规则是被反复纠正过的，写死在这里免得再走回头路：
+    /// - 已经固化的剧情**只会有一条线**。它由正文决定，不由哪条世界线决定。
+    /// - if 线永远不会被扶正成正典。无论它推演到第几章、写得多么合作者心意，
+    ///   都只是**预演**；作者真要采纳，就去写正文——写了正文，边界自然过去。
+    /// - 所以这里**不看** `lines` 里任何一条线的 `fixedThrough`：
+    ///   早先版本让已扶正线的边界顶高全局边界，结果是"推演一下，剧情就算定了"，
+    ///   时间轴上出现了第二条实线，正是作者最反对的那种错。
+    ///
+    /// 参数 `lines` 保留是为了调用方签名稳定与未来可能的展示用途；
+    /// 它**不参与**边界计算。
+    pub fn fixed_boundary(&self, _lines: &[Line]) -> u32 {
+        self.written_chapters().max(self.confirmed_through())
+    }
+
+    /// 作者在书设置里手动标注的「已定剧情到第 N 章」（`worldline.json` 的
+    /// `confirmedThrough`）。用于「先定稿章目、正文还没写」的阶段。
+    ///
+    /// 它与 if 线的区别是**来源**：这是作者对**那唯一一条线**的声明，
+    /// 不是某条预演线的成绩。读不到就当 0。
+    pub fn confirmed_through(&self) -> u32 {
+        let p = self.root.join("worldline.json");
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| {
+                v.get("confirmedThrough")
+                    .and_then(|x| x.as_u64())
+                    .or_else(|| v.get("confirmedThrough").and_then(|x| x.as_str()).and_then(|s| s.parse().ok()))
+            })
+            .unwrap_or(0) as u32
+    }
+
+    /// 写「已定剧情到第 N 章」。0 = 清掉，回到纯按正文判断。
+    pub fn set_confirmed_through(&self, chapter: u32) -> Result<(), String> {
+        let p = self.root.join("worldline.json");
+        let mut v: serde_json::Value = std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !v.is_object() {
+            v = serde_json::json!({});
+        }
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("confirmedThrough".into(), serde_json::json!(chapter));
+        }
+        let json = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+        let tmp = p.with_extension("json.tmp");
+        std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
     }
 
     /// 已经写进正文的最大章号（`chapters/ch-NNN/prose.md` 存在且非空）。
@@ -542,45 +603,18 @@ impl Store {
         max_ch
     }
 
-    /// 把一条 if 线扶正：它成为正典的后续，正典固化边界推到它的末尾。
+    /// 「扶正 if 线」这个动作**已经不存在**。
     ///
-    /// 这一步**不改正文**（正文只由作者落笔），改的是"哪条线代表已定剧情"：
-    /// - 目标线 kind → Fixed，记 took_over 指向它自己（留痕：这一版从哪来）
-    /// - 正典 α 的 fixed_through 推到目标线的边界
-    /// - 原正典那一版不会被删：它仍是 Base，作者随时能看出"扶正前是什么样"
+    /// 保留这个函数只为让旧调用点编译失败时有个明确的落点（已全部摘除），
+    /// 它永远返回错误——即使有人（包括 AI、插件、脚本）调进来，也扶不正。
     ///
-    /// 拒绝的情况：目标不存在、目标就是正典、目标已归档。
-    pub fn fix_line(&self, id: &str) -> Result<Line, String> {
-        let mut lines = self.all()?;
-        let idx = lines
-            .iter()
-            .position(|l| l.id == id)
-            .ok_or_else(|| format!("世界线 {id} 不存在"))?;
-        if lines[idx].is_base() {
-            return Err("正典本身不需要扶正".into());
-        }
-        if lines[idx].is_archived() {
-            return Err(format!("线{id} 已归档，先恢复再扶正"));
-        }
-        let boundary = lines[idx].fixed_boundary();
-        if boundary == 0 {
-            return Err(format!("线{id} 一个节点都没有，没有可扶正的内容"));
-        }
-        let name = lines[idx].name.clone();
-        lines[idx].kind = Kind::Fixed;
-        lines[idx].status = "已定稿".into();
-        if lines[idx].took_over.is_empty() {
-            lines[idx].took_over = format!("{id}:{name}");
-        }
-        let fixed = lines[idx].clone();
-        // 正典的固化边界往前推
-        if let Some(base) = lines.iter_mut().find(|l| l.is_base()) {
-            if base.fixed_through < boundary {
-                base.fixed_through = boundary;
-            }
-        }
-        self.save(&lines)?;
-        Ok(fixed)
+    /// 规则：if 线是预演，不是候选正典。要让某个预演成真，只有一条路：
+    /// **作者把这段剧情写进正文**。正文写到哪，固化边界就到哪（见 `fixed_boundary`）。
+    #[allow(dead_code)] // 没有调用点是**故意的**：保留它只为"调进来也扶不正"这道保险
+    pub fn fix_line(&self, _id: &str) -> Result<Line, String> {
+        Err("if 线不能被扶正：世界线只做预演，固化剧情由正文决定。\
+             要让某个预演成真，请把这段剧情写进正文。"
+            .into())
     }
 
     /// 所有引用了某画布节点的世界线节点（双向弱引用的另一半：反查）。
@@ -622,11 +656,12 @@ impl Store {
     /// 给定章节，哪些线在这章「有话说」（用于时间轴按章聚合）。
     ///
     /// 三条规则：
-    /// 1. 固化段（chapter ≤ 全局边界）：只有正典与已扶正线有内容，if 线不参与——
-    ///    这段剧情已经定了，if 线在这里没有发言权。
+    /// 1. 固化段（chapter ≤ 全局边界）：**只有正典**有内容，if 线不参与——
+    ///    这段剧情已经写进正文了，预演在这里没有发言权（预演只在固化点之后）。
     /// 2. 开放段（chapter > 边界）：正典没有内容（它还没写），所有 if 线按自己的
     ///    分叉点判断是否还在跑（分叉点早于该章）。
     /// 3. 分叉点本身那一章，父子线都算「有话说」：那是它们分开的地方。
+    #[allow(dead_code)] // 时间轴已改为按线渲染；这张"某章有谁在跑"的查询留给后续的章节联动
     pub fn lines_at<'a>(&self, lines: &'a [Line], chapter: u32) -> Vec<&'a Line> {
         let boundary = self.fixed_boundary(lines);
         lines
@@ -636,8 +671,8 @@ impl Store {
                     return false;
                 }
                 if chapter <= boundary {
-                    // 固化段：正典 + 已扶正线
-                    l.is_base() || l.kind == Kind::Fixed
+                    // 固化段：只有正典（if 线永不固化）
+                    l.is_base()
                 } else {
                     // 开放段：从边界之后还能继续跑的 if 线（含正典自身的规划）
                     l.is_base() || l.fork_chapter() <= chapter
@@ -646,42 +681,10 @@ impl Store {
             .collect()
     }
 
-    /// 撤销扶正：目标线退回 if 线，正典边界回落到其余已扶正线的最大值。
-    pub fn unfix_line(&self, id: &str) -> Result<(), String> {
-        let mut lines = self.all()?;
-        let idx = lines
-            .iter()
-            .position(|l| l.id == id)
-            .ok_or_else(|| format!("世界线 {id} 不存在"))?;
-        if lines[idx].is_base() {
-            return Err("正典不能被撤销扶正".into());
-        }
-        lines[idx].kind = Kind::WhatIf;
-        lines[idx].status = "推演中".into();
-        // fixed_through 必须一起清：fixed_boundary() 取 max(fixed_through, last_chapter)，
-        // 留着它等于没撤销（节点还在，边界照样算到那里）。
-        lines[idx].fixed_through = 0;
-        // 边界是并集算出来的，这里退回到剩下的最大值。
-        //
-        // 正典自己不能参与这个 max：它的 fixed_through 正是要被重算的那个值，
-        // 拿它算等于"用结果推结果"（第一次撤销后永远退不回去）。
-        // 正典自己的边界只来自它的节点，用 last_chapter()。
-        let remaining = lines
-            .iter()
-            .filter(|l| l.id != id && l.kind == Kind::Fixed)
-            .map(|l| l.fixed_boundary())
-            .chain(
-                lines
-                    .iter()
-                    .find(|l| l.is_base())
-                    .map(|b| b.last_chapter()),
-            )
-            .max()
-            .unwrap_or(0);
-        if let Some(base) = lines.iter_mut().find(|l| l.is_base()) {
-            base.fixed_through = remaining;
-        }
-        self.save(&lines)
+    /// 撤销扶正：已无此动作（见 `fix_line`）。永远返回错误。
+    #[allow(dead_code)] // 同上：与 fix_line 成对，只为保险
+    pub fn unfix_line(&self, _id: &str) -> Result<(), String> {
+        Err("没有「扶正」就没有「撤销扶正」——固化剧情只随正文变化。".into())
     }
 
     pub fn find(&self, id: &str) -> Result<Option<Line>, String> {
@@ -944,6 +947,62 @@ pub fn mark_adopted_written(book_root: &Path, chapter: u32) -> Result<usize, Str
 mod tests {
     use super::*;
 
+    /// 挑未来时要比的两个量：动得多狠、波及多广。
+    /// 它们是纯函数，直接单测——界面上那套"粗细/端点"编码全靠这两个数。
+    #[test]
+    fn severity_and_touch_describe_how_heavy_a_line_is() {
+        let mut l = Line::new("β", "断刀引路", Kind::Forecast, "α", "", 7);
+        // 没有影响：0 狠、0 波及
+        assert_eq!(l.max_severity(), 0);
+        assert_eq!(l.touched(), 0);
+
+        l.diffs = vec![
+            Diff {
+                severity: "low".into(),
+                ..Default::default()
+            },
+            Diff {
+                severity: "medium".into(),
+                ..Default::default()
+            },
+        ];
+        // 取最狠的一档，不是平均、也不是求和
+        assert_eq!(l.max_severity(), 2);
+
+        l.diffs.push(Diff {
+            severity: "high".into(),
+            ..Default::default()
+        });
+        assert_eq!(l.max_severity(), 3);
+
+        // 未知档位当作 0，不让脏数据把线画粗
+        l.diffs.push(Diff {
+            severity: "critical".into(),
+            ..Default::default()
+        });
+        assert_eq!(l.max_severity(), 3);
+    }
+
+    #[test]
+    fn touched_counts_all_three_derived_lists() {
+        let mut l = Line::new("β", "断刀引路", Kind::Forecast, "α", "", 7);
+        l.extra.insert(
+            "derived".into(),
+            serde_json::json!({
+                "characters": ["遗孤", "老周"],
+                "clues": ["F02"],
+                "canon": ["界字·第二层"],
+            }),
+        );
+        assert_eq!(l.touched(), 4);
+        // 缺清单 / 字段类型不对时不能 panic，直接算 0
+        l.extra
+            .insert("derived".into(), serde_json::json!({ "characters": "不是数组" }));
+        assert_eq!(l.touched(), 0);
+        l.extra.remove("derived");
+        assert_eq!(l.touched(), 0);
+    }
+
     fn book(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("zhibi-wl-{tag}"));
         let _ = std::fs::remove_dir_all(&p);
@@ -1041,108 +1100,118 @@ mod tests {
         assert_eq!(beta.forked_chapter, 16, "章号仍保留，作者仍能看出从哪分");
     }
 
+    /// 固化边界只由正文决定：推演一条线推得再远，边界也不动。
     #[test]
-    fn fixed_boundary_is_the_union_of_base_and_fixed_lines() {
+    fn boundary_comes_from_prose_only() {
         let root = book("boundary");
         let s = seed(&root);
-        // 正典到第 16 章
-        assert_eq!(s.fixed_boundary(&s.all().unwrap()), 16);
+        // seed 里 α 的节点落到第 16 章，但那不是正文——正文为空时边界是 0。
+        assert_eq!(s.fixed_boundary(&s.all().unwrap()), 0, "没写正文就没有已定剧情");
 
-        // 扶正 β（到第 18 章）→ 全局边界推到 18
-        s.fork("α", "n2", "β", "β", "", Kind::WhatIf).unwrap();
+        // 正文写到第 9 章：边界就是 9，跟 worldlines.json 里的节点无关
+        let ch = root.join("chapters").join("ch-009");
+        std::fs::create_dir_all(&ch).unwrap();
+        std::fs::write(ch.join("prose.md"), "正文").unwrap();
+        assert_eq!(s.fixed_boundary(&s.all().unwrap()), 9, "正文写到哪，边界就到哪");
+
+        // 开一条推到第 18 章的预测线：边界不动
+        s.fork("α", "n2", "β", "β", "", Kind::Forecast).unwrap();
         let mut bn = Node::new("b1", "event", "师兄现身");
         bn.chapter = 18;
         s.add_node("β", bn).unwrap();
-        assert_eq!(s.fixed_boundary(&s.all().unwrap()), 16, "还没扶正，边界不动");
-
-        s.fix_line("β").unwrap();
         let lines = s.all().unwrap();
-        assert_eq!(s.fixed_boundary(&lines), 18, "扶正后边界应推到 β 的末尾");
-        assert_eq!(s.find("β").unwrap().unwrap().kind, Kind::Fixed);
+        assert_eq!(
+            s.fixed_boundary(&lines),
+            9,
+            "预演推演到第 18 章也不能把固化边界顶上去"
+        );
     }
 
+    /// 作者手动标注的「已定剧情到第 N 章」也算数——但那是作者对唯一那条线的声明，
+    /// 不是某条预演线的成绩。
     #[test]
-    fn fixing_a_line_keeps_the_original_base_for_comparison() {
-        let root = book("fixkeep");
+    fn author_can_declare_confirmed_through_manually() {
+        let root = book("confirmed");
+        let s = seed(&root);
+        assert_eq!(s.fixed_boundary(&[]), 0);
+        s.set_confirmed_through(12).unwrap();
+        assert_eq!(s.confirmed_through(), 12);
+        assert_eq!(s.fixed_boundary(&[]), 12, "作者声明也要认");
+        s.set_confirmed_through(0).unwrap();
+        assert_eq!(s.fixed_boundary(&[]), 0, "清掉就回到纯按正文判断");
+    }
+
+    /// if 线永远扶不正——这是硬规则，写在函数体里而不是靠 UI 不放按钮。
+    #[test]
+    fn an_if_line_can_never_be_promoted() {
+        let root = book("nofix");
         let s = seed(&root);
         s.fork("α", "n2", "β", "β", "", Kind::WhatIf).unwrap();
         let mut bn = Node::new("b1", "event", "师兄现身");
         bn.chapter = 20;
         s.add_node("β", bn).unwrap();
-        s.fix_line("β").unwrap();
 
-        let lines = s.all().unwrap();
-        // 原正典不被删也不被改：作者要能看出"扶正前是什么样"
-        assert!(lines.iter().any(|l| l.is_base()));
-        assert_eq!(lines.iter().find(|l| l.is_base()).unwrap().nodes.len(), 2);
-        // 但边界推过去了
-        assert_eq!(lines.iter().find(|l| l.is_base()).unwrap().fixed_through, 20);
-        // 扶正的那条留痕
-        let beta = lines.iter().find(|l| l.id == "β").unwrap();
-        assert!(beta.took_over.starts_with("β:"), "要记下这一版从哪来");
+        assert!(s.fix_line("β").is_err(), "if 线不能被扶正");
+        assert!(s.unfix_line("β").is_err(), "没有扶正就没有撤销扶正");
+        // 线原样留着，仍是预演
+        let beta = s.find("β").unwrap().unwrap();
+        assert_eq!(beta.kind, Kind::WhatIf);
+        assert_ne!(beta.status, "已定稿");
     }
 
+    /// 旧数据里 kind="fixed" 的线，读进来必须降级成预演——
+    /// 绝不能再被当成"已定剧情"的一员。
     #[test]
-    fn unfixing_rolls_the_boundary_back() {
-        let root = book("unfix");
+    fn legacy_fixed_lines_read_back_as_previews() {
+        let root = book("legacy");
         let s = seed(&root);
         s.fork("α", "n2", "β", "β", "", Kind::WhatIf).unwrap();
-        let mut bn = Node::new("b1", "event", "x");
-        bn.chapter = 20;
-        s.add_node("β", bn).unwrap();
-        s.fix_line("β").unwrap();
-        assert_eq!(s.fixed_boundary(&s.all().unwrap()), 20);
-
-        s.unfix_line("β").unwrap();
-        let lines = s.all().unwrap();
-        assert_eq!(s.fixed_boundary(&lines), 16, "撤销后回落到正典自己的边界");
-        assert_eq!(lines.iter().find(|l| l.id == "β").unwrap().kind, Kind::WhatIf);
-    }
-
-    #[test]
-    fn fixing_rejects_base_archived_and_empty_lines() {
-        let root = book("fixbad");
-        let s = seed(&root);
-        assert!(s.fix_line("α").is_err(), "正典不需要扶正");
-        assert!(s.fix_line("nope").is_err());
-        // 空线没有可扶正的内容
-        s.fork("α", "n2", "β", "β", "", Kind::WhatIf).unwrap();
-        assert!(s.fix_line("β").is_err(), "一个节点都没有的线不该能扶正");
-        // 归档线要先恢复
-        let mut bn = Node::new("b1", "event", "x");
-        bn.chapter = 18;
-        s.add_node("β", bn).unwrap();
+        // 手改文件，模拟旧版写下的 "fixed"
         let mut lines = s.all().unwrap();
-        lines.iter_mut().find(|l| l.id == "β").unwrap().status = "已归档".into();
-        s.save(&lines).unwrap();
-        assert!(s.fix_line("β").is_err(), "归档线不能直接扶正");
+        {
+            let beta = lines.iter_mut().find(|l| l.id == "β").unwrap();
+            beta.extra.insert("kind".into(), serde_json::json!("fixed"));
+            beta.fixed_through = 22;
+        }
+        let text = serde_json::to_string_pretty(
+            &lines
+                .iter()
+                .map(|l| serde_json::to_value(l).unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .replace("\"kind\": \"what-if\"", "\"kind\": \"fixed\"");
+        std::fs::write(root.join("worldlines.json"), text).unwrap();
+
+        let back = s.all().unwrap();
+        let beta = back.iter().find(|l| l.id == "β").unwrap();
+        assert_ne!(beta.kind.key(), "fixed", "旧 fixed 必须降级");
+        // 旧的 fixedThrough 也不再顶高边界
+        assert_eq!(s.fixed_boundary(&back), 0, "旧扶正数据不能继续影响边界");
     }
 
+    /// 固化段里只出现正典。预演线哪怕节点落在边界之前，也不能挤进"已定"那一段。
     #[test]
-    fn fixed_segment_only_shows_base_and_fixed_lines() {
+    fn fixed_segment_only_shows_the_base_line() {
         let root = book("linesat");
         let s = seed(&root);
+        let ch = root.join("chapters").join("ch-016");
+        std::fs::create_dir_all(&ch).unwrap();
+        std::fs::write(ch.join("prose.md"), "正文").unwrap();
+
         s.fork("α", "n2", "β", "β", "", Kind::WhatIf).unwrap();
         let mut bn = Node::new("b1", "event", "x");
         bn.chapter = 20;
         s.add_node("β", bn).unwrap();
         let lines = s.all().unwrap();
 
-        // 第 10 章（固化段内）：β 还没分叉，不该出现
+        // 第 10 章（固化段内）：只有正典
         let at10: Vec<&str> = s.lines_at(&lines, 10).iter().map(|l| l.id.as_str()).collect();
-        assert_eq!(at10, vec!["α"], "固化段只有正典，if 线无权参与");
+        assert_eq!(at10, vec!["α"], "固化段只有正典，预演线无权参与");
 
         // 第 18 章 > 边界 16，属开放段：β 已分叉，应该出现
         let at18: Vec<&str> = s.lines_at(&lines, 18).iter().map(|l| l.id.as_str()).collect();
-        assert!(at18.contains(&"β"), "开放段里已分叉的 if 线要有位置");
-
-        // 扶正 β 后边界推到 20：第 18 章落进固化段，
-        // 此时 β 出现是因为它成了 Fixed（已定剧情），不是因为它"已分叉"
-        s.fix_line("β").unwrap();
-        let lines = s.all().unwrap();
-        assert_eq!(s.fixed_boundary(&lines), 20);
-        let at18b: Vec<&str> = s.lines_at(&lines, 18).iter().map(|l| l.id.as_str()).collect();
-        assert!(at18b.contains(&"β"), "扶正后它就是已定剧情的一部分");
+        assert!(at18.contains(&"β"), "开放段里已分叉的预演线要有位置");
     }
 
     #[test]
@@ -1224,17 +1293,17 @@ mod tests {
     }
 
     #[test]
-    fn archived_fixed_lines_do_not_push_the_global_boundary() {
+    fn archived_preview_lines_do_not_push_the_global_boundary() {
         let root = book("archived-boundary");
         let s = seed(&root);
-        let mut line = Line::new("β", "假设", Kind::Fixed, "α", "", 5);
+        let mut line = Line::new("β", "假设", Kind::Forecast, "α", "", 5);
         line.status = "已归档".into();
         let mut n = Node::new("b1", "event", "远未来");
         n.chapter = 90;
         line.nodes.push(n);
         let mut lines = s.all().unwrap();
         lines.push(line);
-        assert_eq!(s.fixed_boundary(&lines), 16, "归档线不该把边界顶到 90");
+        assert_eq!(s.fixed_boundary(&lines), 0, "归档的预演线不该把边界顶到 90");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! 台账码（线号/事件号/伏笔号/日期/快照文件名）一律 FAMILY_MONO+FONT_LABEL+FAINT；
 //! 主按钮朱砂实心+白字、能力按钮朱砂软底+TEXT——经 `ButtonVariants::custom` 覆写库主题（规则 5/6/7）。
 
+use std::cell::Cell as StdCell;
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariants as _};
@@ -18,6 +19,7 @@ use gpui_kit::component::table::{
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::dock::{BasePanel, Panel as ComponentPanel, PanelEvent};
 use gpui_kit::component::Sizable;
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
@@ -326,6 +328,51 @@ fn manage_row<C: EventEmitter<ViewEvent> + 'static>(
             .child(SharedString::from(meta)),
     )
     .into_any_element()
+}
+
+/// 只读速览的一行（标签 + 灰字内容）；内容为空时整行不画，不留空标签。
+fn summary_row(label: &'static str, text: &str) -> gpui_kit::AnyElement {
+    if text.trim().is_empty() {
+        return div().into_any_element();
+    }
+    div()
+        .flex()
+        .items_start()
+        .gap(theme::GAP_SM)
+        .child(
+            div()
+                .w(px(32.))
+                .flex_shrink_0()
+                .text_size(theme::FONT_MICRO)
+                .text_color(theme::FAINT())
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(theme::FONT_MICRO)
+                .line_height(relative(theme::LINE_HEIGHT_BODY))
+                .text_color(theme::DIM())
+                .overflow_hidden()
+                .line_clamp(2)
+                .child(SharedString::from(text.to_string())),
+        )
+        .into_any_element()
+}
+
+/// 一张人物卡的"信息完整度"：5 个关键字段填了几个（牌脚那排小点）。
+fn filled_of(c: &crate::characters::Character) -> usize {
+    [
+        !c.appearance.trim().is_empty(),
+        !c.personality.trim().is_empty(),
+        !c.motivation.trim().is_empty(),
+        !c.voice.trim().is_empty(),
+        !c.core_story.trim().is_empty(),
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count()
 }
 
 fn panel_col<'a>() -> gpui_kit::Div {
@@ -1312,8 +1359,14 @@ pub struct CharactersPanel {
     handle: Rc<ProjectHandle>,
     /// 列表
     people: Vec<crate::characters::Character>,
-    /// 当前选中
+    /// 卡簿里"亮着"的那张卡。
+    ///
+    /// 与 `open` 分开：选中是**看**（卡面高亮、右侧小传预览），打开是**改**
+    /// （右侧弹出完整人设卡）。三国杀里点牌是先拿起、再翻开——两步分开，
+    /// 作者逛卡簿时不会一不小心把每张卡都推进编辑态。
     selected: Option<String>,
+    /// 完整人设卡（右侧抽屉）打开的是谁；None = 抽屉收起。
+    open: Option<String>,
     /// 档案字段编辑框（与 selected 同步）
     ed_name: Entity<gpui_kit::component::input::InputState>,
     ed_role: Entity<gpui_kit::component::input::InputState>,
@@ -1335,6 +1388,9 @@ pub struct CharactersPanel {
     ed_new: Entity<gpui_kit::component::input::InputState>,
     /// 提示（迁移结果、错误）
     message: Option<String>,
+    /// 卡簿容器的实测宽度（prepaint 写回，渲染时按它算列数）。
+    /// 用 Rc<Cell> 而不是存字段：prepaint 闭包拿不到 &mut self。
+    grid_w: Rc<StdCell<f32>>,
 }
 
 impl CharactersPanel {
@@ -1355,6 +1411,7 @@ impl CharactersPanel {
             handle,
             people: Vec::new(),
             selected: None,
+            open: None,
             ed_name: mk(window, cx, "本名"),
             ed_role: mk(window, cx, "角色定位：主角/反派/导师…"),
             ed_faction: mk(window, cx, "阵营 / 所属"),
@@ -1370,18 +1427,36 @@ impl CharactersPanel {
             flipped: false,
             ed_new: mk(window, cx, "名字"),
             message: None,
+            grid_w: Rc::new(StdCell::new(0.)),
         };
         panel.reload(window, cx);
+        // 开发预览：ZHIBI_CHAR_OPEN=1 时直接翻开第一张卡——
+        // 截图核验"点开后的编修面"用，省掉模拟点击（合成鼠标事件在
+        // 非活跃窗口里经常丢，靠它截图验证不靠谱）。
+        if std::env::var("ZHIBI_CHAR_OPEN").is_ok() {
+            if let Some(first) = panel.people.first().map(|c| c.id.clone()) {
+                panel.open_card(first, window, cx);
+            }
+        }
         panel
     }
 
     /// 从磁盘重读，并把选中项回填到编辑框。
     pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.people = crate::characters::Roster::new(&self.handle.root).all();
+        // 抽屉里那个人被删了/被并了：收起抽屉，别留一张空卡。
+        if let Some(id) = &self.open {
+            if !self.people.iter().any(|c| &c.id == id) {
+                self.open = None;
+            }
+        }
         if self.selected.is_none() && !self.people.is_empty() {
             self.selected = Some(self.people[0].id.clone());
         }
-        self.fill_editors(window, cx);
+        // 编辑框只跟抽屉走：抽屉收起时不用回填（没有可见的卡要填）。
+        if self.open.is_some() {
+            self.fill_editors(window, cx);
+        }
         cx.notify();
     }
 
@@ -1446,10 +1521,30 @@ impl CharactersPanel {
         self.reload(window, cx);
     }
 
-    /// 选中某人（并回填编辑框）。
+    /// 选中某人（卡簿里亮起来；抽屉不动）。
+    ///
+    /// 外部跳转一律用 `open_card`；这个只留给"从别处回来还想让卡簿停在那个人身上"
+    /// 的场景（比如 AI 提案里点到某人时先高亮、不抢占视线）。
+    #[allow(dead_code)]
     pub fn select(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = Some(id);
         self.fill_editors(window, cx);
+        cx.notify();
+    }
+
+    /// 翻开某人的人设卡：右侧抽屉弹出完整档案，字段回填可改。
+    ///
+    /// 外部跳进来（关系图点人物、AI 提案指向某人）时用这个而不是 `select`——
+    /// 作者点「看这个人」就是要看人，不是要在一排卡里找亮点。
+    pub fn open_card(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected = Some(id.clone());
+        self.open = Some(id);
+        self.fill_editors(window, cx);
+        cx.notify();
+    }
+
+    fn close_card(&mut self, cx: &mut Context<Self>) {
+        self.open = None;
         cx.notify();
     }
 }
@@ -1468,31 +1563,474 @@ impl Render for CharactersPanel {
         let message = self.message.clone();
         let selected = self.selected.clone();
 
-        // —— 左：卡簿。每个角色一张卡位（含路人甲）——
+        // —— 卡簿：三国杀那种整张的大卡，不是头像 ——
         //
-        // 排序：主要角色按出场/创建序在前，路人在后。不按字母排——
-        // 作者找人是按"我记得有个演过路人的"，不是按拼音。
+        // 卡面本身就是完整信息：姓名题签、基本信息、背景故事、相关剧情。
+        // 一屏看两三张卡，但每张卡都是"这一个角色"的全貌——作者翻卡簿是在
+        // **认人**，不是在一堆头像里找亮点。要看细节、要改，才点开右侧的编辑面。
+        //
+        // 卡面按 5:7（近似 63×88 的实体牌比例）固定成 200×280：
+        // 太小塞不下背景故事与相关剧情，太大一屏连一张都放不开。
+        // 列数按容器宽度算，卡尺寸不变——窗口窄了就少排一列，不是把卡压小。
+        let width_cell = self.grid_w.clone();
+        let card_w = 240.0f32;
+        let gap = 12.0f32;
+        let columns = {
+            let w = width_cell.get() as f32;
+            let c = if w <= 0. {
+                3
+            } else {
+                ((w + gap) / (card_w + gap)).floor().clamp(1., 5.) as usize
+            };
+            c
+        };
+
         let mut ordered: Vec<&crate::characters::Character> =
             self.people.iter().filter(|c| !c.minor).collect();
         let minors: Vec<&crate::characters::Character> =
             self.people.iter().filter(|c| c.minor).collect();
         let minor_count = minors.len();
+        let main_count = ordered.len();
         ordered.extend(minors);
 
-        let mut book = div()
-            .w(px(188.))
+        // 卡面要用的两路关联数据（都是已有台账，不必新开数据通道）：
+        // 1. 背景故事：canon/人物·X.md（作者写的设定文档）
+        // 2. 相关剧情：events.json 里 objectiveFact 提到本名/别名的事件，按章号排
+        // 名字与事件都是磁盘上确定的内容，不靠 AI 猜；查不到就留白并写明"还没记"。
+        let canon_docs = self.handle.canon_docs();
+        let events = self.handle.events();
+        let card_data = |c: &crate::characters::Character| -> (String, Vec<(u32, String)>) {
+            let names: Vec<&str> = std::iter::once(c.name.as_str())
+                .chain(c.aliases.iter().map(|a| a.as_str()))
+                .filter(|n| !n.trim().is_empty())
+                .collect();
+            // 背景：找标题里带本名的人物设定文档
+            let mut bg = String::new();
+            for (title, _cat, body) in &canon_docs {
+                if names.iter().any(|n| title.contains(n)) {
+                    bg = body
+                        .lines()
+                        .filter(|l| !l.trim_start().starts_with('#'))
+                        .filter(|l| !l.trim().is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_string();
+                    if !bg.is_empty() {
+                        break;
+                    }
+                }
+            }
+            if bg.is_empty() {
+                bg = c.background.trim().to_string();
+            }
+            // 剧情：事件事实里提到这个名字就算他的戏
+            let mut plot: Vec<(u32, String)> = events
+                .iter()
+                .filter_map(|e| {
+                    let fact = e.get("objectiveFact")?.as_str()?.to_string();
+                    if !names.iter().any(|n| fact.contains(n)) {
+                        return None;
+                    }
+                    let ch = e
+                        .get("chapter")
+                        .and_then(|v| v.as_u64())
+                        .or_else(|| e.get("actualChapter").and_then(|v| v.as_u64()))
+                        .unwrap_or(0) as u32;
+                    Some((ch, fact))
+                })
+                .collect();
+            plot.sort_by_key(|(ch, _)| *ch);
+            (bg, plot)
+        };
+
+        // 卡面（纯展示，点击由外层壳挂上；Div 能带状态但 AnyElement 不行）
+        let face = |c: &crate::characters::Character,
+                         on: bool,
+                         data: &(String, Vec<(u32, String)>)| {
+            let (bg, plot) = data;
+            let accent = if c.minor { theme::LINE_SOFT() } else { theme::ACCENT() };
+            let seal: String = c.name.chars().next().map(|x| x.to_string()).unwrap_or_default();
+
+            // 「基本信息」：定位/阵营/年龄/状态，能写多少写多少，空的不占行
+            let mut info: Vec<(&str, String)> = Vec::new();
+            if !c.role.trim().is_empty() {
+                info.push(("定位", c.role.trim().to_string()));
+            }
+            if !c.faction.trim().is_empty() {
+                info.push(("阵营", c.faction.trim().to_string()));
+            }
+            if !c.age.trim().is_empty() {
+                info.push(("年纪", c.age.trim().to_string()));
+            }
+            if !c.status.trim().is_empty() {
+                info.push((
+                    "状态",
+                    if c.status_chapter > 0 {
+                        format!("{}（第{}章起）", c.status.trim(), c.status_chapter)
+                    } else {
+                        c.status.trim().to_string()
+                    },
+                ));
+            }
+            if !c.aliases.is_empty() {
+                info.push(("别名", c.aliases.join("、")));
+            }
+            if info.is_empty() {
+                info.push(("档案", "还没写定位/阵营——点开补齐".into()));
+            }
+
+            // 小字段块：标题 + 正文（正文缺省时给一句引导，不留空白）
+            let block = |label: &'static str, body: String, hint: &'static str, lines: usize| {
+                let empty = body.trim().is_empty();
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .w(px(2.))
+                                    .h(px(9.))
+                                    .rounded(px(1.))
+                                    .bg(accent),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::FAINT())
+                                    .child(SharedString::from(label)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .line_height(relative(1.5))
+                            .text_color(if empty { theme::GHOST() } else { theme::DIM() })
+                            .overflow_hidden()
+                            .line_clamp(lines)
+                            .child(SharedString::from(if empty {
+                                hint.to_string()
+                            } else {
+                                body
+                            })),
+                    )
+            };
+
+            // 卡是固定尺寸的实体牌（5:7，近似 63×88mm 的牌面比例），
+            // 不随窗口拉伸——拉伸会让"牌"变成"面板"，背景故事和剧情的
+            // 行宽也跟着变，读起来就不再像一张卡了。
+            let card = div()
+                .w(px(240.))
+                .h(px(336.))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .rounded(px(10.))
+                .overflow_hidden()
+                .cursor_pointer()
+                .border_1()
+                .border_color(if on {
+                    theme::ACCENT_BORDER()
+                } else if c.minor {
+                    theme::LINE_SOFT()
+                } else {
+                    theme::LINE()
+                })
+                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL() })
+                .hover(|d| d.border_color(theme::ACCENT_BORDER()).bg(theme::PANEL2()))
+                // 牌头：姓名题签（篆意图省 + 定位色条）
+                .child(
+                    div()
+                        .w_full()
+                        .flex_shrink_0()
+                        .px(px(10.))
+                        .py(px(7.))
+                        .flex()
+                        .items_center()
+                        .gap(px(7.))
+                        .border_b_1()
+                        .border_color(theme::LINE_SOFT())
+                        .child(
+                            div()
+                                .w(px(26.))
+                                .h(px(26.))
+                                .flex_shrink_0()
+                                .rounded(px(13.))
+                                .border_1()
+                                .border_color(accent)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_family(theme::FAMILY_SERIF)
+                                        .text_color(if c.minor { theme::FAINT() } else { accent })
+                                        .child(SharedString::from(seal)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(15.))
+                                        .font_family(theme::FAMILY_SERIF)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_ellipsis()
+                                        .text_color(if on {
+                                            theme::ACCENT()
+                                        } else if c.minor {
+                                            theme::DIM()
+                                        } else {
+                                            theme::TEXT()
+                                        })
+                                        .child(SharedString::from(c.name.clone())),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(9.))
+                                        .text_color(theme::FAINT())
+                                        .text_ellipsis()
+                                        .child(SharedString::from(
+                                            if c.minor {
+                                                "过场 · 路人".to_string()
+                                            } else {
+                                                c.roles_line()
+                                            },
+                                        )),
+                                ),
+                        ),
+                )
+                // 基本信息表
+                .child(
+                    div()
+                        .w_full()
+                        .flex_shrink_0()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .border_b_1()
+                        .border_color(theme::LINE_SOFT())
+                        .children(info.into_iter().map(|(k, v)| {
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .w(px(26.))
+                                        .flex_shrink_0()
+                                        .text_size(px(9.))
+                                        .text_color(theme::FAINT())
+                                        .child(SharedString::from(k)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(px(10.))
+                                        .line_height(relative(1.35))
+                                        .text_color(theme::DIM())
+                                        .overflow_hidden()
+                                        .line_clamp(2)
+                                        .child(SharedString::from(v)),
+                                )
+                        })),
+                )
+                // 背景故事
+                .child(
+                    div()
+                        .w_full()
+                        .flex_shrink_0()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .child(block("背景故事", bg.clone(), "还没在设定里写这个人的来历", 2)),
+                )
+                .child(div().w_full().flex_shrink_0().px(px(10.)).child(
+                    div().h(px(1.)).w_full().bg(theme::LINE_SOFT()),
+                ))
+                // 相关剧情：真事件，带章号，按章排
+                .child(
+                    div()
+                        .w_full()
+                        .flex_1()
+                        .min_h_0()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .w(px(2.))
+                                        .h(px(9.))
+                                        .rounded(px(1.))
+                                        .bg(accent),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(9.5))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(theme::FAINT())
+                                        .child(SharedString::from(format!(
+                                            "相关剧情 · {}",
+                                            plot.len()
+                                        ))),
+                                ),
+                        )
+                        .child(if plot.is_empty() {
+                            div()
+                                .text_size(px(10.5))
+                                .line_height(relative(1.5))
+                                .text_color(theme::GHOST())
+                                .child("还没有写到这个人的事")
+                                .into_any_element()
+                        } else {
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .w_full()
+                                .overflow_hidden()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .children(plot.iter().take(5).map(|(ch, fact)| {
+                                    div()
+                                        .flex()
+                                        .items_start()
+                                        .gap(px(5.))
+                                        .child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .font_family(theme::FAMILY_MONO)
+                                                .text_size(px(8.5))
+                                                .text_color(accent)
+                                                .child(SharedString::from(format!("{ch:02}"))),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_size(px(10.))
+                                                .line_height(relative(1.35))
+                                                .text_color(theme::DIM())
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .child(SharedString::from(fact.clone())),
+                                        )
+                                }))
+                                .when(plot.len() > 5, |d| {
+                                    d.child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(theme::FAINT())
+                                            .child(SharedString::from(format!(
+                                                "…另 {} 条点开看",
+                                                plot.len() - 5
+                                            ))),
+                                    )
+                                })
+                                .into_any_element()
+                        }),
+                )
+                // 牌脚：完整度 + 点开提示
+                .child(
+                    div()
+                        .w_full()
+                        .flex_shrink_0()
+                        .px(px(10.))
+                        .py(px(5.))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .border_t_1()
+                        .border_color(theme::LINE_SOFT())
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(1.5))
+                                .children((0..5).map(move |i| {
+                                    div()
+                                        .w(px(4.))
+                                        .h(px(4.))
+                                        .rounded(px(2.))
+                                        .bg(if i < filled_of(c) { accent } else { theme::LINE_SOFT() })
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(8.5))
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from("点开 · 编修 / 立绘位留空")),
+                        ),
+                );
+            card
+        };
+
+        // 牌墙：按列数分行排开。卡是固定尺寸的实体牌，行内等高，牌墙就该是齐的。
+        //
+        // 列数按"可用宽度"算，而可用宽度随窗口 / 侧栏 / 抽屉变化。
+        // 量法：在牌墙里放一条 **w_full 的零高测量条**，读它 prepaint 后的宽度——
+        // 它永远等于容器宽，与排了几列无关。
+        // 为什么不能量第一行再反推：行宽 = 张数 × 卡宽，用行宽算列数会越算越少，
+        // 最后稳定在只剩一列（这个 bug 真的出过一次，界面看着像"卡排不下"）。
+        let probe = div()
+            .w_full()
+            .h(px(1.))
             .flex_shrink_0()
+            .opacity(0.)
+            .on_children_prepainted(move |_, _, _| {});
+        let wall_probe_cell = width_cell.clone();
+        let mut wall = div()
+            .w_full()
             .flex()
             .flex_col()
-            .gap(px(2.));
+            .gap(px(gap))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .gap(px(gap))
+                    .on_children_prepainted(move |bounds, _, _| {
+                        let w = bounds.first().map(|b| b.size.width.as_f32()).unwrap_or(0.);
+                        if w > 1. && (wall_probe_cell.get() as f32 - w).abs() > 0.5 {
+                            wall_probe_cell.set(w);
+                        }
+                    })
+                    .child(probe),
+            );
+        let mut row: Vec<gpui_kit::AnyElement> = Vec::new();
         let mut shown_minor_head = false;
         for c in &ordered {
             if c.minor && !shown_minor_head {
+                if !row.is_empty() {
+                    wall = wall.child(div().flex().gap(px(gap)).children(std::mem::take(&mut row)));
+                }
                 shown_minor_head = true;
-                book = book.child(
+                wall = wall.child(
                     div()
+                        .w_full()
                         .pt(theme::PAD_SM)
-                        .pb(px(2.))
                         .text_size(theme::FONT_MICRO)
                         .text_color(theme::FAINT())
                         .child(SharedString::from(format!("过场 / 路人 · {minor_count}"))),
@@ -1500,103 +2038,59 @@ impl Render for CharactersPanel {
             }
             let on = selected.as_deref() == Some(c.id.as_str());
             let id = c.id.clone();
-            // 卡位：顶部一条题签色带 + 名字，下面一行定位/别名。
-            // 路人卡降权：题签变淡、不描边，但仍是卡（能点开、能写、能翻）。
-            let accent = if c.minor { theme::LINE_SOFT() } else { theme::ACCENT() };
-            let mut row = div()
-                .id(SharedString::from(format!("char-card-{}", c.id)))
-                .flex()
-                .flex_col()
-                .rounded(theme::RADIUS_BTN_SM)
-                .overflow_hidden()
-                .cursor_pointer()
-                .border_1()
-                .border_color(if on { theme::ACCENT_BORDER() } else { theme::PANEL() })
-                .bg(if on { theme::ACCENT_SOFT() } else { theme::PANEL() })
-                .hover(|d| d.border_color(theme::ACCENT_BORDER()))
-                // 题签色带：卡牌的"头"
-                .child(div().h(px(2.)).w_full().bg(accent))
-                .child(
-                    div()
-                        .px(theme::PAD_SM)
-                        .py(px(4.))
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_size(theme::FONT_LABEL)
-                                .font_family(theme::FAMILY_SERIF)
-                                .text_color(if on { theme::ACCENT() } else { theme::TEXT() })
-                                .text_ellipsis()
-                                .child(SharedString::from(c.name.clone())),
-                        )
-                        .children({
-                            let sub = if !c.role.trim().is_empty() {
-                                c.role.clone()
-                            } else if !c.aliases.is_empty() {
-                                c.aliases.join("、")
-                            } else {
-                                String::new()
-                            };
-                            if sub.trim().is_empty() {
-                                None
-                            } else {
-                                Some(
-                                    div()
-                                        .text_size(theme::FONT_MICRO)
-                                        .text_color(theme::FAINT())
-                                        .text_ellipsis()
-                                        .child(SharedString::from(sub)),
-                                )
-                            }
-                        }),
-                );
-            // 信息完整度：路人的卡常常是空的，用小点提示"还缺多少"
-            let filled = [
-                !c.appearance.trim().is_empty(),
-                !c.personality.trim().is_empty(),
-                !c.motivation.trim().is_empty(),
-                !c.voice.trim().is_empty(),
-                !c.core_story.trim().is_empty(),
-            ]
-            .iter()
-            .filter(|b| **b)
-            .count();
-            row = row.child(
+            let data = card_data(c);
+            // 点击挂在普通 div 壳上：AnyElement 本身不能挂 handler，
+            // 卡面保持纯展示，壳只负责"点这张牌 = 翻开这一张"。
+            row.push(
                 div()
-                    .px(theme::PAD_SM)
-                    .pb(px(3.))
-                    .flex()
-                    .gap(px(2.))
-                    .children((0..5).map(move |i| {
-                        div()
-                            .w(px(9.))
-                            .h(px(2.))
-                            .rounded(px(1.))
-                            .bg(if i < filled { accent } else { theme::LINE_SOFT() })
-                    })),
+                    .id(SharedString::from(format!("char-card-{}", c.id)))
+                    .flex_shrink_0()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_card(id.clone(), window, cx);
+                    }))
+                    .child(face(c, on, &data))
+                    .into_any_element(),
             );
-            book = book.child(row.on_click(cx.listener(move |this, _, window, cx| {
-                this.select(id.clone(), window, cx);
-            })));
+            if row.len() >= columns {
+                wall = wall.child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(gap))
+                        .children(std::mem::take(&mut row)),
+                );
+            }
+        }
+        if !row.is_empty() {
+            wall = wall.child(div().flex().items_start().gap(px(gap)).children(row));
         }
 
-        // —— 右：卡面 ——
-        let detail: gpui_kit::AnyElement = match self.current().cloned() {
-            None => empty_hint(
-                "还没有人物卡",
-                "点左侧「新建」建一张；或从已有记忆迁移（别名 + 事实 → 人物卡）。\
-                 路人也要建卡——信息可以简略，但别让他无名。",
-            )
-            .into_any_element(),
+        // —— 右侧：编修面（点开某张卡才出现）——
+        //
+        // 卡面已经把"这个人是谁"讲完了；这里只做卡面做不了的事：
+        // 改字段、锁字段、加别名、翻到核心剧情、派活给人物 Agent。
+        // 没点开时右侧只留一张小传预览——作者逛卡簿时不该先被一张空表单挡住。
+        // 空书架：没有卡就没有抽屉可言，只留一张空态引导。
+        let detail_empty = empty_hint(
+            "还没有人物卡",
+            "在下面的输入框里写个名字点「新建」；或从已有记忆迁移（别名 + 事实 → 人物卡）。\
+             路人也要建卡——信息可以简略，但别让他无名。",
+        );
+        // 抽屉内容（展开态才渲染）：完整人设卡。
+        let drawer: Option<gpui_kit::Div> = match self.current().cloned() {
+            None => None,
             Some(c) => {
                 let cid = c.id.clone();
                 let flipped = self.flipped;
+                let clet = c.clone();
                 let aliases = c.aliases.clone();
                 let arc = c.arc.clone();
                 let locked = c.locked_fields.clone();
                 let minor = c.minor;
                 let status_ch = c.status_chapter;
+                let name = c.name.clone();
+                let accent = if minor { theme::LINE_SOFT() } else { theme::ACCENT() };
+                let _ = &clet;
 
                 // 别名条
                 let mut alias_chips = div().flex().flex_wrap().gap(theme::GAP_XS);
@@ -1674,20 +2168,22 @@ impl Render for CharactersPanel {
                     .flex()
                     .flex_col()
                     .gap(theme::GAP_SM)
+                    // 一行三列在 440 宽的面板里会把标签挤成「角色定」这种半截词，
+                    // 改成每行两列：标签都完整、输入框也够宽。
+                    .child(field("本名", &self.ed_name))
                     .child(
                         div()
                             .flex()
                             .gap(theme::GAP_MD)
-                            .child(div().flex_1().child(field("本名", &self.ed_name)))
-                            .child(div().w(px(150.)).child(field("定位", &self.ed_role)))
-                            .child(div().w(px(150.)).child(field("阵营", &self.ed_faction))),
+                            .child(div().flex_1().min_w_0().child(field("定位", &self.ed_role)))
+                            .child(div().flex_1().min_w_0().child(field("阵营", &self.ed_faction))),
                     )
                     .child(
                         div()
                             .flex()
                             .gap(theme::GAP_MD)
-                            .child(div().flex_1().child(field("外貌", &self.ed_appearance)))
-                            .child(div().w(px(150.)).child(field("年龄", &self.ed_age))),
+                            .child(div().flex_1().min_w_0().child(field("年龄", &self.ed_age)))
+                            .child(div().flex_1().min_w_0().child(field("外貌", &self.ed_appearance))),
                     )
                     .child(field("性格", &self.ed_personality))
                     .child(field("动机 · 想要什么", &self.ed_motivation))
@@ -1697,8 +2193,8 @@ impl Render for CharactersPanel {
                         div()
                             .flex()
                             .gap(theme::GAP_MD)
-                            .child(div().flex_1().child(field("当前状态", &self.ed_status)))
-                            .child(div().w(px(150.)).child(field("状态自第几章", &self.ed_status_ch))),
+                            .child(div().flex_1().min_w_0().child(field("当前状态", &self.ed_status)))
+                            .child(div().w(px(120.)).flex_shrink_0().child(field("自第几章", &self.ed_status_ch))),
                     )
                     .child(sec_title("别名"))
                     .child(alias_chips)
@@ -1716,6 +2212,51 @@ impl Render for CharactersPanel {
                                     }
                                 }),
                             )),
+                    )
+                    // 只读速览：卡面上已有、但面板上缺的那几项收进来，
+                    // 免得"完整人设卡"点开后下半截是空的。
+                    // 只有真的写了东西才画这一块：目标/缺陷/弧线/备注全空时
+                    // 留一个空标题框，比不画更难看（作者会以为数据丢了）。
+                    .when(
+                        !clet.goals.is_empty()
+                            || !clet.flaws.is_empty()
+                            || !arc.is_empty()
+                            || !clet.notes.trim().is_empty(),
+                        |d| {
+                            d.child(
+                                div()
+                            .mt(theme::GAP_SM)
+                            .p(theme::PAD_MD)
+                            .rounded(theme::RADIUS_PANEL)
+                            .bg(theme::PANEL2())
+                            .border_1()
+                            .border_color(theme::LINE_SOFT())
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_LABEL)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::TEXT())
+                                    .child("档案速览"),
+                            )
+                            .child(summary_row("目标", &clet.goals.join("、")))
+                            .child(summary_row("缺陷", &clet.flaws.join("、")))
+                            .child(summary_row(
+                                "弧线",
+                                &if arc.is_empty() {
+                                    String::new()
+                                } else {
+                                    arc.iter()
+                                        .map(|p| format!("第{}章 {}", p.chapter, p.state))
+                                        .collect::<Vec<_>>()
+                                        .join(" → ")
+                                },
+                            ))
+                            .child(summary_row("备注", &clet.notes)),
+                            )
+                        },
                     )
                     .into_any_element();
 
@@ -1752,7 +2293,6 @@ impl Render for CharactersPanel {
                     )
                     .child(sec_title("AI 不可改的字段"))
                     .child(locks)
-                    // 过场 / 路人：不影响能不能写，只影响视觉权重与"信息不全是正常的"
                     .child({
                         // 标记按钮：卡属性，直接落盘（不等"保存"）
                         div()
@@ -1828,25 +2368,49 @@ impl Render for CharactersPanel {
                     })
                     .into_any_element();
 
-                // 卡壳：外描边 + 顶部题签（名字）+ 翻面按钮
+                // —— 展开态：右侧抽屉（完整人设卡）——
                 let header = div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .gap(theme::GAP_MD)
+                    .gap(theme::GAP_SM)
                     .pb(theme::GAP_SM)
                     .border_b_1()
                     .border_color(theme::LINE())
                     .child(
                         div()
+                            .w(px(34.))
+                            .h(px(34.))
+                            .flex_shrink_0()
+                            .rounded(px(17.))
+                            .border_1()
+                            .border_color(accent)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(15.))
+                                    .font_family(theme::FAMILY_SERIF)
+                                    .text_color(accent)
+                                    .child(SharedString::from(
+                                        c.name.chars().next().map(|x| x.to_string()).unwrap_or_default(),
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
                             .flex()
                             .flex_col()
                             .gap(px(1.))
+                            .min_w_0()
                             .child(
                                 div()
-                                    .text_size(theme::FONT_TITLE)
+                                    .text_size(theme::FONT_LABEL)
                                     .font_family(theme::FAMILY_SERIF)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(if minor { theme::DIM() } else { theme::TEXT() })
-                                    .child(SharedString::from(c.name.clone())),
+                                    .child(SharedString::from(name.clone())),
                             )
                             .children({
                                 let mut meta: Vec<String> = Vec::new();
@@ -1866,12 +2430,13 @@ impl Render for CharactersPanel {
                                         div()
                                             .text_size(theme::FONT_MICRO)
                                             .text_color(theme::FAINT())
+                                            .text_ellipsis()
                                             .child(SharedString::from(meta.join(" · "))),
                                     )
                                 }
                             }),
                     )
-                    .child(div().flex_1())
+                    .child(div().flex_1().min_w(px(8.)))
                     // 翻面：卡牌的核心交互。正面写档案，背面看剧情。
                     .child(
                         div()
@@ -1895,12 +2460,6 @@ impl Render for CharactersPanel {
                                 cx.notify();
                             })),
                     )
-                    .child({
-                        let cid = cid.clone();
-                        cap_btn("char-delete", "删除", cx).on_click(cx.listener(
-                            move |_, _, _, cx| cx.emit(CharacterEvent::Delete(cid.clone())),
-                        ))
-                    })
                     .child(
                         primary_btn("char-save", "保存", cx).on_click(cx.listener(
                             |this, _, _, cx| {
@@ -1909,6 +2468,27 @@ impl Render for CharactersPanel {
                                 }
                             },
                         )),
+                    )
+                    .child(
+                        cap_btn("char-delete", "删除", cx).on_click(cx.listener(
+                            move |_, _, _, cx| cx.emit(CharacterEvent::Delete(cid.clone())),
+                        )),
+                    )
+                    // 收起：抽屉要能退回卡簿，不能"关不掉"
+                    .child(
+                        div()
+                            .id("char-close")
+                            .px(px(7.))
+                            .py(px(3.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_size(theme::FONT_MICRO)
+                            .text_color(theme::FAINT())
+                            .hover(|d| d.text_color(theme::TEXT()))
+                            .child("收起 ✕")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.close_card(cx);
+                            })),
                     )
                     // 针对这个人的操作：选中沈砚 → 只补沈砚，不顺带动别人。
                     .children(crate::capabilities::agent("character").map(|a| {
@@ -1932,21 +2512,22 @@ impl Render for CharactersPanel {
                         bar.into_any_element()
                     }));
 
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(theme::GAP_MD)
-                    .child(header)
-                    .child(if flipped { back } else { front })
-                    .when_true(status_ch > 0 && !flipped, |d| {
-                        d.child(
-                            div()
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::FAINT())
-                                .child(SharedString::from(format!("状态自第{status_ch}章起"))),
-                        )
-                    })
-                    .into_any_element()
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(theme::GAP_MD)
+                        .child(header)
+                        .child(div().flex_1().min_h_0().child(if flipped { back } else { front }))
+                        .when_true(status_ch > 0 && !flipped, |d| {
+                            d.child(
+                                div()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::FAINT())
+                                    .child(SharedString::from(format!("状态自第{status_ch}章起"))),
+                            )
+                        }),
+                )
             }
         };
 
@@ -1958,98 +2539,93 @@ impl Render for CharactersPanel {
             .map(|c| (c.id.clone(), c.name.clone()))
             .collect();
 
-        panel_root("characters-scroll").child(
-            panel_col()
-                .child(
-                    div()
-                        .flex()
-                        .items_baseline()
-                        .gap(theme::GAP_MD)
-                        .child(sec_title("人物卡"))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::FAINT())
-                                .child(SharedString::from(format!(
-                                    "{} 张卡（含 {} 位过场）· 正面写人，背面写他在故事里的份量",
-                                    self.people.len(),
-                                    minor_count
-                                ))),
-                        ),
-                )
-                .when_true(message.is_some(), |d| {
-                    d.child(chip(
-                        SharedString::from(message.clone().unwrap_or_default()),
-                        Tone::Green,
-                    ))
-                })
-                // 模块一键能力：由能力表驱动，不在这里写死按钮。
-                // 加一个 Agent 能力只需改 capabilities.rs，页面自动出现。
-                .children(crate::capabilities::agent("character").map(|a| {
-                    let mut bar = div().flex().flex_wrap().gap(theme::GAP_SM).items_center();
-                    bar = bar.child(
+        // —— 页面骨架：页头（一行：标题 + 统计 + 工具）→ 牌墙 → 可选编修面板 ——
+        //
+        // 上一版的问题是"左侧牌墙 + 右上角永远开着的预览卡"：预览卡只有
+        // 三行字，却占走 240px 宽和一片空白，还让牌墙在最常见的一屏里
+        // 只能排两列、右边还是空的。卡面本身已经把"这个人是谁"讲完了，
+        // 预览是重复的——删掉它，牌墙居中铺满，要改就点开编修面板。
+        //
+        // 牌墙居中而不是左贴：书只有几张卡时靠左会留下半屏空白，
+        // 居中后空白平均落在两边，视觉上是"一叠牌摆在桌上"。
+        let show_drawer = drawer.is_some();
+
+        // 页头工具：新建 / 迁徙 / 合并 / 能力，全部收到一行里，
+        // 不再把「新建」压到牌墙下面（那里每加一张卡就得往下滚才点得到）。
+        let mut tools = div().flex().items_center().gap(theme::GAP_MD).flex_wrap();
+        let _ = &mut tools;
+        let mut header = div()
+            .flex()
+            .items_center()
+            .gap(theme::GAP_MD)
+            .flex_wrap()
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(theme::GAP_MD)
+                    .child(sec_title("人物卡"))
+                    .child(
                         div()
                             .text_size(theme::FONT_MICRO)
                             .text_color(theme::FAINT())
-                            .child(SharedString::from(a.duty)),
-                    );
-                    for cap in a.bulk {
-                        bar = bar.child(
-                            cap_btn(cap.key, cap.label, cx).on_click(cx.listener(
-                                move |_this, _, _, cx| {
-                                    cx.emit(CharacterEvent::Delegate {
-                                        key: cap.key,
-                                        target: None,
-                                    });
-                                },
-                            )),
-                        );
+                            .child(SharedString::from(format!(
+                                "{} 张（主要 {} · 过场 {}）· 点一张翻开看完整人设",
+                                self.people.len(),
+                                main_count,
+                                minor_count
+                            ))),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(cap_btn("char-migrate", "从记忆迁移", cx).on_click(
+                cx.listener(|_, _, _, cx| cx.emit(CharacterEvent::Migrate)),
+            ))
+            .child(div().w(px(150.)).child(field("", &self.ed_new)))
+            .child(cap_btn("char-create", "新建", cx).on_click(cx.listener(
+                |this, _, _, cx| {
+                    let v = this.ed_new.read(cx).value().to_string();
+                    if !v.trim().is_empty() {
+                        cx.emit(CharacterEvent::Create(v));
                     }
-                    bar.into_any_element()
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .gap(theme::GAP_LG)
-                        .items_start()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(theme::GAP_SM)
-                                .child(book)
-                                .child(
-                                    div()
-                                        .flex()
-                                        .gap(theme::GAP_SM)
-                                        .items_center()
-                                        .child(div().flex_1().child(field("", &self.ed_new)))
-                                        .child(cap_btn("char-create", "新建", cx).on_click(
-                                            cx.listener(|this, _, _, cx| {
-                                                let v = this.ed_new.read(cx).value().to_string();
-                                                if !v.trim().is_empty() {
-                                                    cx.emit(CharacterEvent::Create(v));
-                                                }
-                                            }),
-                                        )),
-                                )
-                                .child(cap_btn("char-migrate", "从记忆迁移", cx).on_click(
-                                    cx.listener(|_, _, _, cx| cx.emit(CharacterEvent::Migrate)),
-                                )),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .p(theme::PAD_LG)
-                                .bg(theme::PANEL())
-                                .border_1()
-                                .border_color(theme::LINE())
-                                .rounded(theme::RADIUS_CARD)
-                                .child(detail),
-                        ),
-                )
+                },
+            )));
+        if let Some(a) = crate::capabilities::agent("character") {
+            for cap in a.bulk {
+                header = header.child(cap_btn(cap.key, cap.label, cx).on_click(
+                    cx.listener(move |_this, _, _, cx| {
+                        cx.emit(CharacterEvent::Delegate { key: cap.key, target: None });
+                    }),
+                ));
+            }
+        }
+        header = header.when(message.is_some(), |d| {
+            let text = message.clone().unwrap_or_default();
+            let tone = if theme::feedback_is_error(&text) {
+                Tone::Amber
+            } else {
+                Tone::Green
+            };
+            d.child(chip(SharedString::from(text), tone))
+        });
+
+        // 牌墙区：抽屉开着时让出右侧（520 + 间距），牌墙自动少一列；
+        // 没开时占满整行并居中。
+        let wall_area = div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .child(wall);
+
+        let body = div().flex().gap(theme::GAP_GROUP).items_start().child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(theme::GAP_MD)
+                .child(wall_area)
+                // 变并：只在明明有两张卡以上时才出现，别让它在只有一个人时占一行
                 .when_true(others.len() > 0 && self.current().is_some(), |d| {
                     let into = self.current().map(|c| c.id.clone()).unwrap_or_default();
                     let into_name = self.current().map(|c| c.name.clone()).unwrap_or_default();
@@ -2070,21 +2646,66 @@ impl Render for CharactersPanel {
                             })),
                         );
                     }
-                    d.child(sec_title("合并人物"))
-                        .child(
-                            div()
-                                .text_size(theme::FONT_MICRO)
-                                .text_color(theme::FAINT())
-                                .child(SharedString::from(format!(
-                                    "把另一位并进「{into_name}」：别名并集、空格子补齐、已有的值保留。"
-                                ))),
-                        )
-                        .child(rows)
+                    d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme::GAP_SM)
+                            .flex_wrap()
+                            .pt(theme::GAP_SM)
+                            .border_t_1()
+                            .border_color(theme::LINE_SOFT())
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::FAINT())
+                                    .child(SharedString::from(format!(
+                                        "并入「{into_name}」：别名并集、空格子补齐"
+                                    ))),
+                            )
+                            .child(rows),
+                    )
                 }),
-        )
+        );
+        // 编修面板**浮在右侧**，不占牌墙的列宽。
+        //
+        // 上一版把它当 flex 兄弟：一翻开就把牌墙压到 366px，卡立刻从三列掉成一列，
+        // 作者每翻一个人整面牌墙重排一次——眼睛跟不上。做成浮层后牌墙列数恒定，
+        // 只有最右侧那一列会被盖住，关掉面板立刻还原。
+        // 浮层不挡"看"的路径：点卡、滚动、页头工具都在左侧与左上方。
+        let drawer_overlay: gpui_kit::AnyElement = match drawer {
+            Some(d) => div()
+                .absolute()
+                .top(px(64.))
+                .right(px(0.))
+                .w(px(440.))
+                .p(theme::PAD_LG)
+                .bg(theme::PANEL())
+                .border_1()
+                .border_color(theme::ACCENT_BORDER())
+                .rounded(theme::RADIUS_CARD)
+                .shadow_lg()
+                .child(d)
+                .into_any_element(),
+            None => div().into_any_element(),
+        };
+        let _ = show_drawer;
+
+        div()
+            .relative()
+            .size_full()
+            .child(
+                panel_root("characters-scroll").child(
+                    panel_col()
+                        .child(header)
+                        .when(self.people.is_empty(), |d| d.child(detail_empty))
+                        .when(!self.people.is_empty(), |d| d.child(body)),
+                ),
+            )
+            .child(drawer_overlay)
     }
 }
-
 
 impl BasePanel for CharactersPanel {
     fn panel_name(&self) -> &'static str {
@@ -2136,6 +2757,8 @@ pub struct SettingsPanel {
     plugin_overrides: std::collections::BTreeMap<String, bool>,
     /// 主题形态镜像（ink / xuan）
     theme_sel: String,
+    /// 外观操作回执（主题切换成功/失败），渲染在外观卡片里
+    theme_msg: Option<SharedString>,
     /// 账号快照（余额、登录状态）；None = 还没查过
     account: Option<crate::account::AccountSnapshot>,
     /// 余额正在查
@@ -2221,7 +2844,11 @@ impl SettingsPanel {
             ed_idle,
             ed_max_procs,
             plugin_overrides: cfg.plugin_overrides.clone(),
-            theme_sel: if cfg.theme.trim() == "xuan" { "xuan".into() } else { "ink".into() },
+            // 以**内存里的真实主题**为准，不是以 settings.json 为准：
+            // 跑起来之后主题可能是标题栏按钮切的、也可能是启动参数覆盖的，
+            // 这时读盘会显示成旧值——作者看到的就是"选了宣纸但框还在墨底"。
+            theme_sel: crate::theme::theme_kind().persist_key().to_string(),
+            theme_msg: None,
             account: None,
             account_busy: false,
             status: String::new(),
@@ -2507,10 +3134,11 @@ fn field(label: &'static str, state: &Entity<gpui_kit::component::input::InputSt
         .w_full()
         .child(
             div()
-                .w(px(90.))
+                .w(px(68.))
                 .flex_shrink_0()
                 .text_size(theme::FONT_LABEL)
                 .text_color(theme::DIM())
+                .text_ellipsis()
                 .child(label),
         )
         .child(div().flex_1().min_w_0().child(
@@ -2690,8 +3318,16 @@ impl Render for SettingsPanel {
                             div()
                                 .text_size(theme::FONT_MICRO)
                                 .text_color(theme::FAINT())
-                                .child("保存后立即生效，全部窗口同步切换。"),
+                                .child("点选即切、立即生效并保存；工作区标题栏的「◐ 主题」按钮也可以一键来回切。"),
                         )
+                        .when(self.theme_msg.is_some(), |d| {
+                            d.child(
+                                div()
+                                    .text_size(theme::FONT_MICRO)
+                                    .text_color(theme::GREEN())
+                                    .child(self.theme_msg.clone().unwrap_or_default()),
+                            )
+                        })
                         .child(
                             div().flex().gap(theme::GAP_SM).children([
                                 ("ink", "墨底 · 深色", "工作台夜间写作的墨色界面"),
@@ -2728,6 +3364,21 @@ impl Render for SettingsPanel {
                                     )
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.theme_sel = key.to_string();
+                                        // 点选即切并落盘：作者要的是「立刻看到」，
+                                        // 而且重启后还得是这个主题。只切不存的话，
+                                        // 下次启动又回到 settings.json 的旧值——
+                                        // 那正是"切了却像没切"的一半原因。
+                                        let kind = crate::theme::ThemeKind::from_setting(key);
+                                        match crate::switch_theme(kind, cx) {
+                                            Ok(()) => this.theme_msg = Some(SharedString::from(format!(
+                                                "已切到{}主题（已保存，重启后保持）",
+                                                kind.label()
+                                            ))),
+                                            Err(e) => this.theme_msg = Some(SharedString::from(format!(
+                                                "已切到{}主题，但保存失败：{e}",
+                                                kind.label()
+                                            ))),
+                                        }
                                         cx.notify();
                                     }))
                                     .into_any_element()
@@ -3206,7 +3857,12 @@ impl Render for ImportPanel {
                         )
                         // 成功回执 = GREEN chip（规则 6）。
                         .when_true(!result.is_empty(), |d| {
-                            d.child(chip(SharedString::from(result.clone()), Tone::Green))
+                            let tone = if theme::feedback_is_error(&result) {
+                                Tone::Amber
+                            } else {
+                                Tone::Green
+                            };
+                            d.child(chip(SharedString::from(result.clone()), tone))
                         }),
                 )
                 .child(sec_title("导入设定文档（先归档，再让总 Agent 提取分派）"))
@@ -3251,7 +3907,12 @@ impl Render for ImportPanel {
                             ),
                         )
                         .when_true(!result.is_empty(), |d| {
-                            d.child(chip(SharedString::from(result.clone()), Tone::Green))
+                            let tone = if theme::feedback_is_error(&result) {
+                                Tone::Amber
+                            } else {
+                                Tone::Green
+                            };
+                            d.child(chip(SharedString::from(result.clone()), tone))
                         }),
                 ),
         )
@@ -3918,7 +4579,12 @@ impl Render for KnowledgePanel {
                                 ),
                         )
                         .when_true(!result.is_empty(), |d| {
-                            d.child(chip(SharedString::from(result.clone()), Tone::Green))
+                            let tone = if theme::feedback_is_error(&result) {
+                                Tone::Amber
+                            } else {
+                                Tone::Green
+                            };
+                            d.child(chip(SharedString::from(result.clone()), tone))
                         }),
                 )
                 // 主体：左列表 + 右预览

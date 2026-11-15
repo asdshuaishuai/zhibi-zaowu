@@ -64,6 +64,31 @@ impl ThemeKind {
             ThemeKind::Xuan => "宣纸",
         }
     }
+
+    /// settings.json `theme` 字段的取值。写盘与读盘只认这两个键，
+    /// 不要在别处手写 "xuan"/"ink" 字面量——改一处漏一处，主题就会时灵时不灵。
+    pub fn persist_key(self) -> &'static str {
+        match self {
+            ThemeKind::Ink => "ink",
+            ThemeKind::Xuan => "xuan",
+        }
+    }
+
+    /// 从设置值解析；认不出的一律当墨底（默认形态）。
+    pub fn from_setting(s: &str) -> Self {
+        match s.trim() {
+            "xuan" => ThemeKind::Xuan,
+            _ => ThemeKind::Ink,
+        }
+    }
+
+    /// 另一个形态（标题栏快捷键在两者间来回切）。
+    pub fn next(self) -> Self {
+        match self {
+            ThemeKind::Ink => ThemeKind::Xuan,
+            ThemeKind::Xuan => ThemeKind::Ink,
+        }
+    }
 }
 
 /// 实色 token 双主题取值。
@@ -197,6 +222,12 @@ pub fn PURPLE() -> Rgba {
     rgb(pick_u32(0xA08CC0, 0x7D5F9E))
 }
 
+/// 操作反馈是不是失败/拒绝类。各面板的写操作结果共用这一条判定，
+/// 免得"保存失败"也涂成成功绿——失败必须一眼看出来是琥珀告警。
+pub fn feedback_is_error(msg: &str) -> bool {
+    ["失败", "错误", "不能", "拒"].iter().any(|k| msg.contains(k))
+}
+
 // ---------------------------------------------------------------------------
 // 中性半透明面
 // ---------------------------------------------------------------------------
@@ -321,3 +352,23 @@ pub const BAR_H: Pixels = px(8.);
 pub const SIDEBAR_W: Pixels = px(196.);
 /// 右侧 Dock 宽 302px（workspace.html:120，现实现 340 需回收）。
 pub const DOCK_W: Pixels = px(302.);
+
+#[cfg(test)]
+mod tests {
+    use super::feedback_is_error;
+
+    #[test]
+    fn feedback_tone_separates_failure_from_success() {
+        // 失败/拒绝类必须判为告警，成功类不能误伤。
+        assert!(feedback_is_error("保存失败：磁盘只读"));
+        assert!(feedback_is_error("排期晋升失败：节点缺失"));
+        assert!(feedback_is_error("晋升 2 条，失败 1 条：x"));
+        assert!(feedback_is_error("章号格式错误：填正整数章号"));
+        assert!(feedback_is_error("不能从缺失节点分叉"));
+        assert!(feedback_is_error("已拒收提案"));
+        assert!(!feedback_is_error("已保存（project.json）"));
+        assert!(!feedback_is_error("已更新节点 n3"));
+        assert!(!feedback_is_error("线β → 归档"));
+        assert!(!feedback_is_error(""));
+    }
+}

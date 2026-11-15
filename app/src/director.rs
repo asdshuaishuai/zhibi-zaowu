@@ -32,8 +32,15 @@ fn s(v: &serde_json::Value, key: &str) -> String {
     v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
 
-const COLS: usize = 8;
-const COL_W: f32 = 196.;
+/// 一屏放 5 章。
+///
+/// 以前是 8：一屏只看得见 5 列，另外 3 列藏在横向滚动里，而目录条的
+/// 方括号又按 8 列算——作者看到的和窗口对不上。5 列（168×5 + 间距）
+/// 正好落在内容区 947px 里，
+/// "看到的 = 这个窗口"，不用先学会横向滚动。
+const COLS: usize = 5;
+/// 章列宽度：内容区 947 − 右侧托盘 216 = 731，5 列 × 128 + 间距刚好放下。
+const COL_W: f32 = 128.;
 
 #[derive(Clone, Copy, PartialEq)]
 enum CardKind {
@@ -51,6 +58,20 @@ struct DCard {
     hidden: bool,
     /// 计划事件（happened=false，预测排期晋升后的待写成）：虚线卡 + 计划标
     planned: bool,
+}
+
+/// 一章的施工概况：目录条与章列头都用它。
+///
+/// 排期页之前只有"窗口内 8 列"，作者看不到全书进度——哪几章已经写掉、
+/// 哪几章有事件但没落笔、哪几章是空的。这条摘要就是补这个的。
+#[derive(Clone)]
+struct ChSum {
+    n: u32,
+    title: String,
+    words: usize,
+    written: bool,
+    events: usize,
+    clues: usize,
 }
 
 #[derive(Clone)]
@@ -77,6 +98,8 @@ pub struct DirectorPanel {
     drag: Option<DCard>,
     hover: Option<usize>,
     message: Option<SharedString>,
+    /// 全书章节概况（目录条 + 章列头）
+    sums: Vec<ChSum>,
 }
 
 impl DirectorPanel {
@@ -92,8 +115,31 @@ impl DirectorPanel {
             drag: None,
             hover: None,
             message: None,
+            sums: Vec::new(),
         };
         this.refresh();
+        // 首屏不要落在空窗上。
+        //
+        // 书已经写完时"下一章"= 第 31 章，窗口 31–35 一列事件都没有，
+        // 打开就是五条空柱子——看起来像排期板坏了。落到"最后一个有内容的章"
+        // 往前数一窗，作者一进来看到的是有排期的样子，再按 → 往未来排。
+        if this.cards.len() <= 1 {
+            let last = this
+                .sums
+                .iter()
+                .filter(|c| c.events > 0 || c.clues > 0)
+                .map(|c| c.n)
+                .max();
+            if let Some(last) = last {
+                // 最后一个有内容的章放在倒数第三列：左边两列是"刚写完的"，
+                // 右边留着"接着往下排"的空位。
+                let start = last.saturating_sub(2).max(1);
+                if start != this.current {
+                    this.current = start;
+                    this.refresh();
+                }
+            }
+        }
         this
     }
 
@@ -168,6 +214,43 @@ impl DirectorPanel {
             }
         }
         self.preds = preds;
+        // 全书概况：每章的标题/字数/事件数/伏笔数。
+        // 事件与伏笔按 chapter / plantedChapter 计数，和卡片的来源同一份台账。
+        let max_ch = self
+            .handle
+            .next_chapter_number()
+            .max(self.handle.chapters().iter().map(|c| c.n).max().unwrap_or(0))
+            .max(1);
+        let mut sums: Vec<ChSum> = Vec::with_capacity(max_ch as usize);
+        let books = self.handle.chapters();
+        for n in 1..=max_ch {
+            let info = books.iter().find(|c| c.n == n);
+            let events = self
+                .handle
+                .events()
+                .iter()
+                .filter(|e| {
+                    e.get("chapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32 == n
+                })
+                .count();
+            let clues = self
+                .handle
+                .clues_full()
+                .iter()
+                .filter(|c| {
+                    c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32 == n
+                })
+                .count();
+            sums.push(ChSum {
+                n,
+                title: info.map(|c| c.title.clone()).unwrap_or_default(),
+                words: info.map(|c| c.words).unwrap_or(0),
+                written: info.map(|c| c.has_prose).unwrap_or(false),
+                events,
+                clues,
+            });
+        }
+        self.sums = sums;
         self.drag = None;
         self.pred_drag = None;
         self.hover = None;
@@ -382,6 +465,7 @@ impl Render for DirectorPanel {
                 .id(SharedString::from(format!("dcol-{i}")))
                 .w(px(COL_W))
                 .flex_shrink_0()
+                .h_full()
                 .flex()
                 .flex_col()
                 .rounded(theme::RADIUS_CARD)
@@ -391,21 +475,25 @@ impl Render for DirectorPanel {
                 .child(
                     div()
                         .flex()
-                        .items_center()
-                        .gap(theme::GAP_SM)
+                        .flex_col()
+                        .gap(px(2.))
                         .px(theme::PAD_SM)
-                        .py(theme::GAP_SM)
+                        .py(px(5.))
                         .border_b_1()
                         .border_color(theme::LINE())
                         .child(
                             div()
-                                .text_size(theme::FONT_LABEL)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme::TEXT())
-                                .child(SharedString::from(format!("第{chap}章"))),
-                        )
-                        .child(
-                            div().flex_1().child(
+                                .flex()
+                                .items_center()
+                                .gap(theme::GAP_SM)
+                                .child(
+                                    div()
+                                        .text_size(theme::FONT_LABEL)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme::TEXT())
+                                        .child(SharedString::from(format!("第{chap}章"))),
+                                )
+                                .child(div().flex_1().child(
                                 Tag::custom(
                                     hsla(theme::PANEL2()),
                                     hsla(if col_cards.is_empty() { theme::RED() } else { theme::GREEN() }),
@@ -415,14 +503,66 @@ impl Render for DirectorPanel {
                                 .child(SharedString::from(if col_cards.is_empty() { "空" } else { "有排期" })),
                             ),
                         )
-                        .child(
-                            Button::new(SharedString::from(format!("dreview-{chap}")))
-                                .xsmall()
-                                .label("AI 核对")
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.emit(DirectorEvent::Review(chap));
-                                })),
-                        ),
+                        )
+                        .when_some(self.sums.iter().find(|c| c.n == chap).cloned(), |d, sum| {
+                            // 章名与字数：排期时最常问的两件事——
+                            // "这一章叫什么""写到多少字了"。以前要看正文页。
+                            d.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_size(theme::FONT_MICRO)
+                                            .text_color(if sum.written {
+                                                theme::DIM()
+                                            } else {
+                                                theme::FAINT()
+                                            })
+                                            .child(SharedString::from(if sum.title.is_empty() {
+                                                "（未命名）".to_string()
+                                            } else {
+                                                sum.title.clone()
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(theme::FAMILY_MONO)
+                                            .text_size(px(9.5))
+                                            .text_color(if sum.written {
+                                                theme::BLUE()
+                                            } else {
+                                                theme::LINE()
+                                            })
+                                            .child(SharedString::from(if sum.written {
+                                                format!("{}字", sum.words)
+                                            } else {
+                                                "未写".to_string()
+                                            })),
+                                    ),
+                            )
+                        })
+                    // 「核对」按钮挪到第二行右侧：128px 宽里它和状态标签抢位置，
+                    // 结果两边都被挤断。两个字放在章名后面刚刚好。
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .child(
+                                Button::new(SharedString::from(format!("dreview-{chap}")))
+                                    .xsmall()
+                                    .label("核对")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(DirectorEvent::Review(chap));
+                                    })),
+                            ),
+                    ),
                 )
                 .child(
                     div()
@@ -454,12 +594,42 @@ impl Render for DirectorPanel {
                 .child(
                     div()
                         .id(SharedString::from(format!("dbody-{i}")))
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .gap(theme::GAP_SM)
                         .p(theme::PAD_SM)
-                        .min_h(px(120.))
                         .children(col_cards.iter().map(|c| card_view(c, drag_active && self.drag.as_ref().map(|d| d.id.clone()) == Some(c.id.clone()), cx)))
+                        // 空列不是"没东西可看"，而是"这里就是落点"。
+                        // 一列几十像素高的空白看不出能放什么，给一块虚线投放区。
+                        .when(col_cards.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    // 固定高度的小投放区，不是把整列涂成虚线框
+                                    // （那样看起来像"这一列坏了"）。
+                                    .h(px(64.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(theme::RADIUS_PANEL)
+                                    .border_1()
+                                    .border_dashed()
+                                    .border_color(if hovered {
+                                        theme::ACCENT_BORDER()
+                                    } else {
+                                        theme::LINE()
+                                    })
+                                    .text_size(theme::FONT_TAG)
+                                    .text_color(theme::LINE())
+                                    .child(if hovered {
+                                        "松手 = 排到本章"
+                                    } else {
+                                        "拖卡到这里"
+                                    }),
+                            )
+                        })
                         .on_mouse_move(cx.listener(move |this, _, _, cx| {
                             if (this.drag.is_some() || this.pred_drag.is_some()) && this.hover != Some(i) {
                                 this.hover = Some(i);
@@ -524,11 +694,10 @@ impl Render for DirectorPanel {
                     .into_any_element(),
             );
         }
+        let mut side: Vec<AnyElement> = Vec::new();
         if !pred_cards.is_empty() {
-            board.push(
+            side.push(
                 div()
-                    .w(px(COL_W))
-                    .flex_shrink_0()
                     .flex()
                     .flex_col()
                     .rounded(theme::RADIUS_CARD)
@@ -546,7 +715,15 @@ impl Render for DirectorPanel {
                             .child("预测候选（拖入=排期提案）"),
                     )
                     .child(
-                        div().flex().flex_col().gap(theme::GAP_SM).p(theme::PAD_SM).children(pred_cards),
+                        div()
+                            .id("d-pred-body")
+                            .max_h(px(220.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap(theme::GAP_SM)
+                            .p(theme::PAD_SM)
+                            .children(pred_cards),
                     )
                     .into_any_element(),
             );
@@ -565,10 +742,10 @@ impl Render for DirectorPanel {
         for c in pool_cards.iter().take(24) {
             pool_body.push(card_view(c, false, cx));
         }
-        board.push(
+        side.push(
             div()
-                .w(px(COL_W))
-                .flex_shrink_0()
+                .flex_1()
+                .min_h_0()
                 .flex()
                 .flex_col()
                 .rounded(theme::RADIUS_CARD)
@@ -586,6 +763,10 @@ impl Render for DirectorPanel {
                 )
                 .child(
                     div()
+                        .id("d-pool-body")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .gap(theme::GAP_SM)
@@ -594,6 +775,42 @@ impl Render for DirectorPanel {
                 )
                 .into_any_element(),
         );
+
+        // 整窗没有一张卡时说明白为什么空、下一步能做什么。
+        // 书已经写完时窗口落在"下一章"，六列全空——不给解释就是一片死板。
+        let window_empty = self.cards.is_empty();
+        let empty_hint = window_empty.then(|| {
+            div()
+                .w(px(COL_W * 2.))
+                .flex_shrink_0()
+                .h_full()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .p(theme::PAD_MD)
+                .rounded(theme::RADIUS_CARD)
+                .border_1()
+                .border_dashed()
+                .border_color(theme::LINE())
+                .child(
+                    div()
+                        .text_size(theme::FONT_LABEL)
+                        .text_color(theme::TEXT())
+                        .child(SharedString::from(format!(
+                            "第 {}-{} 章还没有排期",
+                            self.current,
+                            self.current + COLS as u32 - 1
+                        ))),
+                )
+                .child(
+                    div()
+                        .text_size(theme::FONT_MICRO)
+                        .line_height(relative(1.6))
+                        .text_color(theme::FAINT())
+                        .child("三条路：① 上方目录条点一个已写的章，回看它是怎么排的；② 把下方「待排期」池里的卡拖进来定章；③ 把预测候选拖进来，生成排期提案（采纳才入账）。"),
+                )
+                .into_any_element()
+        });
 
         div()
             .id("director-root")
@@ -652,10 +869,15 @@ impl Render for DirectorPanel {
                         ),
                     )
                     .when_some(msg, |d, m| {
+                        let c = if theme::feedback_is_error(&m) {
+                            theme::AMBER()
+                        } else {
+                            theme::GREEN()
+                        };
                         d.child(
                             div()
                                 .text_size(theme::FONT_LABEL)
-                                .text_color(theme::GREEN())
+                                .text_color(c)
                                 .child(m),
                         )
                     })
@@ -687,19 +909,158 @@ impl Render for DirectorPanel {
                             })),
                     ),
             )
+            // 全书目录条：一行看完整本书的施工状态，点一下就把窗口挪过去。
+            //
+            // 之前只有"窗口内 8 列"，作者看不到全书——30 章里哪几章写掉了、
+            // 哪几章有事件没落笔、哪几章空着，全靠一列列翻。这条横带把
+            // 整本书压成一条，当前窗口用方括号标出来。
             .child(
                 div()
-                    .id("director-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_x_scroll()
+                    .flex()
+                    .items_end()
+                    .gap(px(2.))
+                    .px(theme::PAD_MD)
+                    .py(px(6.))
+                    .border_b_1()
+                    .border_color(theme::LINE())
+                    .bg(theme::PANEL())
                     .child(
                         div()
+                            .w(px(56.))
+                            .flex_shrink_0()
+                            .text_size(theme::FONT_TAG)
+                            .text_color(theme::FAINT())
+                            .child("全书"),
+                    )
+                    .child(
+                        div()
+                            .id("d-rail")
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_x_scroll()
                             .flex()
-                            .items_start()
-                            .gap(theme::GAP_GROUP)
-                            .p(theme::PAD_MD)
-                            .children(board),
+                            .items_end()
+                            .gap(px(1.))
+                            .children(self.sums.iter().map(|c| {
+                                let n = c.n;
+                                let in_win = n >= self.current && n < self.current + COLS as u32;
+                                let (fill, edge) = if c.written {
+                                    (hsla(theme::BLUE()).opacity(0.55), theme::BLUE())
+                                } else if c.events > 0 || c.clues > 0 {
+                                    (hsla(theme::ACCENT()).opacity(0.5), theme::ACCENT())
+                                } else {
+                                    (hsla(theme::PANEL2()), theme::LINE())
+                                };
+                                div()
+                                    .id(SharedString::from(format!("drail-{n}")))
+                                    .w(px(22.))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_col()
+                                    .justify_end()
+                                    .gap(px(2.))
+                                    .cursor_pointer()
+                                    .when(in_win, |d| {
+                                        d.border_b_2().border_color(theme::ACCENT())
+                                    })
+                                    .child(
+                                        div()
+                                            .h(px(10. + (c.events.min(5) as f32) * 3.))
+                                            .rounded_t(px(2.))
+                                            .bg(fill)
+                                            .border_1()
+                                            .border_color(edge)
+                                            .when(in_win, |d| d.opacity(1.0)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(8.5))
+                                            .font_family(theme::FAMILY_MONO)
+                                            .text_color(if n % 5 == 0 {
+                                                theme::DIM()
+                                            } else {
+                                                theme::LINE()
+                                            })
+                                            .child(SharedString::from(if n % 5 == 0 {
+                                                format!("{n}")
+                                            } else {
+                                                "·".into()
+                                            })),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.current = n.max(1);
+                                        this.refresh();
+                                        cx.notify();
+                                    }))
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .pl(px(8.))
+                            .child(
+                                div()
+                                    .text_size(theme::FONT_TAG)
+                                    .text_color(theme::FAINT())
+                                    .child(SharedString::from(format!(
+                                        "已写 {} · 有排期 {} · 空 {}",
+                                        self.sums.iter().filter(|c| c.written).count(),
+                                        self.sums
+                                            .iter()
+                                            .filter(|c| !c.written && (c.events > 0 || c.clues > 0))
+                                            .count(),
+                                        self.sums
+                                            .iter()
+                                            .filter(|c| !c.written && c.events == 0 && c.clues == 0)
+                                            .count(),
+                                    ))),
+                            ),
+                    ),
+            )
+            // 左：章列（窗口）。右：两个托盘（预测候选 / 待排期池）——它们是
+            // 拖拽的**来源**，必须一直看得见。以前它们排在章的后面，
+            // 被推到横向滚动区之外：要拖一张卡得先横向滚到看不见章列的地方，
+            // 这就是最别扭的一步。
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(
+                        div()
+                            .id("director-scroll")
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .overflow_x_scroll()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_stretch()
+                                    .h_full()
+                                    .gap(theme::GAP_GROUP)
+                                    .p(theme::PAD_MD)
+                                    .children(board)
+                                    .children(empty_hint),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("director-side")
+                            .w(px(216.))
+                            .flex_shrink_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .gap(theme::GAP_SM)
+                            .p(theme::PAD_SM)
+                            .border_l_1()
+                            .border_color(theme::LINE())
+                            .bg(theme::BG())
+                            .children(side),
                     ),
             )
             .child(

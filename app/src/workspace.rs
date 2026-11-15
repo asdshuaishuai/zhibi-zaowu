@@ -753,15 +753,16 @@ impl Workspace {
                     // 直接写盘。这些项都要重新生成 patch 才生效。
                     match crate::store::save_settings(cfg) {
                         Ok(()) => {
-                            // 主题：保存即切，全部窗口同步重刷
-                            let kind = if cfg.theme.trim() == "xuan" {
-                                crate::theme::ThemeKind::Xuan
-                            } else {
-                                crate::theme::ThemeKind::Ink
-                            };
-                            crate::theme::set_theme_kind(kind);
-                            crate::apply_gpui_theme(cx);
-                            cx.refresh_windows();
+                            // 主题：保存即切，全部窗口同步重刷。
+                            // 走统一的 switch_theme（它会再存一次——幂等，
+                            // 因为刚写进去的就是表单里的值），避免"保存"与
+                            // "点选"两条路径各自维护一份切换逻辑、慢慢漂移。
+                            let kind = crate::theme::ThemeKind::from_setting(&cfg.theme);
+                            // 只在真的换了形态时才重刷：每次保存都刷一遍会把
+                            // 整窗重绘一次，作者只是改了模型名不该付这个代价。
+                            if kind != crate::theme::theme_kind() {
+                                crate::switch_theme(kind, cx).ok();
+                            }
 
                             // 进程还开着，但跑的是旧 patch：不重启的话作者会以为
                             // 刚关掉的联网已经生效，实际这一轮还能联网。
@@ -999,11 +1000,12 @@ impl Workspace {
         })
         .detach();
 
-        // 世界线页：时间轴上的手工操作（分叉 / 扶正 / 归档 / 删除 / 跳推演）
+        // 世界线页：时间轴上的手工操作（分叉 / 归档 / 删除 / 跳推演）。
+        // 没有「扶正」：if 线是预演，固化剧情只由正文决定。
         cx.subscribe_in(
             &worldline_view,
             window,
-            |this, _, ev: &crate::worldline::view::WorldlineEvent, window, cx| {
+            |this, _, ev: &crate::worldline::view::WorldlineEvent, _window, cx| {
                 use crate::worldline::view::WorldlineEvent as WE;
                 let store = crate::worldline::Store::new(&this.handle.root);
                 match ev {
@@ -1052,29 +1054,6 @@ impl Workspace {
                             }
                         }
                     }
-                    WE::Fix(id) => match store.fix_line(id) {
-                        Ok(l) => {
-                            let msg = format!(
-                                "已扶正：{} 成为正典后续（固化边界推到第 {} 章）",
-                                l.name,
-                                l.fixed_boundary()
-                            );
-                            this.worldline_view.update(cx, |p, cx| p.set_message(msg, cx));
-                            this.oracle_view.update(cx, |_, cx| cx.notify());
-                            let _ = window;
-                        }
-                        Err(e) => this
-                            .worldline_view
-                            .update(cx, |p, cx| p.set_message(format!("扶正失败：{e}"), cx)),
-                    },
-                    WE::Unfix(id) => match store.unfix_line(id) {
-                        Ok(()) => this
-                            .worldline_view
-                            .update(cx, |p, cx| p.set_message(format!("已撤销线{id}的扶正"), cx)),
-                        Err(e) => this
-                            .worldline_view
-                            .update(cx, |p, cx| p.set_message(format!("撤销失败：{e}"), cx)),
-                    },
                     WE::Archive(id) => match this.handle.toggle_worldline_archive(id) {
                         Ok(st) => this
                             .worldline_view
@@ -1201,6 +1180,21 @@ impl Workspace {
                                 .update(cx, |p, cx| p.set_message(format!("切换失败：{e}"), cx)),
                         }
                     }
+                    WE::ConfirmThrough(ch) => match store.set_confirmed_through(*ch) {
+                        Ok(()) => this.worldline_view.update(cx, |p, cx| {
+                            p.set_message(
+                                if *ch == 0 {
+                                    "已清掉手动边界，回到纯按正文判断".to_string()
+                                } else {
+                                    format!("已声明：剧情确定到第{ch}章（正文写到更后面时会自动取更大值）")
+                                },
+                                cx,
+                            )
+                        }),
+                        Err(e) => this
+                            .worldline_view
+                            .update(cx, |p, cx| p.set_message(format!("保存失败：{e}"), cx)),
+                    },
                     WE::LinkCanvas { line, node, canvas } => {
                         match store.link_canvas(line, node, canvas) {
                             Ok(()) => this.worldline_view.update(cx, |p, cx| {
@@ -1231,8 +1225,9 @@ impl Workspace {
                     let roster = crate::characters::Roster::new(&this.handle.root);
                     if let Some(c) = roster.find(name) {
                         let id = c.id.clone();
+                        // 关系图点人 → 直接翻开人设卡（不是只在卡簿里亮一下）
                         this.characters_view
-                            .update(cx, |panel, cx| panel.select(id, _window, cx));
+                            .update(cx, |panel, cx| panel.open_card(id, _window, cx));
                     }
                     this.switch_center(Mode::Characters, _window, cx);
                 }
@@ -3202,6 +3197,34 @@ impl Render for Workspace {
                 this.focus = !this.focus;
                 cx.notify();
             }));
+        // 主题来回切：设置页里藏得太深，作者写正文时想换纸感应该伸手就有。
+        // 与设置页走同一个入口（切换 + 落盘 + 重刷全部窗口）。
+        let theme_label = crate::theme::theme_kind().next().label();
+        let theme_btn = Button::new("theme-toggle")
+            .custom(icon_btn(&*cx))
+            .small()
+            .rounded(theme::RADIUS_BTN_SM)
+            // 按钮写"切到X"而不是只写"X"：只写主题名，作者会以为那是
+            // 当前主题标签、点了没反应（真的被问过"为什么点它没变化"）。
+            .label(format!("◐ 切到{theme_label}"))
+            .tooltip(format!("切到{theme_label}主题（点选即换，自动保存）"))
+            .on_click(cx.listener(|this, _, _window, cx| {
+                let kind = crate::theme::theme_kind().next();
+                match crate::switch_theme(kind, cx) {
+                    Ok(()) => this.trajectory.update(cx, |panel, cx| {
+                        panel.push(
+                            TrajKind::Info(format!("主题已切到{}（已保存）", kind.label())),
+                            cx,
+                        );
+                    }),
+                    Err(e) => this.trajectory.update(cx, |panel, cx| {
+                        panel.push(
+                            TrajKind::Fail(format!("已切到{}，但保存失败：{e}", kind.label())),
+                            cx,
+                        );
+                    }),
+                }
+            }));
         let toggle_right = Button::new("toggle-right-dock")
             .custom(icon_btn(&*cx))
             .small()
@@ -3273,7 +3296,8 @@ impl Render for Workspace {
                             .gap(theme::GAP_MD)
                             .flex_shrink_0()
                             .child(back)
-                            .child(focus_btn),
+                            .child(focus_btn)
+                            .child(theme_btn),
                     )
                     .child(
                         div()

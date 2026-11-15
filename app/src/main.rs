@@ -30,7 +30,7 @@ mod views;
 mod workspace;
 mod worldline;
 
-use gpui_kit::component::theme::{Theme, ThemeMode};
+use gpui_kit::component::theme::{Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{
     AppContext as _, Bounds, Size, WindowBounds, WindowKind, WindowOptions, component::TitleBar,
     point, px, rgba, rgb,
@@ -41,20 +41,47 @@ use gpui_kit::{
 fn init_theme(cx: &mut gpui_kit::App) {
     // 启动即按设置切主题（settings.json 的 theme：ink=墨 / xuan=宣纸）
     let t = crate::store::load_settings().theme;
-    crate::theme::set_theme_kind(match t.trim() {
-        "xuan" => crate::theme::ThemeKind::Xuan,
-        _ => crate::theme::ThemeKind::Ink,
-    });
+    crate::theme::set_theme_kind(crate::theme::ThemeKind::from_setting(&t));
     apply_gpui_theme(cx);
 }
 
-/// 把组件库主题（按钮/输入/侧栏等）按当前主题形态重刷。
+/// 把组件库主题调成 Canonical（该模式已注册的默认主题）。
 ///
-/// 我们的 theme.rs 颜色函数每帧都会重新取值，切完即生效；
-/// 组件库的 Theme 是全局单例，必须在这里整体替换。
+/// **为什么每次重刷都要先做这一步**：`Theme::edit` 会把本次闭包对 colors 的
+/// 改动反向写回 `tokens`（`reconcile`：colors 变了 → token 跟着变成这个实色）。
+/// 主题一旦被我们的朱砂色改写，库里那些「颜色 + 渐变 + 描边」的 token 就永久
+/// 绑死在墨底那套值上；下一次切主题时 `Theme::change` 只是重放另一套**库默认**
+/// 颜色，而这些 token 不再重放——于是切过去的一瞬间整页又被改回旧配色。
+/// 实测：墨 → 宣纸 → 墨，第二次「宣纸」看起来什么都没变（真的踩过）。
+/// 先把库主题还原成规范色板，再叠我们这一层的覆盖，每次结果都一样。
+fn reset_component_theme(cx: &mut gpui_kit::App) {
+    let registry = ThemeRegistry::global(cx);
+    let is_dark = matches!(crate::theme::theme_kind(), crate::theme::ThemeKind::Ink);
+    let canonical = if is_dark {
+        registry.default_dark_theme().clone()
+    } else {
+        registry.default_light_theme().clone()
+    };
+    let theme = cx.default_global::<Theme>();
+    theme.apply_config(&canonical);
+}
+
+/// 按当前主题形态重刷全局配色（手绘 token + 组件库主题），并立即重绘全部窗口。
+///
+/// 这是**唯一的切换入口**：设置页点选、标题栏快捷键、启动初始化都走它。
+/// 只在这里 `Theme::update`（会同步 gpui-base 的滚动条等并 refresh 全部窗口），
+/// 调用方不需要再自己刷窗口。
 pub fn apply_gpui_theme(cx: &mut gpui_kit::App) {
+    apply_gpui_theme_inner(cx);
+    // 改完 colors 不投影到 gpui-base（滚动条/拖拽把手）也不重绘；
+    // Theme::update 会跑一遍 sync_base 并 refresh 所有窗口。
+    Theme::update(cx, |_| {});
+}
+
+fn apply_gpui_theme_inner(cx: &mut gpui_kit::App) {
     match crate::theme::theme_kind() {
         crate::theme::ThemeKind::Xuan => {
+            reset_component_theme(cx);
             Theme::change(ThemeMode::Light, None, cx);
             let theme = cx.default_global::<Theme>();
             let c = &mut theme.colors;
@@ -86,6 +113,7 @@ pub fn apply_gpui_theme(cx: &mut gpui_kit::App) {
             c.sidebar_primary_foreground = rgb(0xfff8ee).into();
         }
         crate::theme::ThemeKind::Ink => {
+            reset_component_theme(cx);
             Theme::change(ThemeMode::Dark, None, cx);
             let theme = cx.default_global::<Theme>();
             let c = &mut theme.colors;
@@ -117,6 +145,18 @@ pub fn apply_gpui_theme(cx: &mut gpui_kit::App) {
             c.sidebar_primary_foreground = rgb(0xffffff).into();
         }
     }
+}
+
+/// 切换主题并**落盘**（设置页点选、标题栏快捷键都走这里）。
+///
+/// 只切不存的话，重启又回到 settings.json 里的旧值——作者会以为"切了没生效"。
+/// 返回切换后的形态，调用方拿去写回执。
+pub fn switch_theme(kind: crate::theme::ThemeKind, cx: &mut gpui_kit::App) -> Result<(), String> {
+    crate::theme::set_theme_kind(kind);
+    apply_gpui_theme(cx);
+    let mut cfg = crate::store::load_settings();
+    cfg.theme = kind.persist_key().to_string();
+    crate::store::save_settings(&cfg)
 }
 
 fn main() {

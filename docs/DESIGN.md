@@ -149,7 +149,7 @@
 | 只读 | `get_chapter` / `get_clues` / `get_outline` / `get_canon` / `get_characters` / `get_world_state` / `list_proposals` / `get_write_mode` | 给 AI 取证。**都有上限**：章节 12000 字、设定前 24 篇×1600 字、人物默认 30 / 上限 80、档案卡最近 12 章、事件事实截 80 字；需要全量时让 AI 直接读文件 |
 | 提案 | `propose_canon` / `propose_clues` / `propose_relations` / `propose_character` / `propose_aliases` / `propose_canon_classify` / `propose_skeleton` / `propose_draft` / `propose_validation` / `propose_deslop` / `propose_memory` / `propose_dossier` / `propose_clue_fixes` / `propose_outline_updates` | 只写 `proposals/inbox.json`，采纳前不动台账 |
 | 卡片 | `offer_branches` / `offer_rewrite` / `offer_continuation` | 结构化参数直接落成稿纸卡/轨迹 diff/文本气泡，不解析模型文本 |
-| 世界线沙盒 | `propose_worldline` / `simulate_worldline` / `promote_diff` / `archive_worldline` | 只写 `worldlines.json`；α 拒绝推演与归档；扶正/逐节点采纳/按章晋升是宿主动作 |
+| 世界线沙盒 | `propose_worldline` / `simulate_worldline` / `promote_diff` / `archive_worldline` | 只写 `worldlines.json`；α 拒绝推演与归档；逐节点采纳/按章晋升是宿主动作（无扶正） |
 | 宿主 / 直写 | `apply_proposal`（宿主令牌）/ `write_ledger`（共写+）/ `write_prose`（代笔+逐章授权） | 直写由 `write-policy.ts` 按书内 `zhibi-auth.json` 判定；AI 调用 `apply_proposal` 一律拒绝 |
 
 提案铁律在 DSH 里落地为：**辅助/共写档没有正文写入工具**；代笔档只对 `ghostwriteChapters` 里的章开放 `write_prose`；`apply_*` 只由前端在作者点击后调用；工具审批管道（DSH approval）保留为第二道闸。AI 绕过宿主直写时，回合结束由宿主快照比对补记 `Actor::Ai` 改动记录，仍可在「改动记录」里撤销。
@@ -247,7 +247,15 @@ zhibi-next/
   `plannedEvent` 提案过收件箱；时间轴上蓝实心 = 已采纳待写）；
   **缩放平移**（`layout::zoom_window` / `pan_window` / `focus_window`，纯算术带测试：
   以中心为轴、跨度不低于 8 章、越界靠平移而非裁剪）；
-  **节点抽屉**（点轴上的点浮出：备注、双向因果链、章号+1、采纳、推演、删除）。
+  **节点抽屉**（点束上的关节点浮出：备注、双向因果链、落实章号 / 章号+1、
+  采纳进正典〔仅已排章且未进正典〕、推演、关联画布、删除）；**事件抽屉**（点主线
+  事件点浮出，只读台账事实，注明改它去大纲 / 排期页）；点节点同时选中其线
+  （详情面板 + 预言书联动，对比页点泳道 likewise）；**操作反馈条**（成功绿 /
+  失败琥珀，全应用共用 `theme::feedback_is_error`，不静默无动作）；**手势**
+  （滚轮缩放、拖拽平移、点线选中，底部章号刻度尺步长随跨度自适应）。
+  扇形几何统一为纯函数：`fan_end_frac` 只与高度有关（与宽高比无关）、
+  `fan_beat_frac` 共享贝塞尔采样——绘制 / 标签 / 命中区用同一套坐标，
+  缩放、详情让位重排、改章后重新分扇都不再错位（各有变异验证的测试）。
 - **创作法典 `AGENTS.md`**：新建书时写入（铁律 / 术语 / 档位）。DSH 的
   `agent-instructions` 读 cwd（书目录）下这个文件并注入项目指令——不写它，
   界面上的铁律就只是界面文案，模型看不到。作者可自行修改。
@@ -297,19 +305,24 @@ gpui 的 `cubic_bezier_to(to, control_a, control_b)` —— **终点是第一个
 - 世界线节点的 `canvasRef` 指回画布节点；画布侧反查得到「它在哪几条线的哪一章」。
 - **弱**的意思是：画布节点被删了，世界线不会崩，只是查不到关系。
 
-**固化**有两层含义，两者都要支持：
-1. **边界**：全局固化边界 = `max(非空正文最大章, 未归档的 base/fixed 线各自的 `fixedThrough`/节点上界)`。写出来的都定了，边界之后才是开放的 if 空间。归档线不参与。
-2. **扶正**：作者从某条 if 线里选定一条，它成为正典的后续（`Kind::Fixed`，**真实落盘**），
-   全局固化边界推到它的末尾。原正典保留（用于对比「扶正前是什么样」）。
+**固化**只有一层含义（2026-11 修订，作者定稿规则）：
+1. **边界**：全局固化边界 = `max(非空正文最大章, 作者手标的 confirmedThrough)`。
+   写出来的都定了，边界之后才是开放的 if 空间。**任何预演线的节点与 `fixedThrough`
+   都不参与计算**——归档与否都一样，因为它们根本不进这个公式。
+2. **没有「扶正」**：if 线是预演，不是候选正典。`Kind::Fixed` 已从枚举删除；
+   `Store::fix_line` / `unfix_line` 保留为**永远返回错误的保险**（防止有人包括 AI 再接线）。
+   要让某个预演成真，唯一的路是作者把它写进正文。
 
 ### 10.2 四个页面的分工
 
 | 页面 | 是什么 | 核心动作 |
 |---|---|---|
-| **世界线 Worldline** | **时间轴**。横轴 = 真实章节；固化段实线、开放段虚线；每条 if 从它的分叉章长出。页内两个看法：**时间轴** / **对比**（世界树形态已砍，见 12.4） | 选章节、从任意处再分叉、改节点章号、连/删因果边、标暗线、折叠轨道、扶正、归档、删除 |
+| **世界线 Worldline** | **时间轴**。横轴 = 真实章节；固化段实线（只有正典）、开放段虚线（预演）；每条线从它的分叉章长出。页内两个看法：**时间轴** / **对比**（世界树形态已砍，见 12.4） | 选章节、从任意处再分叉、改节点章号、连/删因果边、标暗线、折叠轨道、手标固化边界、归档、删除 |
 | **画布 Canvas** | **关系网**。七维（总览/设定/人物/关系/时间/事件/转折），节点是人物/设定/道具/事件，边是人物关系与剧情关联 | 框选、拖节点、看一阶影响半径、读者视角；选中节点看它**在世界线上的落点** |
-| **预言书 Oracle** | **if 工坊**。选中一条线 → 看推演卷轴（按章分段的因果链）→ 看影响面 → 逐条或批量晋升 | 写假设 → 让 AI 推演 → 看影响清单 → 晋升为提案 |
-| **章节排期 Director** | 章 × 幕排期板（原名「导演台」）。事件卡/伏笔卡拖进章节；预测候选虚线列拖入章列=按章晋升 | 拖卡改期 → 触发骨架合同核对 |
+| **预言书 Oracle** | **if 线存根，与主线无关**。选中一条线 → 看推演卷轴（按章分段的因果链）→ 看影响面。分支在这里保留，供以后写番外取用 | 写假设 → 让 AI 推演 → 看影响清单 → 逐条晋升为提案（唯一落成正典的路仍是写正文） |
+| **章节排期 Director** | 章 × 幕排期板（原名「导演台」）。**全书目录条 + 5 列章窗 + 右侧两个固定托盘**（预测候选 / 待排期池）。事件卡/伏笔卡拖进章列；预测候选拖入=按章晋升 | 拖卡改期 → 触发骨架合同核对 |
+
+> 2026-11-15 版面调整：① 顶部加**全书目录条**（每章一格，已写=蓝、有排期=橙、空=灰，点格子把窗口挪过去），解决"只看得到窗口内 5 列、不知道全书进度"；② 窗口从 8 列收到 **5 列**，一屏正好放下，"看到的 = 这个窗口"，不用先学会横向滚动；③ 预测候选与待排期池从滚动区尾部搬到**右侧固定托盘**——它们是拖拽的来源，被推到滚动区外等于要拖着卡横滚才能放下；④ 章列头补上**章名/字数**与状态标签，列体拉满高度、卡在列内滚动（以前是贴着顶部的一小截）；⑤ 首屏落在"最后一个有内容的章往前数三列"，书已写完时不再一进来就是五条空柱。
 
 ### 10.2b 专属 Agent 是能力，不是对话对象
 
@@ -349,9 +362,10 @@ gpui 的 `cubic_bezier_to(to, control_a, control_b)` —— **终点是第一个
 
 ```
 worldlines.json: [{
-  id, name, premise(假设一句话), kind: base|fixed|forecast|what-if,
+  id, name, premise(假设一句话), kind: base|forecast|what-if,
   parentId, forkNode(从父线哪个节点长出), forkedChapter,
-  fixedThrough(这条线自己固化到第几章), tookOver(被扶正时留痕),
+  fixedThrough(已废弃，仅为读旧数据保留，不参与任何计算),
+  tookOver(已废弃，同上),
   status: 推演中|已定稿|已归档,
   nodes: [{id, kind, label, reference(正典id), canvasRef(画布节点id，双向弱引用),
            chapter(真实章节落点), note, state: planned|adopted|written|branch-only, x, y}],
@@ -389,7 +403,7 @@ AI 可调（全部只写沙盒）：
 | `fork_at_chapter` | 从某章/某节点再分叉，写 `parentId` / `forkNode` / `forkedChapter` |
 | `promote_diff_chapter` | 带章号晋升，产出 `plannedEvent` 提案（happened=false） |
 | `adopt_node` | 逐节点采纳的第一步：产出 `plannedEvent` 提案；收件箱采纳后才写 events 并转 `adopted` |
-| `fix_line` / `unfix_line` | 扶正整条线（`kind=fixed`，正典边界前推）/ 撤销扶正 |
+| `fix_line` / `unfix_line` | **已废弃**：永远返回错误。if 线不可被扶正，固化只随正文 |
 
 ### 10.6 实施切片
 
@@ -418,11 +432,10 @@ AI 可调（全部只写沙盒）：
 | kind | 语义 | 数据来源 | 写权限 |
 |---|---|---|---|
 | `base`（α） | 正典基准 | 全部台账 | 只读（不可创建第二条） |
-| `fixed` | **已扶正**：作者从某条 if 线里选定、正式收进正典后续的那条线 | 落盘为线的 `kind=fixed`；扶正时把 α 的 `fixedThrough` 推到该线边界 | 宿主 `fix_line` / `unfix_line` |
 | `forecast` | **预测线**：按大纲/设定（无大纲则按已成稿）推演后续剧情 | AI `forecast_task` → simulate 工具写沙盒；diffs=计划剧情，晋升走 outline/clues/skeleton 提案 | 沙盒 only |
 | `what-if` | 假设推演（原预言书能力） | 同上 | 沙盒 only |
 
-**固化边界** = `max(非空正文最大章, 未归档的 base/fixed 线各自的 fixed_boundary)`。归档线不参与——它被隐藏了，就不该继续把边界顶高。注意这与旧稿「`fixed` 是自动派生、只读、不落文件」的说法相反：`fixed` 是一条**真实落盘**的线，不是视图。
+**固化边界** = `max(非空正文最大章, 作者手标的 confirmedThrough)`。预演线（含旧数据里 `kind=fixed` 的线）一律降级为预演，不参与边界计算。旧稿里"`fixed` 是真实落盘的线"的说法已作废。
 
 固化线给用户「织到哪了」的全景；预测线给用户「接下来往哪织」的可选路——都是整理辅助，铁律不变：预测晋升成提案、采纳才进正典。
 

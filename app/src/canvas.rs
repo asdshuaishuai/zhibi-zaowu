@@ -679,16 +679,6 @@ impl CanvasPanel {
                     self.graph_center = laid.center;
             self.graph_size = laid.size;
             self.graph_rings = laid.ring.clone();
-            if std::env::var("ZHIBI_DEBUG_LAYOUT").is_ok() {
-                eprintln!(
-                    "gene_map: n={} center={:?} orphans={} size={:?} first3={:?}",
-                    nodes.len(),
-                    laid.center,
-                    laid.orphans.len(),
-                    laid.size,
-                    nodes.iter().take(3).map(|n| (n.id.clone(), n.x, n.y)).collect::<Vec<_>>()
-                );
-            }
         }
 
         // 恢复持久化坐标（dim:id 键）。
@@ -2040,6 +2030,12 @@ impl Focusable for OraclePanel {
 impl Render for OraclePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut lines = self.handle.worldlines();
+        // 预言书只放 if 线：正典 α 与「预演未来」的预测线属于世界线页。
+        // 这里保留的每条线都是假设：永不扶正、不影响主线（只作 if 存根与番外素材）。
+        lines.retain(|w| {
+            let k = s(w, "kind");
+            k == "what-if" || (k.is_empty() && s(w, "id") != "α")
+        });
         // M8 双态分组：α 固化基准 → 预测线（往哪织）→ 假设线（如果改）
         lines.sort_by_key(|w| {
             let id = s(w, "id");
@@ -2099,6 +2095,9 @@ impl Render for OraclePanel {
             list.push(
                 div()
                     .id(SharedString::from(format!("wl-{id}")))
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
                     .p(theme::PAD_SM)
                     .mb(theme::GAP_SM)
                     .rounded(theme::RADIUS_PANEL)
@@ -2310,10 +2309,14 @@ impl Render for OraclePanel {
                     .child(
                         Button::new(SharedString::from(format!("see-{wide}")))
                             .xsmall()
-                            // 这个按钮现在跳到「世界线」页（画布不再有预言维），
-                            // 所以文字也跟着改——按钮写着"在画布查看"却跳到别处，
-                            // 点一次就会怀疑自己点错了。
-                            .label("看时间轴")
+                            // 跳到「世界线」页。forecast/base 会上时间轴，叫"看时间轴"；
+                            // what-if 不上时间轴（只在预言书当存根），跳过去看的是它的
+                            // 发展路线详情，所以叫"看发展路线"，免得点了在轴上找不到那条线。
+                            .label(if s(w, "kind") == "what-if" {
+                                "看发展路线"
+                            } else {
+                                "看时间轴"
+                            })
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(OracleEvent::ViewOnCanvas { worldline: wide.clone() });
                             })),
@@ -2616,7 +2619,7 @@ impl Render for OraclePanel {
                                         .child(SharedString::from(reason)),
                                 ),
                         )
-                        .when(!promoted, move |d| d.child(promote_btn))
+                        .when(!promoted && s(w, "kind") == "forecast", move |d| d.child(promote_btn))
                         .into_any_element(),
                 );
                 }
@@ -2688,7 +2691,7 @@ impl Render for OraclePanel {
                                         ))),
                                 )
                                 .child(div().flex_1())
-                                .when(!pending.is_empty(), |d| {
+                                .when(s(w, "kind") == "forecast" && !pending.is_empty(), |d| {
                                     let wid2 = s(w, "id");
                                     let mut pending2 = pending.clone();
                                     pending2.sort_unstable();
@@ -2791,7 +2794,11 @@ impl Render for OraclePanel {
                 d.child(
                     div()
                         .text_size(theme::FONT_LABEL)
-                        .text_color(theme::GREEN())
+                        .text_color(if theme::feedback_is_error(&m) {
+                            theme::AMBER()
+                        } else {
+                            theme::GREEN()
+                        })
                         .child(m),
                 )
             })
@@ -3316,14 +3323,16 @@ impl Render for OraclePanel {
 
         // 三视图（并轨 / 世界树 / 对比）已经搬到「世界线」页——
         // 那一页是时间轴（横轴=章节、固化段实线、开放段虚线），
-        // 这一页（预言书）只做一件事：选中一条 if 线，推演它，看影响，决定扶不扶正。
+        // 这一页（预言书）只做一件事：选中一条 if 线，推演它、看影响。
+        // 预言书与主线**无关**：这里的线是 if 分支的存档，不参与、不影响
+        // 已固化的那条剧情；留着是为了作者以后可能写番外时随手取用。
 
         // 页头。
         //
         // 这里**不再**放「并轨 / 世界树 / 对比」三视图——那三个按钮属于「世界线」页，
         // 留在预言书里会让作者以为这是同一个页面（也真的有人这么问过：
         // "章节排期为什么也叫世界线"）。预言书只做一件事：
-        // 选中一条 if，推演它、看影响、决定扶不扶正。
+        // 选中一条 if，推演它、看影响。这里没有"扶正"——if 线永远不在主线里。
         let head = div()
             .flex_shrink_0()
             .px(theme::PAD_LG)
@@ -3344,7 +3353,7 @@ impl Render for OraclePanel {
                     .min_w_0()
                     .text_size(theme::FONT_MICRO)
                     .text_color(theme::FAINT())
-                    .child("if 工坊：选中一条假设 → 推演卷轴 → 逐条晋升或整条扶正；正典只由作者改"),
+                    .child("if 线存根：选中一条假设 → 推演卷轴 → 留作 if 分支；不进主线，供番外取用"),
             );
 
         // —— 对比视图：两条线并排 ——
@@ -3358,7 +3367,7 @@ impl Render for OraclePanel {
             .child(
                 div()
                     .id("wl-list")
-                    .w(px(248.))
+                    .w(px(300.))
                     .flex_shrink_0()
                     .min_h_0()
                     .flex()

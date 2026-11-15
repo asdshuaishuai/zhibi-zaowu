@@ -249,7 +249,8 @@ pub fn tree(lines: &[Line]) -> Tree {
                     archived: line.is_archived(),
                     forecast: line.kind == Kind::Forecast,
                     node_count: line.nodes.len(),
-                    settled: line.is_base() || line.kind == Kind::Fixed,
+                    // 只有正典是"已经定下来的世界"；预演永远 unsettled。
+                    settled: line.is_base(),
                 });
                 cursor = end;
                 stack.pop();
@@ -392,9 +393,8 @@ pub fn tracks(lines: &[Line], global_boundary: u32) -> Vec<Track> {
             // 用 fixed_boundary() 会把"推演到第 15 章"误画成"固化到第 15 章"。
             fixed_through: if l.is_base() {
                 global_boundary
-            } else if l.kind == Kind::Fixed {
-                l.fixed_boundary()
             } else {
+                // 预演线整条都是开放的——它推演得再远也还没定。
                 0
             },
             archived: l.is_archived(),
@@ -408,8 +408,6 @@ pub fn tracks(lines: &[Line], global_boundary: u32) -> Vec<Track> {
         let rank = |t: &Track| {
             if t.id == "α" || t.kind == Kind::Base {
                 0
-            } else if t.kind == Kind::Fixed {
-                1
             } else if t.archived {
                 3
             } else {
@@ -576,6 +574,156 @@ pub fn compare(lines: &[Line], a: &str, b: &str) -> Compare {
     }
 }
 
+/// 甘特/架构式对比：所有世界线并排、共用一条章轴。
+///
+/// 为什么不是两列文字：对比的**价值在"对齐"**——哪两条线在同一章分叉、
+/// 谁更早进入某个关节、谁的块更密。两列清单没有共同横轴，就只能逐条读，
+/// 读不出这些。开发里比较两个方案也是画甘特/泳道，不是列两个清单。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Gantt {
+    pub a: String,
+    pub b: String,
+    /// 两条线最近的共同祖先（空 = 无关）
+    pub ancestor: String,
+    /// 章轴范围（含边界与最远预测）
+    pub from: u32,
+    pub to: u32,
+    /// 固化边界：这条竖线右边全是推演
+    pub boundary: u32,
+    pub lanes: Vec<GanttLane>,
+}
+
+/// 甘特图里的一块（一个关键节点，或正典的整段正文）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GanttBlock {
+    pub chapter: u32,
+    /// 占几章（≥1）。正典段 = 正文总章数；普通节点 = 1。
+    pub span: u32,
+    pub label: String,
+    /// 这条节点两条被比较的线都有（共同推演）
+    pub shared: bool,
+    /// 只属于 a / 只属于 b / 都不属于
+    pub side: Side,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    A,
+    B,
+    Both,
+    Neither,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GanttLane {
+    pub id: String,
+    pub name: String,
+    pub kind: Kind,
+    pub fork: u32,
+    pub blocks: Vec<GanttBlock>,
+    /// 这条线改了几处正典（diffs.len()）
+    pub diffs: usize,
+    /// 最严重一档
+    pub severity: u8,
+    /// 波及（人物 + 线索 + 设定）
+    pub touched: usize,
+    /// 是否被比较的左/右
+    pub is_a: bool,
+    pub is_b: bool,
+    /// 已归档 / 预言书（不进主线）——甘特里压暗，但仍然列出来
+    pub aside: bool,
+}
+
+/// 生成对比甘特：所有线各一行，共同的章轴。
+///
+/// 分叉用 `fork` 标出来——两行之间那条竖直连线就是"这里开始不一样了"，
+/// 这是两列文字永远表达不出来的东西。
+pub fn gantt(lines: &[Line], a: &str, b: &str, boundary: u32) -> Gantt {
+    let ancestor = common_ancestor(lines, a, b);
+    let find = |id: &str| lines.iter().find(|l| l.id == id);
+    // 两条线各自的节点标签：用来判"共同推演 / 各自独有"
+    let labels_of = |id: &str| -> Vec<String> {
+        find(id)
+            .map(|l| beats_for(l, boundary).into_iter().map(|x| x.label).collect())
+            .unwrap_or_default()
+    };
+    let la = labels_of(a);
+    let lb = labels_of(b);
+    let mut lanes: Vec<GanttLane> = Vec::new();
+    // 正典在最上：它是底稿，别的都在它上面分出去。
+    let mut ordered: Vec<&Line> = Vec::new();
+    ordered.extend(lines.iter().filter(|l| l.is_base()));
+    ordered.extend(lines.iter().filter(|l| !l.is_base()));
+    for l in ordered {
+        let aside = l.is_archived() || l.kind == Kind::WhatIf;
+        let mut blocks: Vec<GanttBlock> = Vec::new();
+        if l.is_base() {
+            // 正典不是"一串节点"，是一整段已经写掉的正文：一块横条。
+            if boundary > 0 {
+                blocks.push(GanttBlock {
+                    chapter: 0,
+                    span: boundary,
+                    label: format!("正文 {boundary} 章"),
+                    shared: false,
+                    side: Side::Neither,
+                });
+            }
+        } else {
+            for beat in beats_for(l, boundary) {
+                let in_a = la.contains(&beat.label);
+                let in_b = lb.contains(&beat.label);
+                let side = match (in_a, in_b) {
+                    (true, true) => Side::Both,
+                    (true, false) => Side::A,
+                    (false, true) => Side::B,
+                    (false, false) => Side::Neither,
+                };
+                blocks.push(GanttBlock {
+                    chapter: beat.chapter,
+                    span: 1,
+                    label: beat.label,
+                    shared: side == Side::Both,
+                    side,
+                });
+            }
+        }
+        lanes.push(GanttLane {
+            id: l.id.clone(),
+            name: l.name.clone(),
+            kind: l.kind,
+            fork: if l.is_base() { 0 } else { l.fork_chapter() },
+            blocks,
+            diffs: l.diffs.len(),
+            severity: l.max_severity(),
+            touched: l.touched(),
+            is_a: l.id == a,
+            is_b: l.id == b,
+            aside,
+        });
+    }
+    let to = lanes
+        .iter()
+        .flat_map(|l| l.blocks.iter().map(|b| b.chapter + b.span))
+        .max()
+        .unwrap_or(boundary)
+        .max(boundary);
+    // 只画"决策窗口"：边界前 20 章 + 全部推演。
+    //
+    // 从第 0 章铺起时，30 章正文吃掉 83% 的宽度，5 个预测块只剩边缘几十像素，
+    // 标签全被裁成一两个字——这就是"小气"的来源。对比要看的是**分叉附近**，
+    // 前面二十章只是参照。截图里左边写着"第 10 章起"，不假装从创世开始。
+    let from = boundary.saturating_sub(20);
+    Gantt {
+        a: a.into(),
+        b: b.into(),
+        ancestor,
+        from,
+        to,
+        boundary,
+        lanes,
+    }
+}
+
 /// 两条线最近的共同祖先。沿 a 的父链走，第一个出现在 b 的父链里的就是。
 fn common_ancestor(lines: &[Line], a: &str, b: &str) -> String {
     let parent_of = |id: &str| -> String {
@@ -653,6 +801,249 @@ pub fn bands<T: AsRef<str>>(stages: &[(T, T, u32, u32)]) -> Vec<Band> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// 扇出布局：一条已固化的直线 + 从当前点向外散开的多种未来
+// ---------------------------------------------------------------------------
+
+/// 预演里的一个关键节点。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Beat {
+    /// 落在第几章。没排章的按"推演章序"填了推算值。
+    pub chapter: u32,
+    pub label: String,
+    /// 台账里的节点 id。命中区点开抽屉、改章、采纳都要靠它精确定位，
+    /// 不能只凭 label（同名节点会指错）。
+    pub id: String,
+    /// true = 这条线自己排过章；false = 章号是按节奏推出来的（推演序）。
+    ///
+    /// 区分这两种的意义：作者要能一眼看出哪些是"已经定了章节"的，
+    /// 哪些是"预测走到第几章"。把两者混在一起，推演就会被当成排期。
+    pub scheduled: bool,
+}
+
+/// 未来预演的一条分支（时间轴右侧扇形里的一束）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FanBranch {
+    pub id: String,
+    pub name: String,
+    /// 这条线的赌注（AI 推演写的 premise，作者可改）。
+    pub premise: String,
+    pub kind: Kind,
+    /// 这条预演从第几章分出去（不早于固化边界）
+    pub start_chapter: u32,
+    /// 它自己推到第几章；0 = 一个节点都没排章
+    pub end_chapter: u32,
+    /// 束上的**多个关键节点**，按章号排好。
+    ///
+    /// 预演不该只有一个落点：一条未来是一串"关键关节"（遇伏 → 交底 →
+    /// 抬升线索 → 换人 → 收束），作者要看的是这一串。没排章的节点
+    /// 从固化边界之后逐章推进（`scheduled = false`），这样它们能落在
+    /// 章轴上、读起来是"第 31 章发生什么、第 32 章发生什么"。
+    pub beats: Vec<Beat>,
+    /// 扇形里的角度（度）：0 = 水平向右，正数往下、负数往上
+    pub angle: f32,
+}
+
+impl FanBranch {
+    /// 束的末端章号：最后一个节点的章号（没有节点就用推演跨度兜底）。
+    pub fn last_beat_chapter(&self) -> u32 {
+        self.beats
+            .iter()
+            .map(|b| b.chapter)
+            .max()
+            .unwrap_or(self.end_chapter)
+    }
+}
+
+/// 扇形的整体形状（纯几何，可单测）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fan {
+    /// 主干画到第几章（= 固化边界；0 = 还没写正文）
+    pub trunk_end: u32,
+    /// 扇形从第几章开始
+    pub pivot_chapter: u32,
+    /// 扇形最远推到第几章（含推演章序）
+    pub horizon: u32,
+    pub branches: Vec<FanBranch>,
+}
+
+/// 一条线按章排好的关键节点。
+///
+/// 抽出来是因为扇形图和时间轴、甘特对比都要同一套口径：
+/// 有章号的按章号；没章号的**从边界之后逐章推进**（scheduled = false），
+/// 这样"第 31 章会发生什么"才排得出来，而不是全部挤在"未排章"。
+pub fn beats_for(l: &Line, boundary: u32) -> Vec<Beat> {
+    let mut out: Vec<Beat> = Vec::new();
+    let mut unscheduled: Vec<(String, String)> = Vec::new();
+    for n in l.nodes.iter() {
+        let ch = n.chapter_or_guess();
+        if ch > 0 {
+            out.push(Beat {
+                chapter: ch,
+                label: n.label.clone(),
+                id: n.id.clone(),
+                scheduled: true,
+            });
+        } else {
+            unscheduled.push((n.label.clone(), n.id.clone()));
+        }
+    }
+    out.sort_by_key(|b| b.chapter);
+    let mut next = boundary.saturating_add(1);
+    if let Some(last) = out.iter().map(|b| b.chapter).max() {
+        next = next.max(last + 1);
+    }
+    for (label, id) in unscheduled {
+        out.push(Beat {
+            chapter: next,
+            label,
+            id,
+            scheduled: false,
+        });
+        next += 1;
+    }
+    out
+}
+
+/// 把预演线排成一把扇子。
+///
+/// 规则（作者定稿的读法）：
+/// - **左边是一根直线**：写进正文的剧情只有一条，不分支。
+/// - **右边是从"现在"散开的几种未来**：一束一条，上下交替铺开。
+/// - 每条束上是**一串关键节点**，不是一个落点。节点没排章的，
+///   按"从边界之后逐章推进"给出推演章序（`scheduled = false`），
+///   这样作者读到的是"第 31 章、32 章各会发生什么"。
+/// - 归档线不进扇子；正典不参与分配角度（它就是主干）。
+pub fn fan(lines: &[Line], boundary: u32) -> Fan {
+    // 只收 Forecast（"预演未来"）。what-if/假设属于预言书——
+    // 那边是 if 素材，和主线无关；混进这张图就是在暗示它们也在主线候选里。
+    let mut branches: Vec<FanBranch> = lines
+        .iter()
+        .filter(|l| l.kind == Kind::Forecast && !l.is_archived())
+        .map(|l| {
+            let out = beats_for(l, boundary);
+            FanBranch {
+                id: l.id.clone(),
+                name: l.name.clone(),
+                premise: l.premise.clone(),
+                kind: l.kind,
+                start_chapter: l.fork_chapter().max(boundary),
+                end_chapter: l.last_chapter().max(l.fork_chapter()),
+                beats: out,
+                angle: 0.,
+            }
+        })
+        .collect();
+    // 全序排序：先按推得最远的，再按 id。同一份数据两次布局必须一样。
+    branches.sort_by(|a, b| {
+        b.end_chapter
+            .cmp(&a.end_chapter)
+            .then(a.start_chapter.cmp(&b.start_chapter))
+            .then(a.id.cmp(&b.id))
+    });
+    fan_spread(&mut branches);
+    let horizon = branches
+        .iter()
+        .map(|b| b.last_beat_chapter())
+        .max()
+        .unwrap_or(boundary)
+        .max(boundary)
+        + 1;
+    Fan {
+        trunk_end: boundary,
+        pivot_chapter: boundary,
+        horizon,
+        branches,
+    }
+}
+
+/// 给扇形分配角度：上下交替、越外越偏，最多 ±34°。
+fn fan_spread(branches: &mut [FanBranch]) {
+    const MAX_ANGLE: f32 = 34.0;
+    let n = branches.len();
+    if n == 0 {
+        return;
+    }
+    // 只有一种未来时也给一点上扬：完全水平会和主干连成一条，
+    // 读者分不清"这里开始是推演"。
+    if n == 1 {
+        branches[0].angle = -6.0;
+        return;
+    }
+    // 只有两条时给足角度（±22°），否则两束会几乎重合在同一处，
+    // 看着像"只有一种未来"。
+    if n == 2 {
+        branches[0].angle = -22.0;
+        branches[1].angle = 22.0;
+        return;
+    }
+    let step = (MAX_ANGLE / ((n as f32 / 2.0).ceil().max(1.0))).min(18.0);
+    for (i, b) in branches.iter_mut().enumerate() {
+        let tier = (i / 2 + 1) as f32;
+        let a = (tier * step).min(MAX_ANGLE);
+        b.angle = if i % 2 == 0 { -a } else { a };
+    }
+}
+
+/// 扇束末端的纵向比例（0..1，相对画布**高度**）。
+///
+/// 为什么单独抽出来、且只依赖角度不依赖宽高比：束端位置同时被三处用到——
+/// 画曲线（paint）、贴束名标签（DOM）、挂命中区（DOM）。早先三处各算各的：
+/// paint 用 `w*0.45`（跟宽度走），标签用一套不含宽高的公式，命中区干脆全填 0.5。
+/// 结果是宽屏上曲线甩到上下边缘、标签却停在中间、点击永远选不中束。
+/// 统一成"占画布高度的比例"后，三者落在同一点，且换窗口尺寸不会错位。
+///
+/// `half_h_frac` = 扇子半高占画布高的比例（视图里取 0.38）。
+pub fn fan_end_frac(angle: f32, half_h_frac: f32) -> f32 {
+    (0.5 + angle.to_radians().tan() * 0.45 * half_h_frac * 2.0).clamp(0.06, 0.94)
+}
+
+/// 扇束上某一拍的归一化坐标 `(x_frac, y_frac)`：
+/// x 相对轴线宽（0..1），y 相对画布高（0..1）。paint 与命中区共用，
+/// 保证"画出来的点"和"点得中的点"是同一个。
+///
+/// 曲线是三次贝塞尔：起点 (pivot_frac, 0.5)、终点 (end_frac, end_y_frac)，
+/// 两个控制点把曲线先压向主干再扬到束端（与 paint 里的 c1/c2/c2y 同式）。
+/// 参数 t 按章号在 [枢轴, 末端] 里的比例取——所以节点按章落点，不是均分。
+#[allow(clippy::too_many_arguments)]
+pub fn fan_beat_frac(
+    pivot_frac: f32,
+    end_frac: f32,
+    end_y_frac: f32,
+    pivot_ch: u32,
+    end_ch: u32,
+    beat_ch: u32,
+) -> (f32, f32) {
+    let span_ch = (end_ch.saturating_sub(pivot_ch)).max(1) as f32;
+    let t = ((beat_ch.saturating_sub(pivot_ch)) as f32 / span_ch).clamp(0.02, 1.0);
+    let mt = 1.0 - t;
+    let dx = end_frac - pivot_frac;
+    let c1x = pivot_frac + dx * 0.35;
+    let c2x = pivot_frac + dx * 0.72;
+    let c2y = end_y_frac * 0.45 + 0.5 * 0.55;
+    let fx = mt * mt * mt * pivot_frac
+        + 3.0 * mt * mt * t * c1x
+        + 3.0 * mt * t * t * c2x
+        + t * t * t * end_frac;
+    let fy = mt * mt * mt * 0.5
+        + 3.0 * mt * mt * t * 0.5
+        + 3.0 * mt * t * t * c2y
+        + t * t * t * end_y_frac;
+    (fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0))
+}
+
+/// 时间轴刻度间距：按可见跨度自适应，目标是约 10 道刻度，且取 5 的倍数。
+///
+/// 固定每 5 章一道在长书里会铺出上百道刻度（糊成一片），缩到 8 章时又只剩
+/// 一两道（读不出章号）。这里按跨度选档：跨度越大步长越大，始终留得下读数。
+pub fn ruler_step(span: u32) -> u32 {
+    let target = (span / 10).max(1);
+    // 向上取到 5 的倍数（5/10/15/20…），最小 5。
+    let step = ((target + 4) / 5) * 5;
+    step.max(5)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,6 +1060,173 @@ mod tests {
     
     
     
+    /// 预测必须**多节点、按章推进**：一条未来是一串关节，不是一个落点。
+    /// 节点没排章时从"边界 + 1"逐章推算，并标成 scheduled=false（推演序），
+    /// 免得被当成排期。
+    #[test]
+    fn fan_gives_each_branch_a_chain_of_beats() {
+        let mut f = line("β", "α", 3, Kind::Forecast, false);
+        for (i, label) in ["回镇遇伏", "老周交底", "界字抬升", "换人", "收束"]
+            .iter()
+            .enumerate()
+        {
+            f.nodes.push(crate::worldline::Node::new(
+                &format!("n{i}"),
+                "storyline",
+                label,
+            ));
+        }
+        let fan = fan(&[f], 30);
+        let b = &fan.branches[0];
+        assert_eq!(b.beats.len(), 5, "五拍都要在，不能只剩一个端点");
+        let chapters: Vec<u32> = b.beats.iter().map(|x| x.chapter).collect();
+        assert_eq!(chapters, vec![31, 32, 33, 34, 35], "边界之后逐章推进");
+        assert!(b.beats.iter().all(|x| !x.scheduled), "没排章的必须是推演序");
+        assert_eq!(fan.horizon, 36);
+    }
+
+    /// 已经自己排过章的节点保留真章号，并且排在推演节点之前。
+    #[test]
+    fn fan_keeps_real_chapters_and_orders_them_first() {
+        let mut f = line("β", "α", 3, Kind::Forecast, false);
+        let mut a = crate::worldline::Node::new("a", "storyline", "定了的");
+        a.chapter = 40;
+        let mut b = crate::worldline::Node::new("b", "storyline", "没定的");
+        b.chapter = 0;
+        f.nodes.push(a);
+        f.nodes.push(b);
+        let fan = fan(&[f], 30);
+        let beats = &fan.branches[0].beats;
+        assert_eq!(beats[0].chapter, 40);
+        assert!(beats[0].scheduled);
+        assert!(beats[1].chapter > 40, "推演节点接在已知章号之后");
+        assert!(!beats[1].scheduled);
+    }
+
+    /// 预言书（what-if）与归档线不能混进扇形——它们和主线无关。
+    #[test]
+    fn fan_only_takes_forecast_lines() {
+        let a = line("α", "", 0, Kind::Base, false);
+        let b = line("β", "α", 3, Kind::Forecast, false);
+        let c = line("δ", "α", 3, Kind::WhatIf, false);
+        let d = line("ε", "α", 3, Kind::Forecast, true);
+        let fan = fan(&[a, b, c, d], 20);
+        let ids: Vec<&str> = fan.branches.iter().map(|x| x.id.as_str()).collect();
+        assert_eq!(ids, vec!["β"]);
+    }
+
+    /// 束端纵向比例只依赖角度：上扬束在主干上方、下俯束在下方，
+    /// 且关于 0.5 对称。这是标签/曲线/命中三者共用的唯一口径。
+    #[test]
+    fn fan_end_frac_is_symmetric_and_aspect_free() {
+        let up = fan_end_frac(-22.0, 0.38);
+        let down = fan_end_frac(22.0, 0.38);
+        assert!(up < 0.5, "负角度（上扬）应在主干上方：{up}");
+        assert!(down > 0.5, "正角度（下俯）应在主干下方：{down}");
+        assert!(
+            (up + down - 1.0).abs() < 1e-6,
+            "上下对称：{up} + {down} 应为 1"
+        );
+        // 0 度落在主干正中；极端角度被夹在安全带内，不会甩出画布。
+        assert!((fan_end_frac(0.0, 0.38) - 0.5).abs() < 1e-6);
+        assert!(fan_end_frac(80.0, 0.38) <= 0.94);
+        assert!(fan_end_frac(-80.0, 0.38) >= 0.06);
+    }
+
+    /// 束上节点坐标：起点贴在枢轴（主干正中），终点贴在束端，
+    /// 中间随章号单调推进。画与点共用此式，端点必须吻合否则命中偏移。
+    #[test]
+    fn fan_beat_frac_hits_endpoints_and_monotonic() {
+        let pivot = 0.4;
+        let end = 0.9;
+        let ey = fan_end_frac(22.0, 0.38);
+        // 章号等于枢轴 → 起点（t 被夹到 0.02，极接近枢轴）。
+        let (x0, y0) = fan_beat_frac(pivot, end, ey, 30, 35, 30);
+        assert!((x0 - pivot).abs() < 0.02, "起点应贴枢轴：{x0}");
+        assert!((y0 - 0.5).abs() < 0.02, "起点应贴主干：{y0}");
+        // 章号等于末端 → 终点。
+        let (x1, y1) = fan_beat_frac(pivot, end, ey, 30, 35, 35);
+        assert!((x1 - end).abs() < 1e-4, "终点应贴束端 x：{x1}");
+        assert!((y1 - ey).abs() < 1e-4, "终点应贴束端 y：{y1}");
+        // 中间章号：x 随章号递增，y 从主干单调扬到束端。
+        let (xa, ya) = fan_beat_frac(pivot, end, ey, 30, 35, 32);
+        let (xb, yb) = fan_beat_frac(pivot, end, ey, 30, 35, 34);
+        assert!(xa < xb, "x 随章号推进：{xa} < {xb}");
+        assert!(ya < yb && yb < y1, "y 单调扬向束端：{ya} < {yb} < {y1}");
+    }
+
+    /// 退化跨度（末端=枢轴）不能除零，节点仍落在有限坐标内。
+    #[test]
+    fn fan_beat_frac_degenerate_span_is_finite() {
+        let (x, y) = fan_beat_frac(0.5, 0.5, 0.7, 30, 30, 31);
+        assert!(x.is_finite() && y.is_finite());
+        assert!((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y));
+    }
+
+    /// 刻度间距随跨度自适应：小跨度密、大跨度疏，且始终是 5 的倍数、
+    /// 刻度数落在可读区间（约 4–14 道），不会糊成一片也不会只剩一两道。
+    #[test]
+    fn ruler_step_adapts_to_span() {
+        assert_eq!(ruler_step(8), 5, "缩到最窄仍每 5 章一道");
+        assert_eq!(ruler_step(50), 5);
+        assert_eq!(ruler_step(120), 15);
+        assert_eq!(ruler_step(400), 40);
+        for span in [12u32, 30, 60, 150, 300, 800] {
+            let step = ruler_step(span);
+            assert_eq!(step % 5, 0, "步长必须是 5 的倍数：{step}");
+            let ticks = span / step;
+            assert!((2..=16).contains(&ticks), "跨度 {span} 的刻度数 {ticks} 应可读");
+        }
+    }
+
+    /// 甘特对比：每条线一行，正典在最上，块带章号与归属。
+    /// 这是"对比页"的全部数据来源，错一行整页就误导。
+    #[test]
+    fn gantt_puts_base_first_and_marks_sides() {
+        let base = line("α", "", 0, Kind::Base, false);
+        let mut b = line("β", "α", 3, Kind::Forecast, false);
+        b.nodes.push(crate::worldline::Node::new("b1", "storyline", "遇伏"));
+        let mut g = line("γ", "α", 3, Kind::Forecast, false);
+        g.nodes.push(crate::worldline::Node::new("g1", "storyline", "反悔"));
+        let gt = gantt(&[base.clone(), b.clone(), g.clone()], "β", "γ", 30);
+        assert_eq!(gt.lanes[0].id, "α", "正典永远在第一行：它是底稿");
+        assert_eq!(gt.lanes.len(), 3);
+        let lb = gt.lanes.iter().find(|l| l.id == "β").unwrap();
+        let lg = gt.lanes.iter().find(|l| l.id == "γ").unwrap();
+        assert!(lb.is_a && !lb.is_b);
+        assert_eq!(lb.blocks[0].chapter, 31, "没排章的从边界之后逐章推");
+        assert_eq!(lb.blocks[0].side, Side::A, "只属于左边那条");
+        assert_eq!(lg.blocks[0].side, Side::B);
+        // 两条都有同名节点 → Both
+        let mut b2 = b.clone();
+        let mut g2 = g.clone();
+        b2.nodes.push(crate::worldline::Node::new("s", "storyline", "同一件事"));
+        g2.nodes.push(crate::worldline::Node::new("s", "storyline", "同一件事"));
+        let gt2 = gantt(&[base_of(), b2, g2], "β", "γ", 30);
+        for lane in gt2.lanes.iter().filter(|l| l.is_a || l.is_b) {
+            assert!(
+                lane.blocks.iter().any(|x| x.side == Side::Both),
+                "同名节点要被认成共同推演"
+            );
+        }
+    }
+
+    fn base_of() -> Line {
+        line("α", "", 0, Kind::Base, false)
+    }
+
+    /// 对比窗口只显示"边界前 20 章"：从第 0 章铺起会让推演区只剩几十像素。
+    #[test]
+    fn gantt_window_starts_near_the_boundary() {
+        let base = line("α", "", 0, Kind::Base, false);
+        let mut b = line("β", "α", 3, Kind::Forecast, false);
+        b.nodes.push(crate::worldline::Node::new("b1", "storyline", "遇伏"));
+        let gt = gantt(&[base, b], "α", "β", 30);
+        assert_eq!(gt.from, 10, "30 章的边界 → 从第 10 章看起");
+        assert_eq!(gt.boundary, 30);
+        assert!(gt.to > gt.boundary, "右边一定留出推演区");
+    }
+
     #[test]
     fn cyclic_parent_pointers_do_not_hang() {
         // 手改坏的血缘：β→γ→β 成环
@@ -827,13 +1385,14 @@ mod tests {
     }
 
     #[test]
-    fn tracks_put_base_then_fixed_then_ifs() {
+    fn tracks_put_base_first_then_the_rest() {
         let b = with_nodes(line("β", "α", 12, Kind::WhatIf, false), &[("师兄现身", 18)]);
-        let f = with_nodes(line("固定版", "α", 12, Kind::Fixed, false), &[("已扶正", 20)]);
+        let f = with_nodes(line("γ", "α", 12, Kind::Forecast, false), &[("预测", 20)]);
         let lines = vec![line("α", "", 0, Kind::Base, false), b, f];
         let tr = tracks(&lines, 10);
         let order: Vec<&str> = tr.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(order, vec!["α", "固定版", "β"], "正典 → 已扶正 → 其余 if");
+        assert_eq!(order[0], "α", "正典永远第一");
+        assert_eq!(order.len(), 3, "预演线都排在正典之后");
     }
 
     #[test]
@@ -861,16 +1420,20 @@ mod tests {
         assert_eq!(segs[0].from, 12, "从它的分叉点开始");
     }
 
+    /// 预演线**永远不会**变成实线——哪怕它推演到第 22 章、哪怕它是预测线。
+    /// 这是作者定的规则：已固化的剧情只有一条，就是正典。
     #[test]
-    fn fixed_line_becomes_solid_after_being_promoted() {
-        let b = with_nodes(line("β", "α", 12, Kind::Fixed, false), &[("扶正后", 22)]);
+    fn a_preview_line_never_turns_solid() {
+        let b = with_nodes(line("β", "α", 12, Kind::Forecast, false), &[("预测到", 22)]);
         let lines = vec![line("α", "", 0, Kind::Base, false), b];
         let t = tracks(&lines, 22);
         let beta_track = t.iter().find(|x| x.id == "β").unwrap();
+        assert_eq!(beta_track.fixed_through, 0, "预演线没有固化段");
         let segs = segments(&[beta_track.clone()], 30);
-        let solid: Vec<_> = segs.iter().filter(|s| s.fixed).collect();
-        assert_eq!(solid.len(), 1);
-        assert_eq!((solid[0].from, solid[0].to), (12, 22), "扶正后整段变实线");
+        assert!(
+            segs.iter().all(|s| !s.fixed),
+            "预演线整段都必须是虚线，不能因为推演得远就变实"
+        );
     }
 
     #[test]

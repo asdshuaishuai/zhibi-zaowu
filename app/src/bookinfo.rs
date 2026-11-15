@@ -199,7 +199,11 @@ impl Render for BookInfoPanel {
                                         d.child(
                                             div()
                                                 .text_size(theme::FONT_LABEL)
-                                                .text_color(theme::GREEN())
+                                                .text_color(if theme::feedback_is_error(&m) {
+                                                    theme::AMBER()
+                                                } else {
+                                                    theme::GREEN()
+                                                })
                                                 .child(m),
                                         )
                                     }),
