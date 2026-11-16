@@ -18,6 +18,7 @@ mod editor;
 mod inbox;
 mod graph_layout;
 mod journal;
+mod memory;
 mod plugins;
 mod prompts;
 mod relations;

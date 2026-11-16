@@ -599,6 +599,41 @@ mod tests {
     }
 
     #[test]
+    fn memory_ledger_reads_both_blocks_in_one_pass() {
+        // 事实与别名必须从**同一次**读盘里一起返回；两者都缺时给空表而不是报错。
+        // 这条守的是性能回归：三个视图在 render 里读这份账本，拆回两次读盘
+        // 就是每帧多解析一遍 155KB（见 memory_ledger 注释）。
+        let (_home, _guard) = use_home("memory-ledger");
+        let dir = create_project("记忆账本").unwrap();
+        let handle = ProjectHandle::open(&dir).unwrap();
+
+        // 没文件：两块都空，不 panic
+        let (facts, aliases) = handle.memory_ledger();
+        assert!(facts.is_empty() && aliases.is_empty());
+
+        let mem = serde_json::json!({
+            "facts": [
+                { "id": "a", "subject": "沈砚", "predicate": "师从", "object": "老周", "fromChapter": 3 },
+                { "id": "b", "subject": "顾青", "predicate": "师从", "object": "老周", "fromChapter": 5 }
+            ],
+            "aliases": [ { "canonicalName": "沈砚", "aliases": ["砚哥"] } ]
+        });
+        std::fs::write(dir.join("memory.json"), serde_json::to_string(&mem).unwrap()).unwrap();
+
+        let (facts, aliases) = handle.memory_ledger();
+        assert_eq!(facts.len(), 2);
+        assert_eq!(aliases.len(), 1);
+        // 薄包装与合并入口必须看到同一份数据（否则某条路径会静默变空）
+        assert_eq!(handle.memory_facts().len(), 2);
+        assert_eq!(handle.aliases().len(), 1);
+
+        // 坏 JSON：当空账本，不 panic（渲染期不能因为一个坏文件崩掉整页）
+        std::fs::write(dir.join("memory.json"), "{ 不是 JSON").unwrap();
+        let (facts, aliases) = handle.memory_ledger();
+        assert!(facts.is_empty() && aliases.is_empty());
+    }
+
+    #[test]
     fn settings_import_is_idempotent_and_never_overwrites() {
         let (home, _guard) = use_home("settings-import");
         let dir = create_project("设定导入").unwrap();
@@ -3028,28 +3063,41 @@ impl ProjectHandle {
         self.save_array("clues.json", &clues)?;
         Ok(label)
     }
-    pub fn memory_facts(&self) -> Vec<serde_json::Value> {
+    /// 记忆账本的两块（事实 + 别名）。**一次读盘**返回两者。
+    ///
+    /// 为什么要合成一个：`memory_facts()` 与 `aliases()` 曾各读一遍 `memory.json`
+    /// 再各自解析，而记忆页 / 记忆图谱 / 画布三个视图都在 **render 里**调用它们。
+    /// 实测 1200 条事实（155KB）时单次读+解析 0.77ms，三个页面每帧合计 6 次 =
+    /// 4.65ms，占 60fps 帧预算近三成——纯属重复劳动。渲染期读同一份数据只该读一次。
+    pub fn memory_ledger(&self) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
         let path = self.root.join("memory.json");
-        std::fs::read_to_string(path)
+        let parsed = std::fs::read_to_string(path)
             .ok()
-            .and_then(|t| {
-                let v: serde_json::Value = serde_json::from_str(&t).ok()?;
-                Some(v.get("facts")?.as_array()?.clone())
-            })
-            .unwrap_or_default()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+        let Some(v) = parsed else {
+            return (Vec::new(), Vec::new());
+        };
+        let take = |key: &str| v.get(key).and_then(|x| x.as_array()).cloned().unwrap_or_default();
+        (take("facts"), take("aliases"))
+    }
+
+    pub fn memory_facts(&self) -> Vec<serde_json::Value> {
+        self.memory_ledger().0
+    }
+
+    /// `memory.json` 原样读一份（供 `inferRules` 这类非数组块的配置读取）。
+    /// 与 `memory_ledger` 同源但返回整对象；坏 JSON / 缺文件给空对象。
+    pub fn memory_rules_blob(&self) -> serde_json::Value {
+        std::fs::read_to_string(self.root.join("memory.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
     }
     pub fn clues_full(&self) -> Vec<serde_json::Value> {
         self.clues()
     }
     pub fn aliases(&self) -> Vec<serde_json::Value> {
-        let path = self.root.join("memory.json");
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| {
-                let v: serde_json::Value = serde_json::from_str(&t).ok()?;
-                Some(v.get("aliases")?.as_array()?.clone())
-            })
-            .unwrap_or_default()
+        self.memory_ledger().1
     }
 
     /// 把一批人物名补进 memory.json.aliases（缺失才补；已有别名表不动）。

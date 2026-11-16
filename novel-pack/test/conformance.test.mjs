@@ -20,6 +20,7 @@ import {
   currentMode,
   ghostwriteChapters,
 } from '../src/write-policy.ts'
+import { recall, infer } from '../src/memory.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..', '..')
@@ -105,4 +106,41 @@ test('同一时刻的并存区间都会被取到', () => {
   assert.deepEqual(activeIntervals(ivs, 19).map((i) => i.label), ['师徒'])
   assert.deepEqual(activeIntervals(ivs, 20).map((i) => i.label), ['仇敌'])
   assert.deepEqual(activeIntervals(ivs, 4).map((i) => i.label), [])
+})
+
+test('记忆召回与共享夹具一致', (t) => {
+  for (const c of cases.memoryRecall) {
+    const hits = recall(c.facts, c.aliases ?? [], {
+      chapter: c.chapter,
+      terms: c.terms ?? [],
+      limit: c.limit,
+    })
+    assert.deepEqual(
+      hits.map((h) => h.fact.id),
+      c.expectIds,
+      `召回排序（${c.why ?? ''}）`,
+    )
+    if (c.expectTopScore != null) {
+      assert.equal(hits[0].score, c.expectTopScore, `召回顶分（${c.why ?? ''}）`)
+    }
+  }
+  t.diagnostic(`覆盖 ${cases.memoryRecall.length} 个召回组合`)
+})
+
+test('记忆推断与共享夹具一致', (t) => {
+  for (const c of cases.memoryInfer) {
+    const inf = infer(c.facts, c.aliases ?? [], c.currentChapter ?? 0)
+    assert.deepEqual(
+      inf.implied.map((m) => ({ subject: m.subject, predicate: m.predicate, object: m.object })),
+      c.expectImplied,
+      `推导关系（${c.why ?? ''}）`,
+    )
+    assert.deepEqual(
+      inf.contradictions.map((x) => ({ subject: x.subject, predicate: x.predicate, objects: x.objects })),
+      c.expectContradictions,
+      `冲突检出（${c.why ?? ''}）`,
+    )
+    assert.deepEqual(inf.stale, c.expectStale, `陈旧待复核（${c.why ?? ''}）`)
+  }
+  t.diagnostic(`覆盖 ${cases.memoryInfer.length} 个推断组合`)
 })

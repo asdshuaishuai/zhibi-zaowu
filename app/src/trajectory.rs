@@ -224,7 +224,10 @@ impl TrajectoryPanel {
 
 /// 本地时钟 HH:MM:SS。旧实现按 UTC epoch 硬算（已知缺陷，规则 15），
 /// 改为直读系统本地时区。
-fn local_hhmmss() -> String {
+///
+/// `pub(crate)`：工作区的「已保存 HH:MM:SS」直接复用它，别各写一份
+/// （那里曾按 UTC 组钟面，早八点存稿显示成 00:xx）。
+pub(crate) fn local_hhmmss() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

@@ -109,6 +109,8 @@ pub enum WorldlineEvent {
     },
     /// 作者声明「已定剧情到第 N 章」（正文还没写到时的显式确认；0 = 清掉）
     ConfirmThrough(u32),
+    /// 跳到章节排期板看这一章（导演台↔世界线共用章号坐标）
+    ViewInDirector(u32),
     /// 新增一个节点
     NodeAdd {
         line: String,
@@ -335,6 +337,42 @@ impl WorldlinePanel {
     fn focus_chapter(&mut self, ch: u32, full: u32) {
         let cur = self.window.or(Some(self.default_window));
         self.window = Some(crate::worldline::layout::focus_window(cur, ch, full));
+    }
+
+    /// 默认取景框：边界前 14 章正文做参照，右端到最远那条预演再留余量。
+    ///
+    /// 抽出来是因为 render 与跨页跳转都要用它。跳过来时面板可能**还没渲染过**
+    /// （`default_window` 仍是 `(0,0)`），直接拿它算跨度会把视野压成 1 章，
+    /// 跳过去只看到一根竖线——那正是"点了没反应"的样子。
+    ///
+    /// 不取 `&self`：它是纯函数（只依赖 lines 与 boundary），这样能直接测，
+    /// 也能被跳转路径在面板未渲染时调用。
+    fn auto_window(lines: &[Line], boundary: u32) -> (u32, u32) {
+        let back = boundary.saturating_sub(14);
+        // 用 fan 的 horizon（含推演章序），不是 lines 的 last_chapter——
+        // 后者的节点没有章号会算成 0，右端就退回 boundary+6。
+        let fan_h = crate::worldline::layout::fan(lines, boundary).horizon;
+        (back, fan_h.max(boundary + 6))
+    }
+
+    /// 从别的页（排期板）跳过来看某一章：切页后把取景框挪到该章。
+    pub fn goto_chapter(&mut self, ch: u32, cx: &mut Context<Self>) {
+        let lines = self.lines();
+        let store = Store::new(&self.handle.root);
+        let boundary = store.fixed_boundary(&lines);
+        let written = self.written_through();
+        let full = self.horizon(&lines, boundary, written);
+        let base = if self.default_window == (0, 0) {
+            Self::auto_window(&lines, boundary)
+        } else {
+            self.default_window
+        };
+        self.window = Some(crate::worldline::layout::focus_window(
+            self.window.or(Some(base)),
+            ch.max(1),
+            full,
+        ));
+        cx.notify();
     }
 
     /// 最新成稿章：作者"已经写到哪"。
@@ -590,6 +628,17 @@ impl WorldlinePanel {
                     })),
             );
         }
+        // 排期板看此章：导演台↔世界线共用章号坐标，跳过去看这章排了什么。
+        if ch > 0 {
+            bar = bar.child(
+                Button::new(SharedString::from(format!("wld-dir-{lid}-{nid}")))
+                    .xsmall()
+                    .label("排期板看此章")
+                    .on_click(cx.listener(move |_t, _, _, cx| {
+                        cx.emit(WorldlineEvent::ViewInDirector(ch));
+                    })),
+            );
+        }
         // 删节点
         {
             let (l4, n4) = (lid.clone(), nid.clone());
@@ -796,16 +845,7 @@ impl Render for WorldlinePanel {
         // 全量铺开时 45 章压进 900px = 每章 20px，预测的 5 个节点
         //（第 31–35 章）挤在 100px 里，糊成一团；作者得先缩放才能看清，
         // 这就违背了"辅助而不是让人多操作"。默认直接给到读得清的比例。
-        let default_window = {
-            // 右端只留到"最远的预测 + 3 章"：留太多空章，推演区就被稀释，
-            // 五个关节点又挤在一起。左端给 14 章正文做参照。
-            let back = boundary.saturating_sub(14);
-            // 右端 = 最远那条预测推到第几章 + 2，最少再留 6 章。
-            // 用 fan 的 horizon（含推演章序），不是 lines 的 last_chapter——
-            // 后者的节点没有章号，会算成 0，于是右端又退回"boundary+15"。
-            let fan_h = crate::worldline::layout::fan(&lines, boundary).horizon;
-            (back, fan_h.max(boundary + 6))
-        };
+        let default_window = Self::auto_window(&lines, boundary);
         self.default_window = default_window;
         let (from_ch, to_ch) = self.window.unwrap_or(default_window);
         let span = (to_ch.saturating_sub(from_ch)).max(1);
@@ -3705,7 +3745,6 @@ fn tab_chip(
 /// 为什么按下标而不是按 kind：kind 只有四类，线一多必然撞色；
 /// 而"不同的世界发展线路"要能一眼分开，所以按线的顺序取一轮调色板。
 /// 正典固定蓝（它是基准，不该跟别的线抢色）。
-
 fn track_color(t: &Track) -> gpui_kit::Rgba {
     if t.kind == Kind::Base {
         theme::BLUE()
@@ -3715,5 +3754,63 @@ fn track_color(t: &Track) -> gpui_kit::Rgba {
         theme::GREEN()
     } else {
         theme::PURPLE()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::worldline::Node;
+
+    /// 正典基准 + 一条推到第 30 章的预演线。
+    fn lines_with_forecast() -> Vec<Line> {
+        let alpha = Line::new("α", "正典", Kind::Base, "", "", 0);
+        let mut fc = Line::new("β", "推演", Kind::Forecast, "α", "n1", 12);
+        let mut n = Node::new("n2", "事件", "第30章那个关节");
+        n.chapter = 30;
+        fc.nodes.push(n);
+        vec![alpha, fc]
+    }
+
+    #[test]
+    fn auto_window_leaves_a_readable_span_before_the_boundary() {
+        // 边界 20 章：左端给 14 章正文做参照（20-14=6），右端至少留到边界+6。
+        let (from, to) = WorldlinePanel::auto_window(&[], 20);
+        assert_eq!(from, 6, "左端应为 boundary-14");
+        assert!(to >= 26, "右端至少 boundary+6，实际 {to}");
+        assert!(to > from, "跨度必须为正——跨度塌成 1 章就是把视野压成一根竖线");
+    }
+
+    #[test]
+    fn auto_window_still_spans_when_the_book_is_empty() {
+        // 新书：边界 0。左端 saturating_sub 不能下溢，跨度仍要够读。
+        let (from, to) = WorldlinePanel::auto_window(&[], 0);
+        assert_eq!(from, 0);
+        assert!(to >= 6, "空书也要给足 6 章的取景，否则时间轴上看不到东西");
+    }
+
+    #[test]
+    fn auto_window_reaches_the_furthest_forecast() {
+        // 预演推到第 30 章而边界只有 20：右端必须越过 30，
+        // 否则"推得最远的那条线"被裁在视野外（这正是 fan::horizon 存在的理由）。
+        let lines = lines_with_forecast();
+        let (from, to) = WorldlinePanel::auto_window(&lines, 20);
+        assert_eq!(from, 6);
+        assert!(to > 30, "右端要容下第 30 章的预演节点，实际 {to}");
+    }
+
+    #[test]
+    fn goto_chapter_would_never_run_on_a_one_chapter_span() {
+        // 跨页跳转的真实现场：面板还没渲染过 → default_window 仍是 (0,0)。
+        // 若直接拿 (0,0) 当基准算跨度，span 会退化成 1，focus_window 把目标
+        // 硬塞进 1 章宽的框里。这里断言「未渲染时先算默认框」这条路是通的：
+        // 用 auto_window 作基准，聚焦第 25 章后视野跨度仍然可读。
+        let lines = lines_with_forecast();
+        let boundary = 20;
+        let base = WorldlinePanel::auto_window(&lines, boundary);
+        let full = 40;
+        let (from, to) = crate::worldline::layout::focus_window(Some(base), 25, full);
+        assert!(to - from >= 8, "跳过去之后跨度不能塌：{from}..{to}");
+        assert!(25 >= from && 25 <= to, "目标章必须落在视野内：{from}..{to}");
     }
 }

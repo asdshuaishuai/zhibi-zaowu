@@ -265,8 +265,8 @@ impl CanvasPanel {
         let mut nodes: Vec<CNode> = Vec::new();
         let mut edges: Vec<CEdge> = Vec::new();
         let ev_all = self.handle.events();
-        let facts = self.handle.memory_facts();
-        let aliases_all = self.handle.aliases();
+        // 一次读盘拿事实 + 别名（渲染期别读两遍，见 store::memory_ledger）
+        let (facts, aliases_all) = self.handle.memory_ledger();
 
         // 别名归一表：所有名字形态 → canonicalName
         let mut alias_map: Vec<(String, String)> = Vec::new();

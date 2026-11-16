@@ -71,7 +71,7 @@ pub struct QuestionRequest {
     pub questions: serde_json::Value,
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Mode {
     Editor,
     /// 全书章节总览（原侧栏平铺列表搬到这里）。
@@ -496,7 +496,7 @@ impl Workspace {
         // 章节总览：点卡进稿纸 / 新建章。页面只读磁盘，切章仍走工作区唯一入口。
         let canon_view = cx.new(|cx| CanonPanel::new(cx, handle.clone()));
         let outline_view = cx.new(|cx| OutlinePanel::new(cx, handle.clone()));
-        let memory_view = cx.new(|cx| MemoryPanel::new(cx, handle.clone()));
+        let memory_view = cx.new(|cx| MemoryPanel::new(window, cx, handle.clone()));
         let stats_view = cx.new(|cx| StatsPanel::new(cx, handle.clone()));
         let chapters_view = cx.new(|cx| ChaptersPanel::new(cx, handle.clone(), chapter));
 
@@ -515,6 +515,21 @@ impl Workspace {
                     this.chapters = this.handle.chapters();
                     this.switch_center(Mode::Editor, window, cx);
                     this.switch_chapter(n, window, cx);
+                }
+                // 驾驶舱格子点了：切到对应页。格子本身是只读快照，
+                // 但每格背后的"去哪修"应该一键到位。
+                ChaptersEvent::Goto(mode) => {
+                    this.switch_center(*mode, window, cx);
+                }
+                // 章节卡「排期板」：与"世界线→排期板"同序——先切页（refresh 夹取），
+                // 再 goto_chapter 定位。顺序反了等于没跳。
+                ChaptersEvent::JumpDirector(n) => {
+                    this.switch_center(Mode::Director, window, cx);
+                    this.director_view.update(cx, |p, cx| p.goto_chapter(*n, cx));
+                }
+                ChaptersEvent::JumpWorldline(n) => {
+                    this.switch_center(Mode::Worldline, window, cx);
+                    this.worldline_view.update(cx, |p, cx| p.goto_chapter(*n, cx));
                 }
             },
         )
@@ -958,6 +973,24 @@ impl Workspace {
         )
         .detach();
         cx.subscribe_in(
+            &graph_view,
+            window,
+            |this, _, ev: &ViewEvent, _window, cx| match ev {
+                ViewEvent::RunCapability(cap) => {
+                    let task = prompts::task_for(cap, this.chapter);
+                    this.on_send(task, cx);
+                }
+                // 记忆冲突行的「裁决」按钮走这条通路：把冲突描述交给 memory Agent 出修正提案。
+                ViewEvent::Delegate { agent, key, target } => {
+                    this.delegate(agent, key, target.clone(), cx);
+                }
+                ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {
+                    this.on_ledger_event(ev, cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe_in(
             &clues_view,
             window,
             |this, _, ev: &ViewEvent, _window, cx| match ev {
@@ -1204,6 +1237,13 @@ impl Workspace {
                                 p.set_message(format!("关联失败：{e}"), cx)
                             }),
                         }
+                    }
+                    WE::ViewInDirector(ch) => {
+                        let ch = *ch;
+                        // 先切页再定位：switch_center 进 Director 分支时会再 refresh 一次，
+                        // 而 refresh 会把窗口夹回「下一待写章」。顺序反了就等于没跳。
+                        this.switch_center(Mode::Director, _window, cx);
+                        this.director_view.update(cx, |p, cx| p.goto_chapter(ch, cx));
                     }
                 }
             },
@@ -1654,12 +1694,19 @@ impl Workspace {
         .detach();
 
 // 世界线（排期板）：AI 核对走 DSH 会话（轨迹窗可见），拖卡改期是作者亲笔直写
-        cx.subscribe(
+        cx.subscribe_in(
             &director_view,
-            |this, _, ev: &DirectorEvent, cx| match ev {
+            window,
+            |this, _, ev: &DirectorEvent, _window, cx| match ev {
                 DirectorEvent::Review(chap) => {
                     let ch = if *chap == 0 { this.chapter } else { *chap };
                     this.on_send(prompts::director_task(ch), cx);
+                }
+                DirectorEvent::ViewInWorldline(ch) => {
+                    let ch = *ch;
+                    // 与反方向同序：先切页，再让目标页按自己的默认取景去聚焦该章。
+                    this.switch_center(Mode::Worldline, _window, cx);
+                    this.worldline_view.update(cx, |p, cx| p.goto_chapter(ch, cx));
                 }
             },
         )
@@ -2094,22 +2141,9 @@ impl Workspace {
         }
         let notes = self.editor.read(cx).notes.read(cx).value().to_string();
         let _ = self.handle.set_chapter_notes(self.chapter, &notes);
-        // NOTE(utc): 此处按 UNIX 秒取时分秒，输出的是 UTC 而非本地时间（与
-        // trajectory.rs:147 utc_hhmmss 同源缺陷）。规则 15 要求本地/相对时间，但本地
-        // 偏移需要 chrono（app/Cargo.toml 未引入，见其 dependencies 仅有 anyhow/serde/
-        // serde_json/async-channel/ureq），标准库无本地时区 API，故留待依赖变更时处理。
-        let stamp = {
-            let secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            format!(
-                "{:02}:{:02}:{:02}",
-                (secs / 3600) % 24,
-                (secs / 60) % 60,
-                secs % 60
-            )
-        };
+        // 底栏「已保存」用本地钟面。曾在此按 UTC epoch 硬算，早八点存稿会显示成 00:xx；
+        // `trajectory::local_hhmmss` 已用 `localtime_r` 修好（零依赖），复用它同一份实现。
+        let stamp = crate::trajectory::local_hhmmss();
         let chip_stamp = stamp.clone();
         self.editor
             .update(cx, |panel, cx| panel.set_saved_at(stamp, cx));

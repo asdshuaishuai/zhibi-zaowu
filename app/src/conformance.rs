@@ -114,3 +114,101 @@ fn relation_interval_covers_matches_the_shared_fixture() {
         );
     }
 }
+
+#[test]
+fn memory_recall_matches_the_shared_fixture() {
+    let c = cases();
+    let arr = c["memoryRecall"].as_array().expect("缺 memoryRecall");
+    assert!(!arr.is_empty());
+    for item in arr {
+        let why = item["why"].as_str().unwrap_or("");
+        let facts = item["facts"].as_array().expect("facts 必须是数组").clone();
+        let aliases = item["aliases"].as_array().cloned().unwrap_or_default();
+        let q = crate::memory::RecallQuery {
+            chapter: item.get("chapter").and_then(|v| v.as_u64()).map(|n| n as u32),
+            terms: item["terms"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default(),
+            limit: item["limit"].as_u64().unwrap_or(12) as usize,
+        };
+        let hits = crate::memory::recall(&facts, &aliases, &q);
+        let got: Vec<String> = hits.iter().map(|h| h.fact.id.clone()).collect();
+        let expect: Vec<String> = item["expectIds"]
+            .as_array()
+            .expect("expectIds")
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        assert_eq!(got, expect, "召回排序与夹具不符（{why}）");
+        if let Some(top) = item.get("expectTopScore").and_then(|v| v.as_i64()) {
+            assert_eq!(hits[0].score, top, "召回顶分与夹具不符（{why}）");
+        }
+    }
+}
+
+#[test]
+fn memory_infer_matches_the_shared_fixture() {
+    let c = cases();
+    let arr = c["memoryInfer"].as_array().expect("缺 memoryInfer");
+    assert!(!arr.is_empty());
+    for item in arr {
+        let why = item["why"].as_str().unwrap_or("");
+        let facts = item["facts"].as_array().expect("facts").clone();
+        let aliases = item["aliases"].as_array().cloned().unwrap_or_default();
+        let cur = item["currentChapter"].as_u64().unwrap_or(0) as u32;
+        // 共享夹具测的是**默认规则**——书级 inferRules 可配性由 store 侧测试覆盖。
+        let inf = crate::memory::infer_with_rules(
+            &facts,
+            &aliases,
+            cur,
+            &crate::memory::InferRules::default(),
+        );
+
+        let got: Vec<(String, String, String)> = inf
+            .implied
+            .iter()
+            .map(|m| (m.subject.clone(), m.predicate.clone(), m.object.clone()))
+            .collect();
+        let expect: Vec<(String, String, String)> = item["expectImplied"]
+            .as_array()
+            .expect("expectImplied")
+            .iter()
+            .map(|v| {
+                (
+                    v["subject"].as_str().unwrap().to_string(),
+                    v["predicate"].as_str().unwrap().to_string(),
+                    v["object"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(got, expect, "推导关系与夹具不符（{why}）");
+
+        let gotc: Vec<(String, String, Vec<String>)> = inf
+            .contradictions
+            .iter()
+            .map(|x| (x.subject.clone(), x.predicate.clone(), x.objects.clone()))
+            .collect();
+        let expectc: Vec<(String, String, Vec<String>)> = item["expectContradictions"]
+            .as_array()
+            .expect("expectContradictions")
+            .iter()
+            .map(|v| {
+                (
+                    v["subject"].as_str().unwrap().to_string(),
+                    v["predicate"].as_str().unwrap().to_string(),
+                    v["objects"].as_array().unwrap().iter().filter_map(|o| o.as_str().map(|s| s.to_string())).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(gotc, expectc, "冲突检出与夹具不符（{why}）");
+
+        let expects: Vec<String> = item["expectStale"]
+            .as_array()
+            .expect("expectStale")
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        assert_eq!(inf.stale, expects, "陈旧待复核与夹具不符（{why}）");
+    }
+}

@@ -37,7 +37,8 @@
   与影响面（待晋升 / 已晋升 / 高风险 / 同门竞争）；要把某个预演落成正典，
   唯一的路是把它写进正文。
 - **章节排期**：章 × 幕的工作排期，事件 / 伏笔卡跨列拖拽即改期；
-  幕带、空章预警、伏笔静默逾期、断线预警全部由确定性规则算出。**与世界线无关**。
+  幕带、空章预警、伏笔静默逾期、断线预警全部由确定性规则算出。数据独立于世界线，
+  但共享章号：章抽屉「排期板看此章」与列头「世界线」可双向跳转定位。
 - **人物卡**：三国杀式的**整张大卡**（约 5:7），卡面本身就是完整信息：姓名题签、
   基本信息（定位 / 阵营 / 年纪 / 状态 / 别名）、**背景故事**（取自设定文档）、
   **相关剧情**（从事件台账按人名反查，带章号，按章排）。点开一张卡，右侧弹出
@@ -48,6 +49,9 @@
 - **知识库**：老书的世界观/人物/大纲文档原样归档存放（幂等导入、冲突留档），
   逐篇「AI 拆分」或一键全量提取——总 Agent 通读后分派各专属 Agent 落成提案；
   矛盾不上秤，冲突两条都出留给作者裁决。
+- **记忆中枢 / 图谱**：事实账本 + 矛盾体检 + 人物归一 + 长程档案卡；
+  **按需召回**（词/章号 → 相关度+章距+新近度整数打分、别名归一去重）与
+  **记忆推断**（同门/对称推导、单值冲突、陈旧待复核）都是只读，不自动挂载、不自动落库。
 - **改动记录**：作者与 AI 的每一次落库都在这里，可单条撤销或整批撤销；
   文件之后又被改过会提示冲突而不是覆盖。
 - **设置**：账号余额、模型与推理强度、通用设置、三个 Agent 模式、
@@ -70,7 +74,7 @@
 |---|---|
 | 前端 | Rust + GPUI（基于 gpui-kit 组件库：Dock / Table / Bubble / Tag / Empty …） |
 | Agent 底座 | DeepSeek Harness（DSH）`--profile sdk` 子进程，NDJSON JSON-RPC over stdio |
-| 能力包 | `novel-pack`：Cordis 插件，32 个工具（查询 / 提案 / 卡片 / 世界线 / 采纳 / 直写）+ 19 个技能 |
+| 能力包 | `novel-pack`：Cordis 插件，34 个工具（查询 / 提案 / 卡片 / 世界线 / 采纳 / 直写）+ 19 个技能 |
 | 数据 | `.zhibi` 目录（JSON + Markdown），与旧版执笔双向兼容 |
 | 运行时 | 内置 Node + DSH（随应用分发，无需全局 npm；见下文） |
 
@@ -96,9 +100,9 @@
 zhibi-next/
 ├── app/                 # GPUI 前端（Rust）
 │   └── src/             # workspace / editor / canvas / director / shelf / inbox / dsh /
-│                        # characters / relations / journal / worldline / account / prompts…
-├── novel-pack/          # DSH 能力包（Cordis 插件，32 工具 + 19 技能）
-│   ├── src/             # index.ts / store.ts / guard.ts / write-policy.ts
+│                        # characters / relations / journal / memory / worldline / account / prompts…
+├── novel-pack/          # DSH 能力包（Cordis 插件，34 工具 + 19 技能）
+│   ├── src/             # index.ts / store.ts / memory.ts / guard.ts / write-policy.ts
 │   ├── skills/          # zhibi-*.md —— 写作能力的作业规程（AI 加载，作者可改）
 │   └── test/            # 双端一致性（node --test）
 ├── runtime/zhibi-runtime# 封闭的 DSH sdk 运行环境（274MB，只装 sdk 闭包）
@@ -123,7 +127,7 @@ zhibi-next/
 - [权限与安全边界](docs/GUIDE-PERMISSIONS.md)：三个写作档位、`zhibi-auth.json` 优先级、工具闸门、AI 直写如何入账。
 - [世界线与剧情预演](docs/GUIDE-WORLDLINE.md)：正典 / 预演线 / 固化边界、开线、推演、if 线保留规则。
 - [知识库与召回边界](docs/GUIDE-KNOWLEDGE.md)：导入、拆分、分派，以及“写作时不会自动召回”这件事。
-- [工具与概念参考](docs/REFERENCE.md)：32 个工具 / 19 个技能 / 7 个画布维度的现行口径。
+- [工具与概念参考](docs/REFERENCE.md)：34 个工具 / 19 个技能 / 7 个画布维度的现行口径。
 
 设计向：
 
@@ -148,7 +152,7 @@ scripts/dev.sh
 ### 测试
 
 ```sh
-scripts/test-all.sh     # Rust（223 项）+ novel-pack（6 项）
+scripts/test-all.sh     # Rust（237 项）+ novel-pack（8 项）
 ```
 
 两端读同一份 `tests/conformance/cases.json`。改了任意一侧的规则而没改夹具，

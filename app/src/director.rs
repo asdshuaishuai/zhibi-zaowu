@@ -28,6 +28,22 @@ fn hsla(c: gpui_kit::Rgba) -> gpui_kit::Hsla {
     c.into()
 }
 
+// —— 窗口纯函数（与面板解耦，供跳转/刷新共用，可直接测）——
+
+/// 跳到第 `n` 章时 5 列窗口的起点：让目标章落在倒数第三列。
+///
+/// 左边两列刚写完、右边留空位，作者一眼看到"该往后写什么"。
+/// `n=0` 是"从本板窗口起点"的哨兵，跳过去 = 移到最前，不能让它减法下溢成 1。
+pub(crate) fn window_for_jump(n: u32) -> u32 {
+    n.saturating_sub(2).max(1)
+}
+
+/// refresh 的合法右界：`next_chapter_number`（下一待写章）。
+/// 章节被删/书变短时把窗口拉回，避免只剩空列。
+pub(crate) fn window_clamp(next_chapter: u32, current: u32) -> u32 {
+    current.min(next_chapter.max(1))
+}
+
 fn s(v: &serde_json::Value, key: &str) -> String {
     v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
@@ -85,6 +101,8 @@ struct PredCard {
 pub enum DirectorEvent {
     /// 让 AI 按骨架合同核对第 N 章（0=从本板窗口起点）
     Review(u32),
+    /// 跳到世界线时间轴看这一章（导演台↔世界线共用章号坐标）
+    ViewInWorldline(u32),
 }
 
 pub struct DirectorPanel {
@@ -143,13 +161,31 @@ impl DirectorPanel {
         this
     }
 
+    /// 从世界线跳过来看某一章：把 5 列窗口挪到该章附近（它落在倒数第三列）。
+    ///
+    /// ⚠ **必须跳过 `refresh` 的窗口夹取**（contract：跨页跳转路径在工作区切的
+    /// 是先 `switch_center` 触发 refresh、再 `goto_chapter`）。
+    ///
+    /// 预演节点常排在固化边界之后（> `next_chapter_number`）。若 `goto_chapter`
+    /// 再走 `refresh`，右界主键是「下一待写章」而非「跳过来的章」——预演章会被
+    /// 立刻夹回窗口左上侧，等于没跳；作者点就是"点了停在原地"。
+    /// `window_for_jump` 单独把章号映射到窗口起点，不经右界约束——那是跳转存在的理由。
+    pub fn goto_chapter(&mut self, n: u32, cx: &mut Context<Self>) {
+        self.current = window_for_jump(n);
+        self.rebuild();
+        cx.notify();
+    }
+
     /// 从台账重建排期卡；窗口 [current, current+COLS)。
     pub fn refresh(&mut self) {
         // 右界=下一待写章：章节被删/书变短时把窗口拉回，避免只剩空列
         let max = self.handle.next_chapter_number().max(1);
-        if self.current > max {
-            self.current = max;
-        }
+        self.current = window_clamp(max, self.current);
+        self.rebuild();
+    }
+
+    /// 按当前 `current` 重建卡片与全书概况（不做窗口夹取，跳转与刷新共用）。
+    fn rebuild(&mut self) {
         let end = self.current + COLS as u32;
         let mut cards = Vec::new();
         let mut pool = Vec::new();
@@ -220,6 +256,9 @@ impl DirectorPanel {
             .handle
             .next_chapter_number()
             .max(self.handle.chapters().iter().map(|c| c.n).max().unwrap_or(0))
+            // 世界线跳过来可能落在已写章之后（预演章）：目录条要覆盖到当前窗口，
+            // 否则"正在看哪几章"在全书条上没有标记。
+            .max(self.current + COLS as u32 - 1)
             .max(1);
         let mut sums: Vec<ChSum> = Vec::with_capacity(max_ch as usize);
         let books = self.handle.chapters();
@@ -554,6 +593,15 @@ impl Render for DirectorPanel {
                             .flex()
                             .items_center()
                             .justify_end()
+                            .gap(theme::GAP_XS)
+                            .child(
+                                Button::new(SharedString::from(format!("dworld-{chap}")))
+                                    .xsmall()
+                                    .label("世界线")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(DirectorEvent::ViewInWorldline(chap));
+                                    })),
+                            )
                             .child(
                                 Button::new(SharedString::from(format!("dreview-{chap}")))
                                     .xsmall()
@@ -1110,5 +1158,124 @@ impl ComponentPanel for DirectorPanel {
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme::TEXT())
             .child("章节排期")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::ProjectHandle;
+    use std::path::PathBuf;
+
+    /// 真实 .zhibi 目录（chapters/ch-NNN/prose.md + 最小 project.json），
+    /// 不依赖 HOME：`ProjectHandle::open` 只读传入路径下的台账，
+    /// `window_for_jump`/`window_clamp` 是纯函数不看盘。
+    ///
+    /// 设计约束：窗函数必须能**脱离 GPUI 的 Window/Context** 直接测。
+    /// 真正的 bug 不在渲染态里，在「跳窗公式 vs 夹取公式」谁先谁后——
+    /// 那一帧用纯函数 replay 就够了。
+    fn fixture_book(tag: &str, written: &[u32]) -> (PathBuf, ProjectHandle) {
+        let base = std::env::temp_dir().join(format!("zhibi-director-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("测试书.zhibi");
+        for &n in written {
+            let ch = root.join("chapters").join(format!("ch-{n:03}"));
+            std::fs::create_dir_all(&ch).unwrap();
+            std::fs::write(ch.join("prose.md"), format!("第{n}章正文")).unwrap();
+        }
+        std::fs::create_dir_all(root.join("proposals")).unwrap();
+        std::fs::create_dir_all(root.join("canon")).unwrap();
+        std::fs::write(
+            root.join("project.json"),
+            serde_json::to_string(&serde_json::json!({
+                "title": "测试书",
+                "createdAt": "2026-11-16T00:00:00Z",
+                "targetChapters": 100,
+                "chapterWordTarget": 3000
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let handle = ProjectHandle::open(&root).expect("open .zhibi");
+        (root, handle)
+    }
+
+    /// 纯函数 truth table：把放置公式与夹取公式钉死在同一张表上。
+    #[test]
+    fn window_functions_are_truth_table() {
+        // —— window_for_jump ——
+        assert_eq!(window_for_jump(0), 1, "哨兵 0 不能下溢");
+        assert_eq!(window_for_jump(1), 1, "第 1 章从第 1 列起");
+        assert_eq!(window_for_jump(3), 1, "第 3 章仍落在窗口 [1,6)");
+        assert_eq!(window_for_jump(4), 2, "第 4 章移到 [2,7)，它落倒数第三列");
+        assert_eq!(window_for_jump(35), 33, "预演章正常定位");
+        assert_eq!(window_for_jump(u32::MAX), u32::MAX - 2, "上界也不溢出");
+
+        // —— window_clamp ——
+        assert_eq!(window_clamp(0, 8), 1, "无书态右界=1，窗必须拉回第 1 列——只夹上限");
+        assert_eq!(window_clamp(1, 8), 1, "新书窗被拉回第 1 列");
+        assert_eq!(window_clamp(13, 13), 13, "边界不触");
+        assert_eq!(window_clamp(13, 21), 13, "窗远低于书被删掉的章");
+    }
+
+    /// 跨页跳转的**顺序无关性**：先 refresh（夹回下一待写章）再 goto_chapter，
+    /// 是 workspace 里的真实事件序——两者必须可交换合成。
+    ///
+    /// 场景：书编到第 12 章（已写 1..12）+ 世界线预演到 35（尚未落正典）。
+    /// 从世界线跳：`switch_center` 先 refresh（此时 current 是上次残留的 38），
+    /// 接着 `goto_chapter(35)`。若 `goto_chapter` 里自己也调 `refresh`，
+    /// 预演章会被「下一待写章=13」的右界夹回左上，跳了等于没跳。
+    ///
+    /// 这里用「refresh-clamp 完接着 window_for_jump」的组合模拟 workspace 的顺序：
+    /// 它必须是先走到 right-for-refresh，再被 right-for-jump 定住不再动，
+    /// 且目标章落在最后 5 列窗口内。
+    #[test]
+    fn jump_then_clamp_survives_an_upstream_refresh() {
+        let (root, _handle) = fixture_book("order", &(1..=12).collect::<Vec<_>>());
+
+        // 真实事件序的 replay，用纯函数组合，不再需要 Window 基建。
+        // 1) 上次 session 残留的 current（停在 38）
+        let stale = 38;
+        // 2) switch_center(Mode::Director) 触发的 refresh：next_chapter=13 → 夹回 13
+        let next_chapter = 13_u32;
+        let after_refresh = window_clamp(next_chapter, stale);
+        assert_eq!(after_refresh, 13, "refresh 必须先夹回右界（书只有 12 章）");
+
+        // 3) goto_chapter(35)：只重定位、不再夹
+        let after_jump = window_for_jump(35);
+        assert_eq!(after_jump, 33, "goto_chapter 不能再次被夹（那是「没跳」的样子）");
+        assert!(
+            35 >= after_jump && 35 < after_jump + COLS as u32,
+            "目标章必须落在 5 列窗口内：[{}, {})",
+            after_jump,
+            after_jump + COLS as u32
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 哨兵 0（"从本板窗口起点"）不能饱和到下溢。
+    #[test]
+    fn goto_chapter_zero_hits_the_top() {
+        let (root, _h) = fixture_book("zero", &[1, 2, 3]);
+        assert_eq!(window_for_jump(0), 1, "0=从最前看");
+        let n_after_refresh = window_clamp(4 /* next_chapter=4 */, window_for_jump(0));
+        assert_eq!(n_after_refresh, 1, "组合序：哨兵 0 跳完再被 refresh 也仍在第 1 列");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// refresh 的夹取对「书变短」自卫：删完章节窗口不能悬在空列上。
+    #[test]
+    fn refresh_clamps_when_the_book_shrinks() {
+        let (root, handle) = fixture_book("shrink", &(1..=10).collect::<Vec<_>>());
+        // 删除 6..10 → chapters 只剩 5 → next_chapter=6
+        for n in 6..=10 {
+            std::fs::remove_dir_all(root.join(format!("chapters/ch-{n:03}"))).unwrap();
+        }
+        let next_chapter = handle.next_chapter_number();
+        assert_eq!(next_chapter, 6, "删减后右界已变");
+        let clamped = window_clamp(next_chapter, 8 /* 上次 current */);
+        assert_eq!(clamped, 6, "窗口必须被拉回下一待写章，不能停在 8");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

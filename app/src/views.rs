@@ -980,11 +980,30 @@ impl ComponentPanel for OutlinePanel {
 pub struct MemoryPanel {
     focus_handle: FocusHandle,
     handle: Rc<ProjectHandle>,
+    recall_terms: Entity<gpui_kit::component::input::InputState>,
+    recall_chapter: Entity<gpui_kit::component::input::InputState>,
 }
 
 impl MemoryPanel {
-    pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
-        Self { focus_handle: cx.focus_handle(), handle }
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
+        let recall_terms = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("人物 / 别名 / 关键词，空格分隔")
+        });
+        let recall_chapter = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx).placeholder("章号（可空）")
+        });
+        // 召回是渲染期算的：输入一变就必须重渲染，否则敲完字表格还是上一批。
+        // 与 editor.rs 的发话框同一做法（订阅 InputEvent::Change）。
+        cx.subscribe(&recall_terms, |_, _, _: &gpui_kit::component::input::InputEvent, cx| {
+            cx.notify()
+        })
+        .detach();
+        cx.subscribe(&recall_chapter, |_, _, _: &gpui_kit::component::input::InputEvent, cx| {
+            cx.notify()
+        })
+        .detach();
+        Self { focus_handle: cx.focus_handle(), handle, recall_terms, recall_chapter }
     }
 }
 
@@ -996,7 +1015,35 @@ impl Focusable for MemoryPanel {
 
 impl Render for MemoryPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let facts = self.handle.memory_facts();
+        // 一次读盘拿事实 + 别名（渲染期别读两遍，见 memory_ledger 的注释）
+        let (facts, aliases) = self.handle.memory_ledger();
+
+        // 召回：按相关度+章距+新近度排序去重，空查询=按新近度看最新一批。
+        let terms: Vec<String> = self
+            .recall_terms
+            .read(cx)
+            .value()
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+        let chapter = self.recall_chapter.read(cx).value().trim().parse::<u32>().ok();
+        let hits = crate::memory::recall(
+            &facts,
+            &aliases,
+            &crate::memory::RecallQuery { chapter, terms, limit: 12 },
+        );
+        let mut recall_rows = Vec::new();
+        for h in &hits {
+            recall_rows.push(row(vec![
+                Cell::Hi(h.fact.subject.clone()),
+                Cell::Text(h.fact.predicate.clone()),
+                Cell::Text(h.fact.object.chars().take(40).collect()),
+                Cell::Dim(format!("第{}章", h.fact.chapter)),
+                Cell::Chip(format!("{}", h.score), Tone::Blue),
+                Cell::Dim(if h.reasons.is_empty() { "新近".into() } else { h.reasons.join("/") }),
+            ]));
+        }
+
         let mut rows = Vec::new();
         for f in facts.iter() {
             let public = f.get("publicToReader").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -1015,12 +1062,44 @@ impl Render for MemoryPanel {
         }
         panel_root("memory-scroll").child(
             panel_col()
+                .child(sec_title("召回（按需，不自动挂载）"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_MD)
+                        .child(div().flex_1().min_w_0().child(
+                            gpui_kit::component::input::Input::new(&self.recall_terms)
+                                .bg(theme::PANEL2())
+                                .border_1()
+                                .border_color(theme::LINE())
+                                .rounded(theme::RADIUS_BTN)
+                                .text_size(theme::FONT_BODY)
+                                .text_color(theme::TEXT()),
+                        ))
+                        .child(div().w(px(96.)).flex_shrink_0().child(
+                            gpui_kit::component::input::Input::new(&self.recall_chapter)
+                                .bg(theme::PANEL2())
+                                .border_1()
+                                .border_color(theme::LINE())
+                                .rounded(theme::RADIUS_BTN)
+                                .text_size(theme::FONT_BODY)
+                                .text_color(theme::TEXT()),
+                        )),
+                )
+                .child(kit_table(&["主语", "谓语", "宾语", "生效", "分", "理由"], recall_rows))
+                .when_true(hits.is_empty(), |d| {
+                    d.child(empty_hint("没有可召回的事实", "写完一章点「让AI记一笔」，或换个关键词 / 章号。"))
+                })
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
                         .gap(theme::GAP_MD)
+                        .pt(theme::GAP_GROUP)
+                        .border_t_1()
+                        .border_color(theme::LINE())
                         .child(sec_title("事实账本（双时态）"))
                         .child(cap_btn("memory-extract", "让AI记一笔", cx).on_click(
                             cx.listener(|_this, _, _, cx| {
@@ -3948,6 +4027,7 @@ impl GraphPanel {
 }
 
 impl EventEmitter<PanelEvent> for GraphPanel {}
+impl EventEmitter<ViewEvent> for GraphPanel {}
 
 impl Focusable for GraphPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -3956,10 +4036,17 @@ impl Focusable for GraphPanel {
 }
 
 impl Render for GraphPanel {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let lines = self.handle.storylines();
         let events = self.handle.events();
-        let facts = self.handle.memory_facts();
+        // 一次读盘拿事实 + 别名（渲染期别读两遍，见 store::memory_ledger）
+        let (facts, aliases) = self.handle.memory_ledger();
+        let cur = self.handle.chapters().iter().map(|c| c.n).max().unwrap_or(0);
+        // 书级推断规则：memory.json 的 inferRules 块可覆盖默认（修仙题材加 师徒/道侣…）
+        let rules = crate::memory::InferRules::from_memory_json(
+            &self.handle.memory_rules_blob(),
+        );
+        let inf = crate::memory::infer_with_rules(&facts, &aliases, cur, &rules);
 
         let mut body: Vec<gpui_kit::AnyElement> = Vec::new();
         for (gi, l) in lines.iter().enumerate() {
@@ -4014,7 +4101,7 @@ impl Render for GraphPanel {
                         .into_any_element(),
                 );
             } else {
-                for r in related.iter().take(12) {
+                for r in related.iter() {
                     // 「第N章」前缀按台账码等宽处理，事实正文走次级档（规则 8/10）。
                     let (chap, rest) = match r.split_once(' ') {
                         Some((c, o)) => (c.to_string(), o.to_string()),
@@ -4054,6 +4141,98 @@ impl Render for GraphPanel {
             body.push(
                 empty_hint("还没有故事线 / 事件", "建框架提案采纳后，这里按线展开事件与事实锚点。").into_any_element(),
             );
+        }
+        // 推断区：同师/对称推导、单值冲突、陈旧待复核。只读报告，供作者裁决。
+        if !inf.implied.is_empty() || !inf.contradictions.is_empty() || !inf.stale.is_empty() {
+            body.push(
+                div()
+                    .border_t_1()
+                    .border_color(theme::LINE())
+                    .pt(theme::GAP_GROUP)
+                    .child(sec_title("记忆推断"))
+                    .into_any_element(),
+            );
+            for m in &inf.implied {
+                body.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_MD)
+                        .pl(theme::PAD_MD)
+                        .py(theme::GAP_XS)
+                        .child(div().flex_shrink_0().text_size(theme::FONT_LABEL).text_color(theme::GREEN()).child("推导"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(theme::FONT_META)
+                                .text_color(theme::DIM())
+                                .child(SharedString::from(format!("{} ·{}· {}（{}）", m.subject, m.predicate, m.object, m.rule))),
+                        )
+                        .into_any_element(),
+                );
+            }
+            for c in &inf.contradictions {
+                // 冲突不是只能"看"——给作者一条把它送进 AI 裁决的通路：
+                // 让 AI 读上下文后给一条修正提案（作者采纳才落库，铁律不变）。
+                // 事件沿 Delegate 走（与人物卡「补全这张卡」同一条路径），
+                // 主 Agent 按 capabilities::routing_hint 派给合适的专属 Agent。
+                let (s2, p2, objs2) = (c.subject.clone(), c.predicate.clone(), c.objects.clone());
+                let target_desc = format!(
+                    "记忆冲突：{} ·{}· 同时指向 [{}]。请读 memory.json 与相关章节正文，判断哪一条对、其余是否为别名/旧版本/录入错误，产出一条 propose_memory 修正提案（删除或更正错误的宾语），引用涉及的事实编号。不要直写台账。",
+                    s2, p2, objs2.join(" / ")
+                );
+                body.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_MD)
+                        .pl(theme::PAD_MD)
+                        .py(theme::GAP_XS)
+                        .child(div().flex_shrink_0().text_size(theme::FONT_LABEL).text_color(theme::AMBER()).child("冲突"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(theme::FONT_META)
+                                .text_color(theme::AMBER())
+                                .child(SharedString::from(format!("{} ·{}· 同时指向 {}（第{}章）", c.subject, c.predicate, c.objects.join(" / "), c.chapters.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(",")))),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("mem-fix-{}-{}", c.subject, c.predicate)))
+                                .label("裁决")
+                                .xsmall()
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(ViewEvent::Delegate {
+                                        agent: "reviewer",
+                                        key: "review-chapter",
+                                        target: Some(target_desc.clone()),
+                                    });
+                                })),
+                        )
+                        .into_any_element(),
+                );
+            }
+            for id in &inf.stale {
+                body.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_MD)
+                        .pl(theme::PAD_MD)
+                        .py(theme::GAP_XS)
+                        .child(div().flex_shrink_0().text_size(theme::FONT_LABEL).text_color(theme::FAINT()).child("待复核"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(theme::FONT_META)
+                                .text_color(theme::FAINT())
+                                .child(SharedString::from(format!("事实 {} 生效章远落后于当前第{}章", id, cur))),
+                        )
+                        .into_any_element(),
+                );
+            }
         }
         body.push(
             div()
@@ -4673,6 +4852,12 @@ impl ComponentPanel for KnowledgePanel {
 pub enum ChaptersEvent {
     Open(u32),
     NewChapter,
+    /// 驾驶舱格子点了：跳到对应页（伏笔/故事线/世界线/排期…）
+    Goto(crate::workspace::Mode),
+    /// 章节卡「排期板」：切到排期板并定位该章
+    JumpDirector(u32),
+    /// 章节卡「世界线」：切到世界线并聚焦该章
+    JumpWorldline(u32),
 }
 
 /// 全书章节总览：目录 + 进度 + 快速进入。
@@ -4788,7 +4973,287 @@ impl ChaptersPanel {
                             .child(SharedString::from(if active { "正在写" } else { "打开 →" })),
                     ),
             )
+            // 卡片尾部：跳排期板 / 跳世界线（纯导航，不改任何台账）。
+            // 这两格和驾驶舱格形成三角——章节页 ↔ 排期板 ↔ 世界线双向可达。
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::GAP_XS)
+                    .pt(theme::GAP_XS)
+                    .border_t_1()
+                    .border_color(theme::LINE())
+                    .child(
+                        Button::new(SharedString::from(format!("ch-dir-{n}")))
+                            .label("排期板")
+                            .xsmall()
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(ChaptersEvent::JumpDirector(n));
+                            })),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("ch-wld-{n}")))
+                            .label("世界线")
+                            .xsmall()
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(ChaptersEvent::JumpWorldline(n));
+                            })),
+                    ),
+            )
             .into_any_element()
+    }
+
+    /// 「现在」驾驶舱：一进书就看到写这一章要接什么、有什么该收了。
+    /// 六宫格，全部确定性计算（不调 AI），每一项都是"作者现在就能做的事"。
+    fn cockpit(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let handle = &self.handle;
+        let chapters = handle.chapters();
+        let written_max = chapters.iter().filter(|c| c.has_prose).map(|c| c.n).max().unwrap_or(0);
+        let next_ch = handle.next_chapter_number();
+
+        // 1. 固化边界 + 2. forecast 末梢（一次读 worldlines）
+        let store = crate::worldline::Store::new(&handle.root);
+        let lines = store.all().unwrap_or_default();
+        let boundary = store.fixed_boundary(&lines);
+        let forecast_horizon = crate::worldline::layout::fan(&lines, boundary).horizon;
+
+        // 3. 当前章（写稿目标章）
+        let cur = self.current.max(1);
+
+        // 4. 今日字数
+        let today = handle.daily_words().last().map(|(_, w)| *w).unwrap_or(0);
+
+        // 5. 静默伏笔（≥8 章没养的）
+        let clues = handle.clues_full();
+        let mut silent_clues: Vec<(String, u32)> = clues
+            .iter()
+            .filter(|c| matches!(c.get("status").and_then(|v| v.as_str()), Some("埋下" | "推进中")))
+            .filter_map(|c| {
+                let planted = c.get("plantedChapter").and_then(|v| v.as_u64())? as u32;
+                let last = c
+                    .get("lastActionChapter")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32)
+                    .unwrap_or(planted);
+                let silent = next_ch.saturating_sub(last.max(planted));
+                if silent >= 8 {
+                    Some((c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(), silent))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        silent_clues.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+
+        // 6. 断线故事线
+        let broken_lines: usize = handle
+            .storylines()
+            .iter()
+            .filter(|l| l.get("status").and_then(|v| v.as_str()) == Some("断线"))
+            .count();
+
+        // — B4 前瞻：按日均字数推算完本日 —
+        let daily = handle.daily_words();
+        let recent_avg = if daily.is_empty() {
+            0
+        } else {
+            let recent = daily.iter().rev().take(14).map(|(_, w)| *w).sum::<usize>();
+            recent / daily.len().min(14)
+        };
+        let target_chapters = handle.project_meta().target_chapters;
+        let word_target = handle.project_word_target() as u64;
+        let total_target = target_chapters as u64 * word_target;
+        let total_now: u64 = chapters.iter().map(|c| c.words as u64).sum();
+        let eta_label = if recent_avg == 0 || total_target == 0 || total_now >= total_target {
+            None
+        } else {
+            let remain = total_target - total_now;
+            let days = (remain as f64 / recent_avg as f64).ceil() as u64;
+            Some((days, recent_avg))
+        };
+
+        // 七格数据（标签, 主值, 副行, tone, 点击跳哪）
+        let mut cells: Vec<gpui_kit::AnyElement> = Vec::new();
+
+        // — 固化边界 —
+        cells.push(cockpit_cell(
+            "固化到",
+            format!("第 {boundary} 章"),
+            format!("if 空间从 {} 起", (boundary + 1).max(1)),
+            Tone::Blue,
+            Some(crate::workspace::Mode::Worldline),
+            cx,
+        ));
+
+        // — 预测推到 —
+        let forecast_label = if forecast_horizon > boundary {
+            format!("第 {forecast_horizon} 章")
+        } else {
+            "还没推".to_string()
+        };
+        cells.push(cockpit_cell(
+            "预测到",
+            forecast_label,
+            if forecast_horizon > boundary {
+                format!("领先正文 {} 章", forecast_horizon - written_max)
+            } else {
+                "在预言书推一条".to_string()
+            },
+            if forecast_horizon > boundary { Tone::Green } else { Tone::Neutral },
+            Some(crate::workspace::Mode::Oracle),
+            cx,
+        ));
+
+        // — 正在写 —
+        cells.push(cockpit_cell(
+            "正在写",
+            format!("第 {cur} 章"),
+            if cur <= boundary { "补写已固化段".to_string() } else { format!("开放区 · 下一 {next_ch}") },
+            Tone::Accent,
+            Some(crate::workspace::Mode::Editor),
+            cx,
+        ));
+
+        // — 今日字数 —
+        cells.push(cockpit_cell(
+            "今日",
+            format!("+{today} 字"),
+            if today > 0 { "继续".to_string() } else { "还没动笔".to_string() },
+            if today > 0 { Tone::Green } else { Tone::Neutral },
+            Some(crate::workspace::Mode::Stats),
+            cx,
+        ));
+
+        // — 静默伏笔 —
+        let clue_main = if silent_clues.is_empty() {
+            "都养着".to_string()
+        } else {
+            format!("{} 条静默", silent_clues.len())
+        };
+        let clue_sub = if let Some((id, silent)) = silent_clues.first() {
+            format!("最久 {} · {} 章没动", id, silent)
+        } else {
+            "8 章内都养过".to_string()
+        };
+        cells.push(cockpit_cell(
+            "伏笔",
+            clue_main,
+            clue_sub,
+            if silent_clues.is_empty() { Tone::Green } else { Tone::Amber },
+            Some(crate::workspace::Mode::Clues),
+            cx,
+        ));
+
+        // — 断线故事线 —
+        cells.push(cockpit_cell(
+            "故事线",
+            if broken_lines == 0 { "都连着".to_string() } else { format!("{broken_lines} 条断线") },
+            if broken_lines == 0 { "健康".to_string() } else { "排期板里看看".to_string() },
+            if broken_lines == 0 { Tone::Green } else { Tone::Amber },
+            Some(crate::workspace::Mode::Outline),
+            cx,
+        ));
+
+        // — 预计完本（B4 前瞻指标） —
+        cells.push(cockpit_cell(
+            "预计完本",
+            eta_label.map(|(d, _)| format!("{d} 天")).unwrap_or_else(|| "—".to_string()),
+            match eta_label {
+                Some((_, avg)) => format!("日均 {avg} 字"),
+                None if total_target == 0 => "没设目标".to_string(),
+                None if recent_avg == 0 => "还没写作记录".to_string(),
+                None => "已达标".to_string(),
+            },
+            if eta_label.is_some() { Tone::Accent } else { Tone::Neutral },
+            Some(crate::workspace::Mode::Stats),
+            cx,
+        ));
+
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(theme::GAP_MD)
+            .w_full()
+            .p(theme::PAD_LG)
+            .rounded(theme::RADIUS_CARD)
+            .border_1()
+            .border_color(theme::LINE())
+            .bg(theme::PANEL2())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::GAP_SM)
+                    .w_full()
+                    .child(
+                        div()
+                            .text_size(theme::FONT_TAG)
+                            .text_color(theme::FAINT())
+                            .child("现在"),
+                    ),
+            )
+            .children(cells)
+            .into_any_element()
+    }
+}
+
+/// 驾驶舱一格：标签 + 主值 + 副行。`Some(mode)` 时可点——点一下切到对应页。
+fn cockpit_cell(
+    label: &'static str,
+    main: String,
+    sub: String,
+    tone: Tone,
+    goto: Option<crate::workspace::Mode>,
+    cx: &mut Context<ChaptersPanel>,
+) -> gpui_kit::AnyElement {
+    let body = || {
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme::GAP_XS)
+            .child(
+                div()
+                    .text_size(theme::FONT_LABEL)
+                    .text_color(theme::FAINT())
+                    .child(label),
+            )
+            .child(
+                div()
+                    .text_size(theme::FONT_BODY)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(tone.text())
+                    .child(SharedString::from(main.clone())),
+            )
+            .child(
+                div()
+                    .text_size(theme::FONT_TAG)
+                    .text_color(theme::DIM())
+                    .child(SharedString::from(sub.clone())),
+            )
+    };
+    match goto {
+        Some(mode) => div()
+            .id(SharedString::from(format!("cockpit-{label}")))
+            .flex_1()
+            .min_w(px(140.))
+            .p(theme::PAD_MD)
+            .rounded(theme::RADIUS_BTN)
+            .bg(theme::PANEL())
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::ACCENT_SOFT()))
+            .on_click(cx.listener(move |_this, _, _, cx| {
+                cx.emit(ChaptersEvent::Goto(mode));
+            }))
+            .child(body())
+            .into_any_element(),
+        None => div()
+            .flex_1()
+            .min_w(px(140.))
+            .p(theme::PAD_MD)
+            .rounded(theme::RADIUS_BTN)
+            .bg(theme::PANEL())
+            .child(body())
+            .into_any_element(),
     }
 }
 
@@ -4974,6 +5439,10 @@ impl Render for ChaptersPanel {
                     .children(bars),
             );
         }
+
+        // —— 「现在」驾驶舱：一进书就看到这章接什么、有什么该收了 ——
+        // 全是确定性计算，不调 AI；每一项都是"作者现在就能做的事"。
+        body = body.child(self.cockpit(cx));
 
         if chapters.is_empty() {
             body = body.child(

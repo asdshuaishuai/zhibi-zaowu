@@ -10,6 +10,7 @@
 import { writeFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { NovelStore, safeFileName, type Proposal } from './store.ts'
+import { recall, inferWithRules, inferRulesFromMemoryJson } from './memory.ts'
 import { canWriteLedger, canWriteProse, currentMode, ghostwriteChapters } from './write-policy.ts'
 
 export const name = 'zhibi-novel-pack'
@@ -44,7 +45,66 @@ function textTool(
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    execute: async (args) => run(args),
+    // C3：schema 从"建文档"升级为真校验。execute 之前先按 parameters 的描述
+    // （type/required/items.type）逐字段检查 args；不符合直接抛错让模型看到原因，
+    // 而不是默默给一个空结果。这是运行时兜底——模型不传或乱传时作者能看到"为什么没跑"。
+    execute: async (args) => {
+      validateArgs(name, parameters, args)
+      return run(args)
+    },
+  }
+}
+
+/** 按 `parameters` 里的 type / required / items.type 对 args 做最小运行时校验。 */
+function validateArgs(
+  toolName: string,
+  parameters: Record<string, unknown>,
+  args: any,
+): void {
+  if (!args || typeof args !== 'object') return
+  for (const [key, spec] of Object.entries(parameters)) {
+    if (!spec || typeof spec !== 'object') continue
+    const s = spec as Record<string, unknown>
+    const required = s['required'] === true
+    const val = args[key]
+    // required 字段缺省 → 报错；optional 字段缺省 → 跳过类型检查
+    if (val === undefined || val === null) {
+      if (required) {
+        throw new Error(`工具 ${toolName} 缺少必填参数 "${key}"（${s['description'] ?? ''}）`)
+      }
+      continue
+    }
+    const expect = s['type']
+    if (expect === 'string' && typeof val !== 'string') {
+      throw new Error(`工具 ${toolName} 参数 "${key}" 需要 string，收到 ${typeof val}`)
+    }
+    if (expect === 'number' && (typeof val !== 'number' || !Number.isFinite(val))) {
+      throw new Error(`工具 ${toolName} 参数 "${key}" 需要 number，收到 ${JSON.stringify(val)}`)
+    }
+    if (expect === 'boolean' && typeof val !== 'boolean') {
+      throw new Error(`工具 ${toolName} 参数 "${key}" 需要 boolean，收到 ${typeof val}`)
+    }
+    if (expect === 'array') {
+      if (!Array.isArray(val)) {
+        throw new Error(`工具 ${toolName} 参数 "${key}" 需要 array，收到 ${typeof val}`)
+      }
+      const items = s['items'] as Record<string, unknown> | undefined
+      const itemType = items?.['type']
+      if (itemType) {
+        for (const [i, el] of val.entries()) {
+          if (itemType === 'string' && typeof el !== 'string') {
+            throw new Error(
+              `工具 ${toolName} 参数 "${key}"[${i}] 需要 string，收到 ${typeof el}`,
+            )
+          }
+          if (itemType === 'number' && (typeof el !== 'number' || !Number.isFinite(el))) {
+            throw new Error(
+              `工具 ${toolName} 参数 "${key}"[${i}] 需要 number，收到 ${JSON.stringify(el)}`,
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -781,6 +841,62 @@ function registerTools(ctx: Context, store: NovelStore, closed: boolean, hostApp
             null,
             1,
           )
+        }),
+    ),
+
+    textTool(
+      'recall_memory',
+      '按需召回记忆事实：给定章号/人物/关键词，按相关度+章距衰减+新近度排序去重返回（别名自动归一）。写作不自动召回——需要对账某章/某人时显式调它。返回带 score 与命中理由，便于取舍。',
+      {
+        chapter: num('当前章号（按章距加权；传 0 或不传=不加权）', false),
+        terms: { type: 'array', description: '人物名/别名/关键词列表', required: false, items: { type: 'string' } },
+        limit: num('返回条数上限，默认 12', false),
+      },
+      (args) =>
+        guard(async () => {
+          const mem = await store.readJSON<Record<string, unknown>>('memory.json', {})
+          const facts = Array.isArray(mem['facts']) ? (mem['facts'] as any[]) : []
+          const aliases = Array.isArray(mem['aliases']) ? (mem['aliases'] as any[]) : []
+          const chapter = Number(args.chapter) || 0
+          const hits = recall(facts, aliases, {
+            chapter: chapter > 0 ? chapter : undefined,
+            terms: Array.isArray(args.terms) ? args.terms.map(String) : [],
+            limit: Number(args.limit) || 12,
+          })
+          if (hits.length === 0) return '没有可召回的事实（先写一章并「让AI记一笔」）。'
+          return JSON.stringify(
+            hits.map((h) => ({
+              id: h.fact.id,
+              subject: h.fact.subject,
+              predicate: h.fact.predicate,
+              object: h.fact.object,
+              chapter: h.fact.chapter,
+              publicToReader: h.fact.public,
+              score: h.score,
+              reasons: h.reasons,
+            })),
+            null,
+            1,
+          )
+        }),
+    ),
+
+    textTool(
+      'infer_memory',
+      '从记忆事实推断：同师推导同门、对称关系补全、单值谓语（夫妻/配偶/生父/生母）冲突检出、陈旧事实待复核。只读报告，不写台账；冲突与推导供作者裁决或再提案。',
+      { currentChapter: num('当前固化边界章号（用于陈旧判定；不传=取最新成稿章）', false) },
+      (args) =>
+        guard(async () => {
+          const mem = await store.readJSON<Record<string, unknown>>('memory.json', {})
+          const facts = Array.isArray(mem['facts']) ? (mem['facts'] as any[]) : []
+          const aliases = Array.isArray(mem['aliases']) ? (mem['aliases'] as any[]) : []
+          let cur = Number(args.currentChapter) || 0
+          if (cur <= 0) {
+            const written = await store.writtenChapters()
+            cur = written.length ? written[written.length - 1] : 0
+          }
+          const inf = inferWithRules(facts, aliases, cur, inferRulesFromMemoryJson(mem))
+          return JSON.stringify(inf, null, 1)
         }),
     ),
 
