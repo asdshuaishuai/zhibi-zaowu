@@ -173,6 +173,69 @@ fn read_meta_title(dir: &Path) -> Option<String> {
     v.get("title").and_then(|t| t.as_str()).map(String::from)
 }
 
+/// 章节字数缓存：键 = prose.md 绝对路径，值 = (mtime, 字节长度, 汉字数, 是否非空)。
+///
+/// 字数只随保存变化，而保存一定更新 mtime，所以用 (mtime, len) 当版本号就足够：
+/// 没变就命中缓存，只付一次 stat，不再整篇读盘重数。
+type ChapterStat = (u64, u64, usize, bool);
+
+/// 章节列表的整表缓存 + 一个由写路径递增的代数号。
+///
+/// `chapters()` 是 render 期热函数（章节页每帧两次、驾驶舱/排期板/画布各一次）。
+/// 逐章 stat 300 个 prose + 读 300 个 meta.json 仍然要 600 次系统调用，
+/// 所以缓存**整张表**，用代数号（而不是文件时间戳）判失效：
+/// 所有会改变章节列表的写路径都调 [`bump_chapters_epoch`]，比逐文件探测便宜且不会漏。
+static CHAPTERS_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+type ChaptersCache = std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, Vec<ChapterInfo>)>>;
+
+fn chapters_cache() -> &'static ChaptersCache {
+    static CACHE: std::sync::OnceLock<ChaptersCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 让所有书目的章节缓存失效。任何新建/删除章节、改标题、存正文之后都要调。
+pub(crate) fn bump_chapters_epoch() {
+    CHAPTERS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn chapters_epoch() -> u64 {
+    CHAPTERS_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn chapter_stat_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, ChapterStat>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, ChapterStat>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 读一章的字数与「是否有正文」；mtime + 字节长度未变时直接命中缓存。
+pub(crate) fn chapter_words_cached(prose_path: &Path) -> (usize, bool) {
+    let meta = std::fs::metadata(prose_path).ok();
+    let mtime = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    if let Ok(cache) = chapter_stat_cache().lock()
+        && let Some(&(c_mtime, c_len, words, has)) = cache.get(prose_path)
+        && c_mtime == mtime
+        && c_len == len
+    {
+        return (words, has);
+    }
+    let prose = std::fs::read_to_string(prose_path).unwrap_or_default();
+    let words = chinese_count(&prose);
+    let has = !prose.trim().is_empty();
+    if let Ok(mut cache) = chapter_stat_cache().lock() {
+        cache.insert(prose_path.to_path_buf(), (mtime, len, words, has));
+    }
+    (words, has)
+}
+
 /// 扫描书架：每个 .zhibi 目录一张卡（章节数 / 总字数现算——书架量级可接受）。
 pub fn list_projects() -> Vec<ProjectRef> {
     let dir = projects_dir();
@@ -371,7 +434,27 @@ impl ProjectHandle {
     }
 
     /// 章节列表（有 prose.md 才算，含标题与字数），按章号升序。
+    ///
+    /// **render 期热函数**：章节页每帧调两次，驾驶舱 / 排期板 / 画布各一次。
+    /// 整张表按书目录缓存，失效由写路径递增的代数号触发（见 [`bump_chapters_epoch`]）——
+    /// 逐章 stat 300 个文件也要 600 次系统调用，缓存在表级才真正省下来。
     pub fn chapters(&self) -> Vec<ChapterInfo> {
+        let epoch = chapters_epoch();
+        if let Ok(cache) = chapters_cache().lock()
+            && let Some((cached_epoch, list)) = cache.get(&self.root)
+            && *cached_epoch == epoch
+        {
+            return list.clone();
+        }
+        let list = self.scan_chapters();
+        if let Ok(mut cache) = chapters_cache().lock() {
+            cache.insert(self.root.clone(), (epoch, list.clone()));
+        }
+        list
+    }
+
+    /// 真正扫盘构建章节表。只有缓存未命中时才走这里。
+    fn scan_chapters(&self) -> Vec<ChapterInfo> {
         let mut out = Vec::new();
         let ch_dir = self.root.join("chapters");
         if let Ok(entries) = std::fs::read_dir(&ch_dir) {
@@ -385,14 +468,14 @@ impl ProjectHandle {
                     None => continue,
                 };
                 let prose_path = e.path().join("prose.md");
-                let prose = std::fs::read_to_string(&prose_path).unwrap_or_default();
+                let (words, has_prose) = chapter_words_cached(&prose_path);
                 let title =
                     read_meta_title(&e.path()).unwrap_or_else(|| format!("第{n}章"));
                 out.push(ChapterInfo {
                     n,
                     title,
-                    words: chinese_count(&prose),
-                    has_prose: !prose.trim().is_empty(),
+                    words,
+                    has_prose,
                 });
             }
         }
@@ -425,6 +508,8 @@ impl ProjectHandle {
         let old_words = chinese_count(&old_text);
         let new_words = chinese_count(text);
         write_atomic(&self.prose_path(n), text)?;
+        // 正文变了：章节表的字数/成稿状态要重算
+        bump_chapters_epoch();
         // 落盘成功才记日志：写失败还留一条“已改动”的记录会误导撤销
         if old_text != text {
             let rel = format!("chapters/{}/prose.md", chapter_dir_name(n));
@@ -497,6 +582,8 @@ impl ProjectHandle {
         if !prose.exists() {
             write_atomic(&prose, "")?;
         }
+        // 新章进了目录：章节表必须重扫（否则新章要等下一次别的写操作才出现）
+        bump_chapters_epoch();
         Ok(())
     }
 
@@ -739,6 +826,68 @@ mod tests {
 
         let list = list_projects();
         assert!(list.iter().any(|p| p.title == "测试书" && p.words > 0));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 章节字数缓存必须**跟随保存立即失效**：这是缓存唯一的正确性风险。
+    ///
+    /// 章节页/驾驶舱/排期板都在 render 期调 `chapters()`，缓存靠 (mtime, len) 判版本。
+    /// 如果保存后字数还停在旧值，作者会看到"刚写的字没算进去"——比慢更糟。
+    #[test]
+    fn chapter_word_cache_follows_saves() {
+        let (home, _guard) = use_home("chapter-cache");
+        let dir = create_project("缓存测试").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+
+        h.save_prose(1, "一二三").unwrap();
+        assert_eq!(h.chapters()[0].words, 3, "首次读盘");
+        assert_eq!(h.chapters()[0].words, 3, "第二次命中缓存");
+
+        // 变长保存：mtime/长度都变，必须重算
+        h.save_prose(1, "一二三四五").unwrap();
+        assert_eq!(h.chapters()[0].words, 5, "保存后字数必须立刻更新，不能读到缓存旧值");
+
+        // 清空正文：字数归零且不再算成稿
+        h.save_prose(1, "").unwrap();
+        let c = &h.chapters()[0];
+        assert_eq!(c.words, 0);
+        assert!(!c.has_prose, "空正文不算成稿");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 章节表缓存的**确定性**护栏（不靠计时，避免 CI 抖动）。
+    ///
+    /// 手法：绕过写路径直接改盘 → 缓存应仍返回旧值（证明缓存在生效）；
+    /// 再递增代数号 → 必须立刻看到新值（证明失效链路通）。
+    /// 若有人删掉缓存，第一步就会读到新值而失败；若有人忘记在写路径 bump，
+    /// 第二步会失败。两个方向都钉住。
+    #[test]
+    fn chapter_list_cache_is_live_and_invalidates_on_bump() {
+        let (home, _guard) = use_home("chapter-list-cache");
+        let dir = create_project("列表缓存").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+
+        h.save_prose(1, "一二三").unwrap();
+        assert_eq!(h.chapters()[0].words, 3, "首次读盘");
+
+        // 绕过 save_prose 直接写盘（不 bump）：缓存应仍给旧值
+        let prose_path = dir.join("chapters/ch-001/prose.md");
+        std::fs::write(&prose_path, "一二三四五六七").unwrap();
+        assert_eq!(
+            h.chapters()[0].words,
+            3,
+            "缓存没生效——直接改盘竟被立刻读到，说明 chapters() 每帧都在重扫全书"
+        );
+
+        // 递增代数号（写路径本该做的事）：必须立刻看到新值
+        bump_chapters_epoch();
+        assert_eq!(
+            h.chapters()[0].words,
+            7,
+            "失效链路断了——bump 之后仍读到旧字数"
+        );
+
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -3229,7 +3378,9 @@ impl ProjectHandle {
                 obj.insert((*k).to_string(), val.clone());
             }
         }
-        write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
+        let r = write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
+        bump_chapters_epoch();
+        r
     }
 
     pub fn set_chapter_title(&self, n: u32, title: &str) -> Result<(), String> {
@@ -3244,7 +3395,9 @@ impl ProjectHandle {
             obj.insert("title".into(), serde_json::json!(title));
             obj.insert("number".into(), serde_json::json!(n));
         }
-        write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
+        let r = write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
+        bump_chapters_epoch();
+        r
     }
 
     pub fn chapter_notes(&self, n: u32) -> String {
@@ -3270,7 +3423,9 @@ impl ProjectHandle {
         if let Some(obj) = v.as_object_mut() {
             obj.insert("notes".into(), serde_json::json!(notes));
         }
-        write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
+        let r = write_atomic(&meta, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
+        bump_chapters_epoch();
+        r
     }
 
     /// 最近成稿章（有非空正文的最大章号；无成稿时按 1）。

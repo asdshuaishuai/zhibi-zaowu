@@ -1,8 +1,9 @@
 //! 全局搜索（作者侧）：⌥⌘F 唤起，跨正文/设定/人物/伏笔/事件全文子串匹配。
 //!
-//! 纯本地、零 AI、零网络。200 章的书也就几十 MB 文本，正则扫描毫秒级。
-//! 结果按类别分组，点一条跳过去（章节进稿纸，其他进对应台账页并高亮）。
+//! 纯本地、零 AI、零网络，采用子串匹配。
+//! 结果按类别分组，点一条定位章节、设定文档或台账条目。
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::component::button::Button;
@@ -56,8 +57,10 @@ impl HitKind {
 pub enum HitTarget {
     /// 打开第 N 章稿纸
     Chapter(u32),
-    /// 切到对应台账页
-    Mode(crate::workspace::Mode),
+    Canon(String),
+    Character(String),
+    Clue(String),
+    Event(String),
 }
 
 /// 搜出来的批次（一次 query 的全部命中，按类别分组）。
@@ -102,6 +105,11 @@ impl SearchPanel {
         }
     }
 
+    /// 唤起搜索页时把工作区焦点移进搜索框（⌥⌘F 之后打开就能敲字）。
+    pub fn input_focus_handle(&self, cx: &Context<Self>) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+
     fn run_search(&mut self, cx: &mut Context<Self>) {
         let q = self.input.read(cx).value().trim().to_string();
         if q.len() < 2 {
@@ -126,6 +134,43 @@ impl Focusable for SearchPanel {
     }
 }
 
+/// 全书正文语料缓存，**按书目录分键**。
+///
+/// 为什么要分键：这是进程级静态缓存，而一个进程里可能先后打开多本书
+/// （书架切书、测试并行跑不同 fixture）。只存一份会让 A 书的内容被 B 书命中，
+/// 表现为"搜到了别的书里的句子"——比慢严重得多。
+///
+/// 版本用章节代数号（写路径递增），不用逐文件 mtime：后者每轮要 300 次 stat，
+/// 每次按键都搜时仍是可见开销。代数号只在保存/建章/改标题时变，时机完全一致。
+type Corpus = Vec<(u32, String, String)>;
+
+fn corpus_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, Corpus)>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, Corpus)>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 取全书正文（章号, 标题, 正文）。命中缓存时不读盘、不 stat。
+fn prose_corpus(handle: &ProjectHandle) -> Corpus {
+    let sig = crate::store::chapters_epoch();
+    if let Ok(guard) = corpus_cache().lock()
+        && let Some((cached_sig, corpus)) = guard.get(&handle.root)
+        && *cached_sig == sig
+    {
+        return corpus.clone();
+    }
+    let corpus: Corpus = handle
+        .chapters()
+        .into_iter()
+        .map(|ch| (ch.n, ch.title, handle.prose(ch.n)))
+        .collect();
+    if let Ok(mut guard) = corpus_cache().lock() {
+        guard.insert(handle.root.clone(), (sig, corpus.clone()));
+    }
+    corpus
+}
+
 /// 跨正文 + 台账 + 设定的子串搜索。大小写敏感（中文无大小写问题）。
 /// 返回按 HitKind 字典序 + 组内标题排序的结果。
 pub fn search_book(handle: &ProjectHandle, query: &str) -> Vec<SearchHit> {
@@ -136,21 +181,20 @@ pub fn search_book(handle: &ProjectHandle, query: &str) -> Vec<SearchHit> {
     let q = query;
 
     // 1. 正文（含标题）
-    for ch in handle.chapters() {
-        let prose = handle.prose(ch.n);
+    for (n, title, prose) in prose_corpus(handle) {
         if let Some(snippet) = snippet_around(&prose, q) {
             hits.push(SearchHit {
                 kind: HitKind::Chapter,
-                title: format!("第 {} 章 · {}", ch.n, ch.title),
+                title: format!("第 {n} 章 · {title}"),
                 snippet,
-                target: HitTarget::Chapter(ch.n),
+                target: HitTarget::Chapter(n),
             });
-        } else if ch.title.contains(q) {
+        } else if title.contains(q) {
             hits.push(SearchHit {
                 kind: HitKind::Chapter,
-                title: format!("第 {} 章 · {}", ch.n, ch.title),
-                snippet: format!("（标题命中）{}", ch.title),
-                target: HitTarget::Chapter(ch.n),
+                title: format!("第 {n} 章 · {title}"),
+                snippet: format!("（标题命中）{title}"),
+                target: HitTarget::Chapter(n),
             });
         }
     }
@@ -170,7 +214,7 @@ pub fn search_book(handle: &ProjectHandle, query: &str) -> Vec<SearchHit> {
                     kind: HitKind::Canon,
                     title: title.clone(),
                     snippet,
-                    target: HitTarget::Mode(crate::workspace::Mode::Canon),
+                    target: HitTarget::Canon(title.clone()),
                 });
         }
     }
@@ -189,7 +233,7 @@ pub fn search_book(handle: &ProjectHandle, query: &str) -> Vec<SearchHit> {
                 kind: HitKind::Character,
                 title: c.name.clone(),
                 snippet: c.background.chars().take(80).collect(),
-                target: HitTarget::Mode(crate::workspace::Mode::Characters),
+                target: HitTarget::Character(if c.id.is_empty() { c.name.clone() } else { c.id.clone() }),
             });
         }
     }
@@ -198,11 +242,13 @@ pub fn search_book(handle: &ProjectHandle, query: &str) -> Vec<SearchHit> {
     for cl in handle.clues_full() {
         let title = cl.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if title.contains(q) {
+            let id = cl.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if id.is_empty() { continue; }
             hits.push(SearchHit {
                 kind: HitKind::Clue,
                 title,
-                snippet: cl.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                target: HitTarget::Mode(crate::workspace::Mode::Clues),
+                snippet: id.clone(),
+                target: HitTarget::Clue(id),
             });
         }
     }
@@ -211,12 +257,14 @@ pub fn search_book(handle: &ProjectHandle, query: &str) -> Vec<SearchHit> {
     for e in handle.events() {
         let fact = e.get("objectiveFact").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if fact.contains(q) {
+            let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if id.is_empty() { continue; }
             let ch = e.get("chapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             hits.push(SearchHit {
                 kind: HitKind::Event,
                 title: fact.chars().take(50).collect(),
-                snippet: format!("第 {ch} 章"),
-                target: HitTarget::Mode(crate::workspace::Mode::Outline),
+                snippet: format!("第 {ch} 章 · {id}"),
+                target: HitTarget::Event(id),
             });
         }
     }
@@ -412,6 +460,9 @@ mod tests {
         assert_eq!(hits.len(), 3);
         // 组序：Chapter 在最前
         assert_eq!(hits[0].kind, HitKind::Chapter);
+        assert_eq!(hits[0].target, HitTarget::Chapter(1));
+        assert!(hits.iter().any(|h| h.target == HitTarget::Clue("F01".into())));
+        assert!(hits.iter().any(|h| h.target == HitTarget::Event("E01".into())));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -419,9 +470,48 @@ mod tests {
     fn search_finds_canon_and_characters() {
         let (root, handle) = test_book("canon");
         let hits = search_book(&handle, "守灯人");
-        assert!(hits.iter().any(|h| h.kind == HitKind::Canon), "设定正文要命中");
-        assert!(hits.iter().any(|h| h.kind == HitKind::Character), "人物背景要命中");
+        assert!(hits.iter().any(|h| h.target == HitTarget::Canon("灯约".into())), "设定要定位到文档");
+        assert!(hits.iter().any(|h| matches!(&h.target, HitTarget::Character(id) if !id.is_empty())), "人物要定位到稳定 id");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 搜索语料缓存必须在保存后失效，否则刚写的字搜不到。
+    #[test]
+    fn search_corpus_cache_follows_saves() {
+        let (root, handle) = test_book("corpus");
+        assert!(search_book(&handle, "断刀").iter().any(|h| h.kind == HitKind::Chapter));
+        // 再搜一次（命中缓存路径）
+        assert!(search_book(&handle, "断刀").iter().any(|h| h.kind == HitKind::Chapter));
+
+        handle.save_prose(2, "顾青在灯下拆信，信里写着断刀的下落。").unwrap();
+        let hits = search_book(&handle, "断刀");
+        assert!(
+            hits.iter().any(|h| h.kind == HitKind::Chapter && h.target == HitTarget::Chapter(2)),
+            "新写入的正文必须立刻可搜到（缓存要随保存失效）"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 语料缓存必须按书隔离：否则同一进程里打开第二本书会搜到第一本的正文。
+    ///
+    /// 这条是真实缺陷的回归——缓存曾是全局单例，全量并行测试时才暴露。
+    #[test]
+    fn corpus_cache_is_isolated_per_book() {
+        let (root_a, a) = test_book("iso-a");
+        let (root_b, b) = test_book("iso-b");
+        // B 书没有"断刀"，但有它自己的独有词
+        b.save_prose(1, "顾青在雪里数更漏。").unwrap();
+
+        assert!(search_book(&a, "断刀").iter().any(|h| h.kind == HitKind::Chapter));
+        let hits_b = search_book(&b, "断刀");
+        assert!(
+            !hits_b.iter().any(|h| matches!(h.target, HitTarget::Chapter(_))),
+            "B 书搜到了 A 书的正文——语料缓存没有按书分键"
+        );
+        assert!(search_book(&b, "更漏").iter().any(|h| h.kind == HitKind::Chapter), "B 书自己的正文要能搜到");
+
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&root_b);
     }
 
     #[test]

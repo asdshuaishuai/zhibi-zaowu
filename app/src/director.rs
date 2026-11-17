@@ -187,14 +187,19 @@ impl DirectorPanel {
     /// 按当前 `current` 重建卡片与全书概况（不做窗口夹取，跳转与刷新共用）。
     fn rebuild(&mut self) {
         let end = self.current + COLS as u32;
+        // 台账**每帧只读一次**：下面逐章统计全书概况时要按章计数，
+        // 若在 1..=max_ch 的循环里反复调 events()/clues_full()，每次都是
+        // 整文件读盘 + 全量 JSON 解析——300 章的书等于每帧 600 次读盘。
+        let all_events = self.handle.events();
+        let all_clues = self.handle.clues_full();
         let mut cards = Vec::new();
         let mut pool = Vec::new();
-        for e in self.handle.events() {
+        for e in &all_events {
             let ch = e.get("chapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let card = DCard {
                 kind: CardKind::Event,
-                id: s(&e, "id"),
-                label: s(&e, "objectiveFact").chars().take(18).collect(),
+                id: s(e, "id"),
+                label: s(e, "objectiveFact").chars().take(18).collect(),
                 chapter: ch,
                 // 缺省 = 未揭示 / 未发生：与台账、画布同一套保守语义。
                 hidden: !e.get("revealed").and_then(|r| r.as_bool()).unwrap_or(false),
@@ -206,16 +211,16 @@ impl DirectorPanel {
                 pool.push(card);
             }
         }
-        for c in self.handle.clues_full() {
-            let status = s(&c, "status");
+        for c in &all_clues {
+            let status = s(c, "status");
             if !matches!(status.as_str(), "埋下" | "推进中") {
                 continue;
             }
             let ch = c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let card = DCard {
                 kind: CardKind::CluePlant,
-                id: s(&c, "id"),
-                label: format!("埋·{}", s(&c, "title").chars().take(14).collect::<String>()),
+                id: s(c, "id"),
+                label: format!("埋·{}", s(c, "title").chars().take(14).collect::<String>()),
                 chapter: ch,
                 hidden: false,
                 planned: false,
@@ -262,31 +267,26 @@ impl DirectorPanel {
             .max(1);
         let mut sums: Vec<ChSum> = Vec::with_capacity(max_ch as usize);
         let books = self.handle.chapters();
+        // 按章预聚合：把 O(章数 × 台账条数) 的重复扫描降成一次遍历。
+        let mut ev_by_ch: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for e in &all_events {
+            let ch = e.get("chapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            *ev_by_ch.entry(ch).or_insert(0) += 1;
+        }
+        let mut clue_by_ch: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for c in &all_clues {
+            let ch = c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            *clue_by_ch.entry(ch).or_insert(0) += 1;
+        }
         for n in 1..=max_ch {
             let info = books.iter().find(|c| c.n == n);
-            let events = self
-                .handle
-                .events()
-                .iter()
-                .filter(|e| {
-                    e.get("chapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32 == n
-                })
-                .count();
-            let clues = self
-                .handle
-                .clues_full()
-                .iter()
-                .filter(|c| {
-                    c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32 == n
-                })
-                .count();
             sums.push(ChSum {
                 n,
                 title: info.map(|c| c.title.clone()).unwrap_or_default(),
                 words: info.map(|c| c.words).unwrap_or(0),
                 written: info.map(|c| c.has_prose).unwrap_or(false),
-                events,
-                clues,
+                events: ev_by_ch.get(&n).copied().unwrap_or(0),
+                clues: clue_by_ch.get(&n).copied().unwrap_or(0),
             });
         }
         self.sums = sums;

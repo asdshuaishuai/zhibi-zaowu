@@ -1008,8 +1008,21 @@ impl Workspace {
                         this.switch_center(Mode::Editor, window, cx);
                         this.switch_chapter(*n, window, cx);
                     }
-                    crate::search::HitTarget::Mode(m) => {
-                        this.switch_center(*m, window, cx);
+                    crate::search::HitTarget::Canon(title) => {
+                        this.switch_center(Mode::Canon, window, cx);
+                        this.canon_view.update(cx, |p, cx| p.show_document(title, cx));
+                    }
+                    crate::search::HitTarget::Character(id) => {
+                        this.switch_center(Mode::Characters, window, cx);
+                        this.characters_view.update(cx, |p, cx| p.open_card(id.clone(), window, cx));
+                    }
+                    crate::search::HitTarget::Clue(id) => {
+                        this.switch_center(Mode::Clues, window, cx);
+                        this.clues_view.update(cx, |p, cx| p.show_search_result(id, cx));
+                    }
+                    crate::search::HitTarget::Event(id) => {
+                        this.switch_center(Mode::Outline, window, cx);
+                        this.outline_view.update(cx, |p, cx| p.show_search_event(id, cx));
                     }
                 },
                 crate::search::SearchEvent::Close => {
@@ -1673,6 +1686,15 @@ impl Workspace {
                         }
                     }
                     JournalEvent::Undo(id) => {
+                        // 当前章有未保存输入时，日志回滚不能覆盖编辑器缓冲。
+                        let prose_path = format!("chapters/{}/prose.md", crate::store::chapter_dir_name(this.chapter));
+                        let touches_current = journal.all().iter().any(|c| c.id == *id && c.path == prose_path);
+                        if touches_current && this.prose.read(cx).value() != this.handle.prose(this.chapter) {
+                            this.journal_view.update(cx, |panel, cx| panel.set_message(
+                                "撤销被拒：当前稿纸有未保存改动；请先保存或在稿纸用 ⌘Z 撤销输入".into(), 1, cx,
+                            ));
+                            return;
+                        }
                         let outcome = journal.undo(&this.handle.root, id);
                         let (text, tone): (String, u8) = match outcome {
                             Ok(crate::journal::UndoOutcome::Restored) => {
@@ -1694,6 +1716,14 @@ impl Workspace {
                             .update(cx, |panel, cx| panel.set_message(text, tone, cx));
                     }
                     JournalEvent::UndoBatch(batch) => {
+                        let prose_path = format!("chapters/{}/prose.md", crate::store::chapter_dir_name(this.chapter));
+                        let touches_current = journal.all().iter().any(|c| c.batch == *batch && c.path == prose_path);
+                        if touches_current && this.prose.read(cx).value() != this.handle.prose(this.chapter) {
+                            this.journal_view.update(cx, |panel, cx| panel.set_message(
+                                "整批撤销被拒：当前稿纸有未保存改动；请先保存或在稿纸用 ⌘Z 撤销输入".into(), 1, cx,
+                            ));
+                            return;
+                        }
                         let results = journal.undo_batch(&this.handle.root, &batch);
                         let ok = results
                             .iter()
@@ -2117,11 +2147,17 @@ impl Workspace {
                     .update(cx, |panel, cx| panel.refresh(self.chapter, cx));
                 panel_handle(self.chapters_view.clone())
             }
-            Mode::Outline => panel_handle(self.outline_view.clone()),
+            Mode::Outline => {
+                self.outline_view.update(cx, |p, cx| p.clear_search_event(cx));
+                panel_handle(self.outline_view.clone())
+            }
             Mode::Canon => panel_handle(self.canon_view.clone()),
             Mode::Memory => panel_handle(self.memory_view.clone()),
             Mode::Stats => panel_handle(self.stats_view.clone()),
-            Mode::Clues => panel_handle(self.clues_view.clone()),
+            Mode::Clues => {
+                self.clues_view.update(cx, |p, cx| p.clear_search_result(cx));
+                panel_handle(self.clues_view.clone())
+            }
             Mode::Characters => panel_handle(self.characters_view.clone()),
             Mode::Settings => panel_handle(self.settings_view.clone()),
             Mode::Snapshots => {
@@ -3342,6 +3378,11 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &GlobalSearch, window, cx| {
                 this.switch_center(Mode::Search, window, cx);
+                // 唤起即聚焦搜索框——打开就能敲字，不用再点一下。
+                this.search_view.update(cx, |panel, cx| {
+                    let fh = panel.input_focus_handle(cx);
+                    window.focus(&fh, cx);
+                });
             }))
             .track_focus(&self.focus_handle(cx))
             .flex()

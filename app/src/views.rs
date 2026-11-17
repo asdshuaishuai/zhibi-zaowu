@@ -454,6 +454,13 @@ impl CanonPanel {
             selected: docs.first().map(|d| d.0.clone()),
         }
     }
+
+    pub fn show_document(&mut self, title: &str, cx: &mut Context<Self>) {
+        if self.handle.canon_docs().iter().any(|d| d.0 == title) {
+            self.selected = Some(title.to_string());
+            cx.notify();
+        }
+    }
 }
 
 impl Focusable for CanonPanel {
@@ -618,11 +625,21 @@ impl ComponentPanel for CanonPanel {
 pub struct OutlinePanel {
     focus_handle: FocusHandle,
     handle: Rc<ProjectHandle>,
+    search_event: Option<String>,
 }
 
 impl OutlinePanel {
     pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
-        Self { focus_handle: cx.focus_handle(), handle }
+        Self { focus_handle: cx.focus_handle(), handle, search_event: None }
+    }
+
+    pub fn show_search_event(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.search_event = Some(id.to_string());
+        cx.notify();
+    }
+
+    pub fn clear_search_event(&mut self, cx: &mut Context<Self>) {
+        if self.search_event.take().is_some() { cx.notify(); }
     }
 }
 
@@ -635,7 +652,12 @@ impl Focusable for OutlinePanel {
 impl Render for OutlinePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let lines = self.handle.storylines();
-        let events = self.handle.events();
+        let all_events = self.handle.events();
+        let events: Vec<_> = if let Some(id) = &self.search_event {
+            all_events.into_iter().filter(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)).collect()
+        } else {
+            all_events
+        };
         let stages = self.handle.stages();
 
         let mut line_rows = Vec::new();
@@ -787,6 +809,14 @@ impl Render for OutlinePanel {
                         .border_color(theme::LINE())
                         .pt(theme::GAP_GROUP)
                         .child(sec_title("事件时间线（作者真相｜读者已知）"))
+                        .when_true(self.search_event.is_some(), |d| d.child(
+                            cap_btn("outline-clear-search", "显示全部事件", cx).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.search_event = None;
+                                    cx.notify();
+                                }),
+                            ),
+                        ))
                         .child(kit_table(&["事件", "章", "作者真相", "读者已知"], event_rows))
                         .when_true(events.is_empty(), |d| {
                             d.child(empty_hint("还没有事件", "用「AI 建时间线」提案，从正文抽取作者真相事件。"))
@@ -1247,11 +1277,21 @@ impl ComponentPanel for StatsPanel {
 pub struct CluesPanel {
     focus_handle: FocusHandle,
     handle: Rc<ProjectHandle>,
+    search_target: Option<String>,
 }
 
 impl CluesPanel {
     pub fn new(cx: &mut Context<Self>, handle: Rc<ProjectHandle>) -> Self {
-        Self { focus_handle: cx.focus_handle(), handle }
+        Self { focus_handle: cx.focus_handle(), handle, search_target: None }
+    }
+
+    pub fn show_search_result(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.search_target = Some(id.to_string());
+        cx.notify();
+    }
+
+    pub fn clear_search_result(&mut self, cx: &mut Context<Self>) {
+        if self.search_target.take().is_some() { cx.notify(); }
     }
 }
 
@@ -1263,7 +1303,12 @@ impl Focusable for CluesPanel {
 
 impl Render for CluesPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let clues = self.handle.clues_full();
+        let all_clues = self.handle.clues_full();
+        let clues: Vec<_> = if let Some(id) = &self.search_target {
+            all_clues.into_iter().filter(|c| c.get("id").and_then(|v| v.as_str()) == Some(id)).collect()
+        } else {
+            all_clues
+        };
         let mut rows = Vec::new();
         for c in clues.iter() {
             let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1309,6 +1354,14 @@ impl Render for CluesPanel {
                             div()
                                 .flex()
                                 .gap(theme::GAP_SM)
+                                .when_true(self.search_target.is_some(), |d| d.child(
+                                    cap_btn("clues-clear-search", "显示全部", cx).on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.search_target = None;
+                                            cx.notify();
+                                        }),
+                                    ),
+                                ))
                                 // 作者亲笔新建：不经过 AI，直接落台账
                                 .child(cap_btn("clues-add", "新建伏笔", cx).on_click(
                                     cx.listener(|_this, _, _, cx| {
@@ -1616,6 +1669,8 @@ impl CharactersPanel {
     /// 外部跳进来（关系图点人物、AI 提案指向某人）时用这个而不是 `select`——
     /// 作者点「看这个人」就是要看人，不是要在一排卡里找亮点。
     pub fn open_card(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.people.iter().find(|p| p.id == id || p.name == id).map(|p| p.id.clone());
+        let Some(id) = id else { return };
         self.selected = Some(id.clone());
         self.open = Some(id);
         self.fill_editors(window, cx);
@@ -5080,26 +5135,28 @@ impl ChaptersPanel {
                 Tone::Amber,
             ));
         }
-        // 人物 20 章没出场：memory.facts 里每个 canonical 的 fromChapter 分布
-        let mut last_seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        // 事实账本只能证明「最近何时记过该人物的事实」，不能证明他何时出场。
+        let alias_map = crate::memory::alias_map(&aliases);
+        let mut last_fact: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         for f in &facts {
             let s = crate::memory::normalize(
                 f.get("subject").and_then(|v| v.as_str()).unwrap_or(""),
-                &crate::memory::alias_map(&aliases),
+                &alias_map,
             );
             let ch = f.get("fromChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            last_seen.entry(s).and_modify(|m| *m = (*m).max(ch)).or_insert(ch);
+            if !s.is_empty() && ch > 0 && ch <= written_max {
+                last_fact.entry(s).and_modify(|m| *m = (*m).max(ch)).or_insert(ch);
+            }
         }
-        let mut dormant: Vec<&str> = last_seen
+        let mut dormant: Vec<&str> = last_fact
             .iter()
             .filter(|(_, ch)| written_max.saturating_sub(**ch) >= 20)
             .map(|(name, _)| name.as_str())
-            .filter(|n| !n.is_empty())
             .collect();
         dormant.sort();
         if let Some(name) = dormant.first() {
             checkup.push((
-                format!("{} 已 {} 章没出场", name, written_max.saturating_sub(*last_seen.get(*name).unwrap())),
+                format!("{} 已 {} 章没有新记忆事实（不代表未出场）", name, written_max.saturating_sub(*last_fact.get(*name).unwrap())),
                 Tone::Neutral,
             ));
         }
