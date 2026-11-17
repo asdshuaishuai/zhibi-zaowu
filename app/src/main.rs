@@ -23,6 +23,7 @@ mod plugins;
 mod prompts;
 mod relations;
 mod schema;
+mod search;
 mod shelf;
 mod store;
 mod theme;
@@ -170,6 +171,7 @@ fn main() {
                 gpui_kit::KeyBinding::new("cmd-s", workspace::SaveProse, Some("zhibi-workspace")),
                 gpui_kit::KeyBinding::new("cmd-shift-f", workspace::ToggleFocusMode, Some("zhibi-workspace")),
                 gpui_kit::KeyBinding::new("cmd-shift-b", workspace::BranchesNow, Some("zhibi-workspace")),
+                gpui_kit::KeyBinding::new("cmd-alt-f", workspace::GlobalSearch, Some("zhibi-workspace")),
             ]);
             cx.activate(true);
 

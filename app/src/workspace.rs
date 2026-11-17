@@ -38,7 +38,7 @@ use crate::views::{
     StatsPanel, ViewEvent,
 };
 
-gpui_kit::actions!(zhibi, [SaveProse, ToggleFocusMode, BranchesNow]);
+gpui_kit::actions!(zhibi, [SaveProse, ToggleFocusMode, BranchesNow, GlobalSearch]);
 
 const DOCK_AREA_ID: &str = "zhibi-main-dock";
 const DOCK_AREA_VERSION: usize = 1;
@@ -93,6 +93,8 @@ pub enum Mode {
     Worldline,
     Oracle,
     BookInfo,
+    /// 全局搜索（⌥⌘F）
+    Search,
 }
 
 impl Mode {
@@ -122,6 +124,7 @@ impl Mode {
             "worldline" | "世界线" => Mode::Worldline,
             "oracle" | "预言书" | "预言" => Mode::Oracle,
             "bookinfo" | "书目" => Mode::BookInfo,
+            "search" | "搜索" => Mode::Search,
             _ => return None,
         })
     }
@@ -147,6 +150,7 @@ impl Mode {
             Mode::Worldline => "世界线",
             Mode::Oracle => "预言书",
             Mode::BookInfo => "书目信息",
+            Mode::Search => "搜索",
         }
     }
 
@@ -173,6 +177,7 @@ impl Mode {
             Mode::Worldline => IconName::GitBranch,
             Mode::Oracle => IconName::Sparkle,
             Mode::BookInfo => IconName::Notebook,
+            Mode::Search => IconName::Search,
         }
     }
 }
@@ -342,6 +347,7 @@ pub struct Workspace {
     import_view: Entity<ImportPanel>,
     knowledge_view: Entity<crate::views::KnowledgePanel>,
     graph_view: Entity<GraphPanel>,
+    search_view: Entity<crate::search::SearchPanel>,
     canvas_view: Entity<CanvasPanel>,
     director_view: Entity<DirectorPanel>,
     oracle_view: Entity<OraclePanel>,
@@ -547,6 +553,7 @@ impl Workspace {
         let import_view = cx.new(|cx| ImportPanel::new(window, cx, handle.clone()));
         let knowledge_view = cx.new(|cx| crate::views::KnowledgePanel::new(window, cx, handle.clone()));
         let graph_view = cx.new(|cx| GraphPanel::new(cx, handle.clone()));
+        let search_view = cx.new(|cx| crate::search::SearchPanel::new(window, cx, handle.clone()));
         let canvas_view = cx.new(|cx| CanvasPanel::new(window, cx, handle.clone()));
         let director_view = cx.new(|cx| DirectorPanel::new(cx, handle.clone(), chapter));
         let oracle_view = cx.new(|cx| OraclePanel::new(window, cx, handle.clone()));
@@ -986,6 +993,27 @@ impl Workspace {
                 }
                 ViewEvent::LedgerAdd(..) | ViewEvent::LedgerUpdate(..) | ViewEvent::LedgerRemove(..) => {
                     this.on_ledger_event(ev, cx);
+                }
+            },
+        )
+        .detach();
+
+        // 全局搜索结果点击：章节进稿纸，台账切对应页
+        cx.subscribe_in(
+            &search_view,
+            window,
+            |this, _, ev: &crate::search::SearchEvent, window, cx| match ev {
+                crate::search::SearchEvent::Jump(target) => match target {
+                    crate::search::HitTarget::Chapter(n) => {
+                        this.switch_center(Mode::Editor, window, cx);
+                        this.switch_chapter(*n, window, cx);
+                    }
+                    crate::search::HitTarget::Mode(m) => {
+                        this.switch_center(*m, window, cx);
+                    }
+                },
+                crate::search::SearchEvent::Close => {
+                    this.switch_center(Mode::Editor, window, cx);
                 }
             },
         )
@@ -1894,6 +1922,7 @@ impl Workspace {
             import_view,
             knowledge_view,
             graph_view,
+            search_view,
             canvas_view,
             director_view,
             oracle_view,
@@ -2121,6 +2150,7 @@ impl Workspace {
             Mode::Worldline => panel_handle(self.worldline_view.clone()),
             Mode::Oracle => panel_handle(self.oracle_view.clone()),
             Mode::BookInfo => panel_handle(self.bookinfo_view.clone()),
+            Mode::Search => panel_handle(self.search_view.clone()),
         };
         let center = DockLayout::tabs().panel_view(view, cx);
         self.dock_area.update(cx, |area, cx| {
@@ -3310,6 +3340,9 @@ impl Render for Workspace {
                 let task = prompts::task_for("branches", this.chapter);
                 this.on_send(task, cx);
             }))
+            .on_action(cx.listener(|this, _: &GlobalSearch, window, cx| {
+                this.switch_center(Mode::Search, window, cx);
+            }))
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
@@ -3476,6 +3509,38 @@ impl Render for Workspace {
                                         this.trajectory.update(cx, |panel, cx| {
                                             panel.push(
                                                 TrajKind::Info(format!("合并稿已导出：{p}")),
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                    Err(e) => {
+                                        this.trajectory.update(cx, |panel, cx| {
+                                            panel
+                                                .push(TrajKind::Fail(format!("导出失败：{e}")), cx);
+                                        });
+                                    }
+                                }
+                            })),
+                    )
+                    // 交稿场景：只导已固化章，开放区/预演章不混进要发出去的稿子
+                    .left(
+                        Button::new("export-fixed")
+                            .custom(icon_btn(&*cx))
+                            .small()
+                            .rounded(theme::RADIUS_BTN_SM)
+                            .label("导出已固化章")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                let store = crate::worldline::Store::new(&this.handle.root);
+                                let lines = store.all().unwrap_or_default();
+                                let boundary = store.fixed_boundary(&lines);
+                                match this.handle.export_fixed(boundary) {
+                                    Ok(path) => {
+                                        let p = path.display().to_string();
+                                        this.trajectory.update(cx, |panel, cx| {
+                                            panel.push(
+                                                TrajKind::Info(format!(
+                                                    "已固化稿已导出（第 1–{boundary} 章）：{p}"
+                                                )),
                                                 cx,
                                             );
                                         });

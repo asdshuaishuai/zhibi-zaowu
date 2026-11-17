@@ -5052,6 +5052,59 @@ impl ChaptersPanel {
             .filter(|l| l.get("status").and_then(|v| v.as_str()) == Some("断线"))
             .count();
 
+        // 7. 开书体检信号（确定性，与预警条同源不同形——预警条在排期板底部，
+        //    体检是进书时的"现在就要注意"提醒，三条封顶不刷屏）
+        let mut checkup: Vec<(String, Tone)> = Vec::new();
+        let (facts, aliases) = handle.memory_ledger();
+        let inf = crate::memory::infer_with_rules(
+            &facts,
+            &aliases,
+            written_max,
+            &crate::memory::InferRules::from_memory_json(&handle.memory_rules_blob()),
+        );
+        if !inf.contradictions.is_empty() {
+            checkup.push((
+                format!("记忆有 {} 条冲突（图谱里可裁决）", inf.contradictions.len()),
+                Tone::Amber,
+            ));
+        }
+        if let Some((id, silent)) = silent_clues.first() {
+            checkup.push((
+                format!("伏笔 {} 已静默 {} 章（最久）", id, silent),
+                Tone::Amber,
+            ));
+        }
+        if broken_lines > 0 {
+            checkup.push((
+                format!("{broken_lines} 条故事线断线"),
+                Tone::Amber,
+            ));
+        }
+        // 人物 20 章没出场：memory.facts 里每个 canonical 的 fromChapter 分布
+        let mut last_seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        for f in &facts {
+            let s = crate::memory::normalize(
+                f.get("subject").and_then(|v| v.as_str()).unwrap_or(""),
+                &crate::memory::alias_map(&aliases),
+            );
+            let ch = f.get("fromChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            last_seen.entry(s).and_modify(|m| *m = (*m).max(ch)).or_insert(ch);
+        }
+        let mut dormant: Vec<&str> = last_seen
+            .iter()
+            .filter(|(_, ch)| written_max.saturating_sub(**ch) >= 20)
+            .map(|(name, _)| name.as_str())
+            .filter(|n| !n.is_empty())
+            .collect();
+        dormant.sort();
+        if let Some(name) = dormant.first() {
+            checkup.push((
+                format!("{} 已 {} 章没出场", name, written_max.saturating_sub(*last_seen.get(*name).unwrap())),
+                Tone::Neutral,
+            ));
+        }
+        checkup.truncate(3);
+
         // — B4 前瞻：按日均字数推算完本日 —
         let daily = handle.daily_words();
         let recent_avg = if daily.is_empty() {
@@ -5169,31 +5222,67 @@ impl ChaptersPanel {
             cx,
         ));
 
-        div()
+        let mut root = div()
             .flex()
-            .flex_wrap()
-            .gap(theme::GAP_MD)
-            .w_full()
-            .p(theme::PAD_LG)
-            .rounded(theme::RADIUS_CARD)
-            .border_1()
-            .border_color(theme::LINE())
-            .bg(theme::PANEL2())
-            .child(
+            .flex_col()
+            .gap(theme::GAP_SM)
+            .w_full();
+
+        // 开书体检条：有信号才显示，三条封顶。琥珀底，比七格更靠上。
+        if !checkup.is_empty() {
+            root = root.child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap(theme::GAP_SM)
+                    .flex_wrap()
+                    .gap(theme::GAP_MD)
                     .w_full()
+                    .px(theme::PAD_LG)
+                    .py(theme::GAP_SM)
+                    .rounded(theme::RADIUS_BTN)
+                    .bg(theme::AMBER_SOFT())
                     .child(
                         div()
                             .text_size(theme::FONT_TAG)
-                            .text_color(theme::FAINT())
-                            .child("现在"),
-                    ),
-            )
-            .children(cells)
-            .into_any_element()
+                            .text_color(theme::AMBER())
+                            .child("开书体检"),
+                    )
+                    .children(checkup.into_iter().map(|(msg, tone)| {
+                        div()
+                            .text_size(theme::FONT_TAG)
+                            .text_color(tone.text())
+                            .child(SharedString::from(format!("· {msg}")))
+                            .into_any_element()
+                    })),
+            );
+        }
+
+        root.child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(theme::GAP_MD)
+                .w_full()
+                .p(theme::PAD_LG)
+                .rounded(theme::RADIUS_CARD)
+                .border_1()
+                .border_color(theme::LINE())
+                .bg(theme::PANEL2())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme::GAP_SM)
+                        .w_full()
+                        .child(
+                            div()
+                                .text_size(theme::FONT_TAG)
+                                .text_color(theme::FAINT())
+                                .child("现在"),
+                        ),
+                )
+                .children(cells),
+        )
+        .into_any_element()
     }
 }
 

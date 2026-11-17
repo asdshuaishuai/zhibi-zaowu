@@ -3481,16 +3481,34 @@ pub fn save_settings(s: &AppSettings) -> Result<(), String> {
 impl ProjectHandle {
     /// 合并稿导出：全部章节正文按序拼接（与旧版 ExportService 同语义）。
     pub fn export_merged(&self) -> Result<PathBuf, String> {
+        self.export_chapters("合并稿", |c| c.has_prose)
+    }
+
+    /// 只导已固化章：`<= boundary` 的成稿，跳过开放区/预演章。
+    /// 交稿/投稿场景：还没定的章不应该混进要发出去的稿子。
+    pub fn export_fixed(&self, boundary: u32) -> Result<PathBuf, String> {
+        self.export_chapters("已固化", |c| c.has_prose && c.n <= boundary)
+    }
+
+    fn export_chapters(&self, label: &str, keep: impl Fn(&ChapterInfo) -> bool) -> Result<PathBuf, String> {
         let mut out = String::new();
+        let mut n = 0usize;
         for c in self.chapters() {
+            if !keep(&c) {
+                continue;
+            }
             out.push_str(&format!("\n# {}\n\n{}\n", c.title, self.prose(c.n)));
+            n += 1;
+        }
+        if n == 0 {
+            return Err(format!("没有可导出的成稿章（{label}）"));
         }
         let dir = projects_dir()
             .parent()
             .map(|p| p.join("执笔导出"))
             .unwrap_or_else(projects_dir);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(format!("{}.md", self.title));
+        let path = dir.join(format!("{}-{label}.md", self.title));
         std::fs::write(&path, out).map_err(|e| e.to_string())?;
         Ok(path)
     }
