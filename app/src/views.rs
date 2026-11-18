@@ -5110,6 +5110,27 @@ impl ChaptersPanel {
         // 7. 开书体检信号（确定性，与预警条同源不同形——预警条在排期板底部，
         //    体检是进书时的"现在就要注意"提醒，三条封顶不刷屏）
         let mut checkup: Vec<(String, Tone)> = Vec::new();
+
+        // 夹在中间的空章：固化边界只看"最大成稿章"，所以第 37 章空着、
+        // 第 118 章写了，边界照样是 118——驾驶舱会显示"写到 118 章"，
+        // 而那三章其实一个字都没有。这是最容易被忽略的一种"以为写完了"。
+        let mut holes: Vec<u32> = chapters
+            .iter()
+            .filter(|c| !c.has_prose && c.n < written_max)
+            .map(|c| c.n)
+            .collect();
+        holes.sort_unstable();
+        if let Some(first) = holes.first() {
+            checkup.push((
+                if holes.len() == 1 {
+                    format!("第 {first} 章夹在中间但没写（边界已到第 {written_max} 章）")
+                } else {
+                    format!("{} 章夹在中间但没写（最早第 {first} 章）", holes.len())
+                },
+                Tone::Amber,
+            ));
+        }
+
         let (facts, aliases) = handle.memory_ledger();
         let inf = crate::memory::infer_with_rules(
             &facts,
@@ -5160,6 +5181,13 @@ impl ChaptersPanel {
                 Tone::Neutral,
             ));
         }
+        // 三条封顶，但**按严重度**取：缺章 > 冲突 > 静默伏笔 > 断线 > 久无事实。
+        // 按插入顺序截断会让"久无新记忆事实"这种最软的一条挤掉"章节缺一块"。
+        let rank = |t: Tone| match t {
+            Tone::Amber => 0,
+            _ => 1,
+        };
+        checkup.sort_by_key(|(_, t)| rank(*t));
         checkup.truncate(3);
 
         // — B4 前瞻：按日均字数推算完本日 —

@@ -183,7 +183,14 @@ pub struct Inference {
 
 const SYMMETRIC: [&str; 3] = ["夫妻", "结义", "同门"];
 const SINGLE_VALUED: [&str; 4] = ["夫妻", "配偶", "生父", "生母"];
-const DURABLE: [&str; 4] = ["师从", "生父", "生母", "出生"];
+/// 会过期的**状态型**谓语：只有这些才可能"陈旧"。
+///
+/// 为什么用白名单而不是"耐久黑名单"：大多数事实是**历史事件**
+/// （"沈砚 第 2 章获得断刀"）——它们永远为真，不因为过去了 100 章就需要复核。
+/// 只有描述**当前状态**的谓语（配偶/位置/身份）才会被后续剧情推翻。
+/// 旧实现反着来（除少数耐久谓语外一律标陈旧），在一本 118 章的书里
+/// 把 61 条事实中的 38 条误报成待复核——这个提醒就废了。
+const VOLATILE: [&str; 6] = ["配偶", "夫妻", "位置", "状态", "身份", "所在地"];
 const STALE_WINDOW: u32 = 30;
 
 /// 推断规则——**书级可配**。`memory.json` 里可含 `inferRules` 块覆盖默认
@@ -194,8 +201,9 @@ pub struct InferRules {
     pub symmetric: Vec<String>,
     /// 单值谓语（同一主语同一时刻只能指向一个宾语）
     pub single_valued: Vec<String>,
-    /// 耐久谓语（不会陈旧，永不标待复核）
-    pub durable: Vec<String>,
+    /// 会过期的状态型谓语（**只有这些**可能被标陈旧）。
+    /// 书级可配：修仙题材可加 `境界`，职场题材可加 `职位`。
+    pub volatile: Vec<String>,
     /// 陈旧窗口（章）：事实生效章距今超过此值且非耐久 → 待复核
     pub stale_window: u32,
 }
@@ -205,7 +213,7 @@ impl Default for InferRules {
         Self {
             symmetric: SYMMETRIC.iter().map(|s| s.to_string()).collect(),
             single_valued: SINGLE_VALUED.iter().map(|s| s.to_string()).collect(),
-            durable: DURABLE.iter().map(|s| s.to_string()).collect(),
+            volatile: VOLATILE.iter().map(|s| s.to_string()).collect(),
             stale_window: STALE_WINDOW,
         }
     }
@@ -226,7 +234,7 @@ impl InferRules {
         };
         take_strs("symmetric", &mut r.symmetric);
         take_strs("singleValued", &mut r.single_valued);
-        take_strs("durable", &mut r.durable);
+        take_strs("volatile", &mut r.volatile);
         if let Some(w) = blk.get("staleWindow").and_then(|x| x.as_u64()) {
             r.stale_window = w as u32;
         }
@@ -341,12 +349,13 @@ pub fn infer_with_rules(facts: &[Value], aliases: &[Value], current_chapter: u32
         }
     }
 
-    // 陈旧待复核：生效章远落后于当前边界、且谓语非持久型。
+    // 陈旧待复核：只有**状态型**谓语（见 VOLATILE）才可能过期。
+    // 历史事件（获得/失去/去过）永远为真，不该因为年头久就提醒复核。
     if current_chapter > 0 {
         for f in &parsed {
             if f.chapter > 0
                 && current_chapter.saturating_sub(f.chapter) > rules.stale_window
-                && !rules.durable.iter().any(|p| p == &f.predicate)
+                && rules.volatile.iter().any(|p| p == &f.predicate)
             {
                 out.stale.push(f.id.clone());
             }
@@ -406,9 +415,13 @@ mod tests {
         assert!(inf.implied.iter().any(|m| m.predicate == "夫妻" && m.subject == "顾青" && m.object == "沈砚"));
         let c = inf.contradictions.iter().find(|c| c.predicate == "配偶").unwrap();
         assert_eq!(c.objects, vec!["阿绣".to_string(), "顾青".to_string()]);
-        // 获得(断刀) 生效第2章，边界40 → 差38>30 且非持久 → 待复核
-        assert!(inf.stale.contains(&"f".to_string()));
-        // 师从 是持久型，不标陈旧
+        // 陈旧只标**状态型**谓语：夫妻(c,第8章)/配偶(d,e) 跨 >30 章 → 待复核
+        assert!(inf.stale.contains(&"c".to_string()), "夫妻是状态型，跨 32 章要复核");
+        assert!(inf.stale.contains(&"d".to_string()), "配偶是状态型");
+        // 获得(断刀,f,第2章) 是**历史事实**，永远为真 → 不标陈旧。
+        // 这是真机数据发现的语义错误：旧实现把它误报，118 章的书里 38/61 条误报。
+        assert!(!inf.stale.contains(&"f".to_string()), "获得是历史事件，不该因为年头久被要求复核");
+        // 师从 也不在状态型名单里
         assert!(!inf.stale.contains(&"a".to_string()));
     }
 
@@ -419,7 +432,7 @@ mod tests {
             "inferRules": {
                 "symmetric": ["夫妻", "结义", "同门", "师从"],
                 "singleValued": ["夫妻", "配偶", "生父", "生母", "道侣"],
-                "durable": ["师从", "生父", "生母", "出生"],
+                "volatile": ["配偶", "夫妻", "位置"],
                 "staleWindow": 20
             }
         });
@@ -433,7 +446,7 @@ mod tests {
         let r2 = InferRules::from_memory_json(&partial);
         assert_eq!(r2.stale_window, 15);
         assert!(r2.symmetric.contains(&"夫妻".to_string()), "symmetric 缺省回默认");
-        assert!(r2.durable.contains(&"师从".to_string()), "durable 缺省回默认");
+        assert!(r2.volatile.contains(&"配偶".to_string()), "volatile 缺省回默认");
 
         // 坏 JSON / 无 inferRules 块 → 全默认，不 panic
         let empty = json!({});

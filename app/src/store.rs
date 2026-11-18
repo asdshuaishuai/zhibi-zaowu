@@ -891,6 +891,151 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// 真实长篇的性能观测（手动跑）。
+    ///
+    /// 默认 `#[ignore]`：它依赖外部 fixture，不该进 CI 的默认路径。
+    /// 用法：
+    /// ```text
+    /// python3 scripts/make_smoke_fixture.py /tmp/zhibi-smoke
+    /// ZHIBI_PROBE_BOOK=/tmp/zhibi-smoke/冒烟长卷.zhibi \
+    ///   cargo test --bin zhibi observe_long_book_timings -- --ignored --nocapture
+    /// ```
+    /// 这不是断言型护栏（那些在别处，用确定性方式钉住），而是给"这本书到底多快"
+    /// 一个可复现的测量口径——数字变了就是真的变了，不靠印象。
+    /// 真实长篇 fixture 的数据形状断言（手动跑，同 observe_long_book_timings）。
+    ///
+    /// 合成小数据测不出"分母很大时的口径问题"。这条用真实形状的书验三件事：
+    /// 空章不被算成成稿、固化边界只认成稿、驾驶舱的六个数字彼此自洽。
+    /// 夹在中间的空章必须能被发现。
+    ///
+    /// 为什么单测这个：固化边界 = **最大成稿章**，所以第 2 章空着、第 3 章写了，
+    /// 边界仍是 3——应用会显示"写到第 3 章"，而第 2 章其实一个字都没有。
+    /// 这是长篇里最容易"以为写完了"的漏洞，必须有确定性判据。
+    #[test]
+    fn chapters_leave_visible_holes_in_the_middle() {
+        let (home, _guard) = use_home("chapter-holes");
+        let dir = create_project("缺章测试").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+
+        h.save_prose(1, "第一章正文").unwrap();
+        h.save_prose(2, "").unwrap();        // 中间空章
+        h.save_prose(3, "第三章正文").unwrap();
+        h.save_prose(4, "").unwrap();        // 末尾空章（不算缺，只是还没写）
+
+        let chapters = h.chapters();
+        let boundary = h.last_written_chapter();
+        assert_eq!(boundary, 3, "边界是最大成稿章");
+
+        let holes: Vec<u32> = chapters
+            .iter()
+            .filter(|c| !c.has_prose && c.n < boundary)
+            .map(|c| c.n)
+            .collect();
+        assert_eq!(holes, vec![2], "第 2 章夹在中间且没写，必须被识别出来");
+        // 第 4 章在边界之外，是"还没写"，不该算缺章
+        assert!(!holes.contains(&4), "边界之后的空章是正常待写，不是缺章");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    #[ignore = "需要外部长篇 fixture，手动运行"]
+    fn real_book_shape_is_self_consistent() {
+        let Ok(book) = std::env::var("ZHIBI_PROBE_BOOK") else { return };
+        let h = match ProjectHandle::open(&std::path::PathBuf::from(book)) {
+            Some(h) => h,
+            None => return,
+        };
+        let chapters = h.chapters();
+        assert!(chapters.len() > 100, "样本要是长篇");
+
+        let written: Vec<_> = chapters.iter().filter(|c| c.has_prose).collect();
+        let blanks: Vec<_> = chapters.iter().filter(|c| !c.has_prose).collect();
+        assert!(!blanks.is_empty(), "样本里应该有空章，否则测不到这个口径");
+        // 空章：字数为 0 且不算成稿——这是"未动笔"的唯一判据
+        for b in &blanks {
+            assert_eq!(b.words, 0, "第{}章是空章，字数必须为 0", b.n);
+        }
+
+        // 固化边界 = max(成稿最大章, 手标 confirmedThrough)，空章不推边界
+        let boundary = h.last_written_chapter();
+        let max_written = written.iter().map(|c| c.n).max().unwrap_or(0);
+        assert_eq!(boundary, max_written, "固化边界必须等于最大成稿章，不能被空章推高");
+
+        // 空章夹在成稿中间时，"写完了"其实是假象：边界只看最大成稿章，
+        // 所以缺章不会把边界推回去。这是产品上要明确的事——驾驶舱的"缺章"
+        // 信号必须能看见它们，不能因为边界到了就显示一切正常。
+        let gaps: Vec<u32> = chapters
+            .iter()
+            .filter(|c| !c.has_prose && c.n < boundary)
+            .map(|c| c.n)
+            .collect();
+        eprintln!("夹在中间的空章：{gaps:?}");
+        assert!(
+            !gaps.is_empty(),
+            "样本应该在中间留空章，否则测不到'边界到了但有空缺'这个真实场景"
+        );
+
+        // 总字数必须等于逐章之和（驾驶舱与统计页都读这一个数）
+        let sum: usize = chapters.iter().map(|c| c.words).sum();
+        assert!(sum > 100_000, "长篇样本总字数应过十万，实际 {sum}");
+        eprintln!(
+            "章 {}（成稿 {} / 空 {}），总字数 {}，固化边界 {}",
+            chapters.len(), written.len(), blanks.len(), sum, boundary
+        );
+    }
+
+    #[test]
+    #[ignore = "需要外部长篇 fixture，手动运行"]
+    fn observe_long_book_timings() {
+        let Ok(book) = std::env::var("ZHIBI_PROBE_BOOK") else {
+            eprintln!("未设置 ZHIBI_PROBE_BOOK，跳过");
+            return;
+        };
+        let root = std::path::PathBuf::from(book);
+        if !root.exists() {
+            eprintln!("路径不存在：{}", root.display());
+            return;
+        }
+        let h = ProjectHandle::open(&root).unwrap();
+
+        let t = std::time::Instant::now();
+        let chapters = h.chapters();
+        eprintln!("chapters() 冷启动      : {:?}（{} 章）", t.elapsed(), chapters.len());
+
+        let t = std::time::Instant::now();
+        let _ = h.chapters();
+        eprintln!("chapters() 命中缓存    : {:?}", t.elapsed());
+
+        let t = std::time::Instant::now();
+        let hits = crate::search::search_book(&h, "断刀");
+        eprintln!("search 冷启动          : {:?}（{} 条命中）", t.elapsed(), hits.len());
+
+        let t = std::time::Instant::now();
+        let _ = crate::search::search_book(&h, "灯");
+        eprintln!("search 命中缓存        : {:?}", t.elapsed());
+
+        let t = std::time::Instant::now();
+        let (facts, aliases) = h.memory_ledger();
+        eprintln!("memory_ledger()       : {:?}（{} 事实 / {} 别名）", t.elapsed(), facts.len(), aliases.len());
+
+        let t = std::time::Instant::now();
+        let inf = crate::memory::infer_with_rules(
+            &facts, &aliases, 118, &crate::memory::InferRules::default());
+        eprintln!("infer()               : {:?}（{} 冲突 / {} 陈旧）", t.elapsed(), inf.contradictions.len(), inf.stale.len());
+
+        let t = std::time::Instant::now();
+        let _ = crate::memory::recall(&facts, &aliases, &crate::memory::RecallQuery {
+            chapter: Some(118), terms: vec!["沈砚".into()], limit: 12 });
+        eprintln!("recall()              : {:?}", t.elapsed());
+
+        let t = std::time::Instant::now();
+        let _ = h.clues_full();
+        let _ = h.events();
+        let _ = h.storylines();
+        eprintln!("三本台账读取          : {:?}", t.elapsed());
+    }
+
     #[test]
     fn daily_words_are_recorded_on_save() {
         let (home, _guard) = use_home("daily");

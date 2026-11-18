@@ -1,101 +1,427 @@
 {
   "_comment": "执笔双端一致性夹具。Rust（app/src/conformance.rs）与 novel-pack（test/conformance.test.mjs）各跑一遍同一份数据。改这里就要两端的实现都跟着改——这正是它存在的意义。",
   "safeFileName": [
-    { "in": "沈砚传", "out": "沈砚传" },
-    { "in": "a/b\\c", "out": "a_b_c" },
-    { "in": "标题: 副标题", "out": "标题_ 副标题" },
-    { "in": " 空格包裹 ", "out": "空格包裹" },
-    { "in": "带*星号?和\"引号\"", "out": "带_星号_和_引号_" },
-    { "in": "", "out": "未命名作品" },
-    { "in": "   ", "out": "未命名作品" },
-    { "in": "含\n换行\t制表", "out": "含_换行_制表" },
-    { "in": "竖线|与尖括号<>", "out": "竖线_与尖括号__" }
+    {
+      "in": "沈砚传",
+      "out": "沈砚传"
+    },
+    {
+      "in": "a/b\\c",
+      "out": "a_b_c"
+    },
+    {
+      "in": "标题: 副标题",
+      "out": "标题_ 副标题"
+    },
+    {
+      "in": " 空格包裹 ",
+      "out": "空格包裹"
+    },
+    {
+      "in": "带*星号?和\"引号\"",
+      "out": "带_星号_和_引号_"
+    },
+    {
+      "in": "",
+      "out": "未命名作品"
+    },
+    {
+      "in": "   ",
+      "out": "未命名作品"
+    },
+    {
+      "in": "含\n换行\t制表",
+      "out": "含_换行_制表"
+    },
+    {
+      "in": "竖线|与尖括号<>",
+      "out": "竖线_与尖括号__"
+    }
   ],
   "chapterDirName": [
-    { "n": 1, "out": "ch-001" },
-    { "n": 42, "out": "ch-042" },
-    { "n": 999, "out": "ch-999" },
-    { "n": 1000, "out": "ch-1000" }
+    {
+      "n": 1,
+      "out": "ch-001"
+    },
+    {
+      "n": 42,
+      "out": "ch-042"
+    },
+    {
+      "n": 999,
+      "out": "ch-999"
+    },
+    {
+      "n": 1000,
+      "out": "ch-1000"
+    }
   ],
   "writePolicy": [
-    { "mode": "assist", "chapter": 1, "ledger": false, "prose": false,
-      "why": "辅助档：AI 只能提案，台账与正文都不能直写" },
-    { "mode": "cowrite", "chapter": 1, "ledger": true, "prose": false,
-      "why": "共写档：台账可写，正文仍归作者" },
-    { "mode": "ghostwrite", "chapter": 3, "ghostwriteChapters": [3], "ledger": true, "prose": true,
-      "why": "代笔档 + 该章已授权：可以直写正文" },
-    { "mode": "ghostwrite", "chapter": 4, "ghostwriteChapters": [3], "ledger": true, "prose": false,
-      "why": "代笔档但该章未授权：只能写台账" },
-    { "mode": "ghostwrite", "chapter": 1, "ghostwriteChapters": [], "ledger": true, "prose": false,
-      "why": "代笔档但一章都没授权：正文仍然不行（授权必须显式）" },
-    { "mode": "assist", "chapter": 9, "ghostwriteChapters": [9], "ledger": false, "prose": false,
-      "why": "档位优先于逐章授权：辅助档即使授权了该章也不能直写" }
+    {
+      "mode": "assist",
+      "chapter": 1,
+      "ledger": false,
+      "prose": false,
+      "why": "辅助档：AI 只能提案，台账与正文都不能直写"
+    },
+    {
+      "mode": "cowrite",
+      "chapter": 1,
+      "ledger": true,
+      "prose": false,
+      "why": "共写档：台账可写，正文仍归作者"
+    },
+    {
+      "mode": "ghostwrite",
+      "chapter": 3,
+      "ghostwriteChapters": [
+        3
+      ],
+      "ledger": true,
+      "prose": true,
+      "why": "代笔档 + 该章已授权：可以直写正文"
+    },
+    {
+      "mode": "ghostwrite",
+      "chapter": 4,
+      "ghostwriteChapters": [
+        3
+      ],
+      "ledger": true,
+      "prose": false,
+      "why": "代笔档但该章未授权：只能写台账"
+    },
+    {
+      "mode": "ghostwrite",
+      "chapter": 1,
+      "ghostwriteChapters": [],
+      "ledger": true,
+      "prose": false,
+      "why": "代笔档但一章都没授权：正文仍然不行（授权必须显式）"
+    },
+    {
+      "mode": "assist",
+      "chapter": 9,
+      "ghostwriteChapters": [
+        9
+      ],
+      "ledger": false,
+      "prose": false,
+      "why": "档位优先于逐章授权：辅助档即使授权了该章也不能直写"
+    }
   ],
   "intervalCovers": [
-    { "from": 5, "to": 20, "chapter": 4, "covers": false, "why": "还没拜师" },
-    { "from": 5, "to": 20, "chapter": 5, "covers": true, "why": "含起点" },
-    { "from": 5, "to": 20, "chapter": 19, "covers": true },
-    { "from": 5, "to": 20, "chapter": 20, "covers": false, "why": "不含终点" },
-    { "from": 5, "to": 0, "chapter": 999, "covers": true, "why": "to=0 表示开放终点" },
-    { "from": 0, "to": 0, "chapter": 1, "covers": true, "why": "两端开放 = 一直成立" }
+    {
+      "from": 5,
+      "to": 20,
+      "chapter": 4,
+      "covers": false,
+      "why": "还没拜师"
+    },
+    {
+      "from": 5,
+      "to": 20,
+      "chapter": 5,
+      "covers": true,
+      "why": "含起点"
+    },
+    {
+      "from": 5,
+      "to": 20,
+      "chapter": 19,
+      "covers": true
+    },
+    {
+      "from": 5,
+      "to": 20,
+      "chapter": 20,
+      "covers": false,
+      "why": "不含终点"
+    },
+    {
+      "from": 5,
+      "to": 0,
+      "chapter": 999,
+      "covers": true,
+      "why": "to=0 表示开放终点"
+    },
+    {
+      "from": 0,
+      "to": 0,
+      "chapter": 1,
+      "covers": true,
+      "why": "两端开放 = 一直成立"
+    }
   ],
   "memoryRecall": [
-    { "why": "别名归一后主宾命中(300+章距200+新近60=560) 排在仅新近(280)前；整数章距/新近",
+    {
+      "why": "别名归一后主宾命中(300+章距200+新近60=560) 排在仅新近(280)前；整数章距/新近",
       "facts": [
-        { "id": "a", "subject": "沈砚", "predicate": "师从", "object": "老周", "fromChapter": 3 },
-        { "id": "b", "subject": "顾青", "predicate": "师从", "object": "老周", "fromChapter": 5 },
-        { "id": "c", "subject": "沈砚", "predicate": "获得", "object": "断刀", "fromChapter": 2 }
+        {
+          "id": "a",
+          "subject": "沈砚",
+          "predicate": "师从",
+          "object": "老周",
+          "fromChapter": 3
+        },
+        {
+          "id": "b",
+          "subject": "顾青",
+          "predicate": "师从",
+          "object": "老周",
+          "fromChapter": 5
+        },
+        {
+          "id": "c",
+          "subject": "沈砚",
+          "predicate": "获得",
+          "object": "断刀",
+          "fromChapter": 2
+        }
       ],
-      "aliases": [ { "canonicalName": "沈砚", "aliases": ["砚哥"] } ],
-      "chapter": 3, "terms": ["砚哥"], "limit": 10,
-      "expectIds": ["a", "c", "b"], "expectTopScore": 560 },
-    { "why": "同(主,谓,宾)去重留分高/章新者；无查询词时只按新近度",
+      "aliases": [
+        {
+          "canonicalName": "沈砚",
+          "aliases": [
+            "砚哥"
+          ]
+        }
+      ],
+      "chapter": 3,
+      "terms": [
+        "砚哥"
+      ],
+      "limit": 10,
+      "expectIds": [
+        "a",
+        "c",
+        "b"
+      ],
+      "expectTopScore": 560
+    },
+    {
+      "why": "同(主,谓,宾)去重留分高/章新者；无查询词时只按新近度",
       "facts": [
-        { "id": "x", "subject": "沈砚", "predicate": "获得", "object": "断刀", "fromChapter": 2 },
-        { "id": "y", "subject": "沈砚", "predicate": "获得", "object": "断刀", "fromChapter": 4 }
+        {
+          "id": "x",
+          "subject": "沈砚",
+          "predicate": "获得",
+          "object": "断刀",
+          "fromChapter": 2
+        },
+        {
+          "id": "y",
+          "subject": "沈砚",
+          "predicate": "获得",
+          "object": "断刀",
+          "fromChapter": 4
+        }
       ],
-      "aliases": [], "terms": [], "limit": 10,
-      "expectIds": ["y"] },
-    { "why": "同分按章号再按主语字典序稳定排序，limit 截断",
+      "aliases": [],
+      "terms": [],
+      "limit": 10,
+      "expectIds": [
+        "y"
+      ]
+    },
+    {
+      "why": "同分按章号再按主语字典序稳定排序，limit 截断",
       "facts": [
-        { "id": "p", "subject": "A", "predicate": "获得", "object": "刀", "fromChapter": 1 },
-        { "id": "q", "subject": "B", "predicate": "获得", "object": "刀", "fromChapter": 1 },
-        { "id": "r", "subject": "C", "predicate": "获得", "object": "刀", "fromChapter": 1 }
+        {
+          "id": "p",
+          "subject": "A",
+          "predicate": "获得",
+          "object": "刀",
+          "fromChapter": 1
+        },
+        {
+          "id": "q",
+          "subject": "B",
+          "predicate": "获得",
+          "object": "刀",
+          "fromChapter": 1
+        },
+        {
+          "id": "r",
+          "subject": "C",
+          "predicate": "获得",
+          "object": "刀",
+          "fromChapter": 1
+        }
       ],
-      "aliases": [], "terms": [], "limit": 2,
-      "expectIds": ["p", "q"] }
+      "aliases": [],
+      "terms": [],
+      "limit": 2,
+      "expectIds": [
+        "p",
+        "q"
+      ]
+    }
   ],
   "memoryInfer": [
-    { "why": "同师推导同门(排序对)、对称补全夫妻反向、单值配偶冲突、陈旧阈值>30(等于30不算)",
+    {
+      "why": "同师推导同门(排序对)、对称补全夫妻反向、单值配偶冲突、陈旧只标状态型(夫妻/配偶 >30章；获得类历史事实不标)",
       "facts": [
-        { "id": "a", "subject": "沈砚", "predicate": "师从", "object": "老周", "fromChapter": 3 },
-        { "id": "b", "subject": "顾青", "predicate": "师从", "object": "老周", "fromChapter": 5 },
-        { "id": "c", "subject": "沈砚", "predicate": "夫妻", "object": "顾青", "fromChapter": 8 },
-        { "id": "d", "subject": "沈砚", "predicate": "配偶", "object": "阿绣", "fromChapter": 9 },
-        { "id": "e", "subject": "沈砚", "predicate": "配偶", "object": "顾青", "fromChapter": 10 },
-        { "id": "f", "subject": "沈砚", "predicate": "获得", "object": "断刀", "fromChapter": 2 }
+        {
+          "id": "a",
+          "subject": "沈砚",
+          "predicate": "师从",
+          "object": "老周",
+          "fromChapter": 3
+        },
+        {
+          "id": "b",
+          "subject": "顾青",
+          "predicate": "师从",
+          "object": "老周",
+          "fromChapter": 5
+        },
+        {
+          "id": "c",
+          "subject": "沈砚",
+          "predicate": "夫妻",
+          "object": "顾青",
+          "fromChapter": 8
+        },
+        {
+          "id": "d",
+          "subject": "沈砚",
+          "predicate": "配偶",
+          "object": "阿绣",
+          "fromChapter": 9
+        },
+        {
+          "id": "e",
+          "subject": "沈砚",
+          "predicate": "配偶",
+          "object": "顾青",
+          "fromChapter": 10
+        },
+        {
+          "id": "f",
+          "subject": "沈砚",
+          "predicate": "获得",
+          "object": "断刀",
+          "fromChapter": 2
+        }
       ],
-      "aliases": [], "currentChapter": 40,
+      "aliases": [],
+      "currentChapter": 40,
       "expectImplied": [
-        { "subject": "沈砚", "predicate": "同门", "object": "顾青" },
-        { "subject": "顾青", "predicate": "夫妻", "object": "沈砚" }
+        {
+          "subject": "沈砚",
+          "predicate": "同门",
+          "object": "顾青"
+        },
+        {
+          "subject": "顾青",
+          "predicate": "夫妻",
+          "object": "沈砚"
+        }
       ],
-      "expectContradictions": [ { "subject": "沈砚", "predicate": "配偶", "objects": ["阿绣", "顾青"] } ],
-      "expectStale": ["c", "d", "f"] },
-    { "why": "别名归一后同一人不自推同门",
+      "expectContradictions": [
+        {
+          "subject": "沈砚",
+          "predicate": "配偶",
+          "objects": [
+            "阿绣",
+            "顾青"
+          ]
+        }
+      ],
+      "expectStale": [
+        "c",
+        "d"
+      ]
+    },
+    {
+      "why": "别名归一后同一人不自推同门",
       "facts": [
-        { "id": "a", "subject": "砚哥", "predicate": "师从", "object": "老周", "fromChapter": 3 },
-        { "id": "b", "subject": "沈砚", "predicate": "师从", "object": "老周", "fromChapter": 5 }
+        {
+          "id": "a",
+          "subject": "砚哥",
+          "predicate": "师从",
+          "object": "老周",
+          "fromChapter": 3
+        },
+        {
+          "id": "b",
+          "subject": "沈砚",
+          "predicate": "师从",
+          "object": "老周",
+          "fromChapter": 5
+        }
       ],
-      "aliases": [ { "canonicalName": "沈砚", "aliases": ["砚哥"] } ],
+      "aliases": [
+        {
+          "canonicalName": "沈砚",
+          "aliases": [
+            "砚哥"
+          ]
+        }
+      ],
       "currentChapter": 5,
-      "expectImplied": [], "expectContradictions": [], "expectStale": [] },
-    { "why": "反向已显式存在时对称不重复补",
+      "expectImplied": [],
+      "expectContradictions": [],
+      "expectStale": []
+    },
+    {
+      "why": "反向已显式存在时对称不重复补",
       "facts": [
-        { "id": "a", "subject": "甲", "predicate": "结义", "object": "乙", "fromChapter": 1 },
-        { "id": "b", "subject": "乙", "predicate": "结义", "object": "甲", "fromChapter": 1 }
+        {
+          "id": "a",
+          "subject": "甲",
+          "predicate": "结义",
+          "object": "乙",
+          "fromChapter": 1
+        },
+        {
+          "id": "b",
+          "subject": "乙",
+          "predicate": "结义",
+          "object": "甲",
+          "fromChapter": 1
+        }
       ],
-      "aliases": [], "currentChapter": 1,
-      "expectImplied": [], "expectContradictions": [], "expectStale": [] }
+      "aliases": [],
+      "currentChapter": 1,
+      "expectImplied": [],
+      "expectContradictions": [],
+      "expectStale": []
+    },
+    {
+      "why": "陈旧只标状态型谓语：配偶(第5章)跨>30章要复核；获得(第2章)是历史事实永远为真，不标",
+      "facts": [
+        {
+          "id": "s1",
+          "subject": "沈砚",
+          "predicate": "配偶",
+          "object": "顾青",
+          "fromChapter": 5
+        },
+        {
+          "id": "s2",
+          "subject": "沈砚",
+          "predicate": "获得",
+          "object": "断刀",
+          "fromChapter": 2
+        },
+        {
+          "id": "s3",
+          "subject": "顾青",
+          "predicate": "位置",
+          "object": "码头",
+          "fromChapter": 3
+        }
+      ],
+      "aliases": [],
+      "currentChapter": 60,
+      "expectImplied": [],
+      "expectContradictions": [],
+      "expectStale": [
+        "s1",
+        "s3"
+      ]
+    }
   ]
 }

@@ -146,14 +146,18 @@ export interface Inference {
 
 const SYMMETRIC = ['夫妻', '结义', '同门']
 const SINGLE_VALUED = ['夫妻', '配偶', '生父', '生母']
-const DURABLE = ['师从', '生父', '生母', '出生']
+// 会过期的**状态型**谓语：只有这些才可能"陈旧"。
+// 历史事件（获得/失去/去过）永远为真，不因年头久就需复核——
+// 旧实现用"耐久黑名单"，在 118 章的书里把 61 条事实中的 38 条误报。
+const VOLATILE = ['配偶', '夫妻', '位置', '状态', '身份', '所在地']
 const STALE_WINDOW = 30
 
 /** 推断规则——书级可配。`memory.json` 里可含 `inferRules` 块覆盖默认。 */
 export interface InferRules {
   symmetric: string[]
   singleValued: string[]
-  durable: string[]
+  /** 会过期的状态型谓语（只有这些可能被标陈旧） */
+  volatile: string[]
   staleWindow: number
 }
 
@@ -161,7 +165,7 @@ export function defaultInferRules(): InferRules {
   return {
     symmetric: [...SYMMETRIC],
     singleValued: [...SINGLE_VALUED],
-    durable: [...DURABLE],
+    volatile: [...VOLATILE],
     staleWindow: STALE_WINDOW,
   }
 }
@@ -180,7 +184,7 @@ export function inferRulesFromMemoryJson(mem: Record<string, unknown>): InferRul
   }
   r.symmetric = take('symmetric', r.symmetric)
   r.singleValued = take('singleValued', r.singleValued)
-  r.durable = take('durable', r.durable)
+  r.volatile = take('volatile', r.volatile)
   if (typeof o['staleWindow'] === 'number' && Number.isFinite(o['staleWindow'])) {
     r.staleWindow = o['staleWindow'] as number
   }
@@ -255,7 +259,7 @@ export function inferWithRules(
 
   if (currentChapter > 0) {
     for (const f of parsed) {
-      if (f.chapter > 0 && currentChapter - f.chapter > rules.staleWindow && !rules.durable.includes(f.predicate)) {
+      if (f.chapter > 0 && currentChapter - f.chapter > rules.staleWindow && rules.volatile.includes(f.predicate)) {
         out.stale.push(f.id)
       }
     }

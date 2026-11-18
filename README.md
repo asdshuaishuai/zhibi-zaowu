@@ -111,6 +111,8 @@ zhibi-next/
 │   ├── dev.sh           # 开发启动
 │   ├── test-all.sh      # 双端测试（cargo test + node --test）
 │   ├── dsh-smoke.sh     # 协议冒烟
+│   ├── make_smoke_fixture.py # 造一本形状逼真的长篇样本（118 章 / 30 万字）
+│   ├── smoke_modes.sh   # 逐页冒烟：每页起进程 4s，验不崩
 │   ├── vendor_runtime.sh# 一次性 vendor Node + DSH 到 .vendor/
 │   ├── build_app.sh     # macOS .app（内含 runtime）
 │   ├── build_app_linux.sh
@@ -152,7 +154,7 @@ scripts/dev.sh
 ### 测试
 
 ```sh
-scripts/test-all.sh     # Rust（244 项）+ novel-pack（8 项）
+scripts/test-all.sh     # Rust（245 项）+ novel-pack（8 项）
 ```
 
 两端读同一份 `tests/conformance/cases.json`。改了任意一侧的规则而没改夹具，
