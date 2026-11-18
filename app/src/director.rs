@@ -351,14 +351,13 @@ impl DirectorPanel {
                 );
             }
         }
+        // 静默基准 = 全书进度，不是窗口起点：否则滚一下滚轮，
+        // 同一个伏笔就从"静默 9 章"变成"静默 115 章"。
+        let progress = self.handle.progress_chapter();
         for c in self.handle.clues_full() {
-            let status = s(&c, "status");
-            if !matches!(status.as_str(), "埋下" | "推进中") {
+            let Some(silent) = crate::store::clue_silence(&c, progress) else {
                 continue;
-            }
-            let planted = c.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let last = c.get("lastActionChapter").and_then(|v| v.as_u64()).unwrap_or(planted as u64) as u32;
-            let silent = self.current.saturating_sub(last.max(planted));
+            };
             if silent >= 8 {
                 out.push(
                     Tag::custom(hsla(theme::AMBER_SOFT()), hsla(theme::AMBER()), hsla(theme::LINE()))

@@ -911,6 +911,87 @@ mod tests {
     /// 为什么单测这个：固化边界 = **最大成稿章**，所以第 2 章空着、第 3 章写了，
     /// 边界仍是 3——应用会显示"写到第 3 章"，而第 2 章其实一个字都没有。
     /// 这是长篇里最容易"以为写完了"的漏洞，必须有确定性判据。
+    /// 静默章数只随写作进度变，不随视图窗口变。
+    ///
+    /// 真实缺陷：排期板曾用窗口起点算静默，体检条用下一待写章算。
+    /// 同一个伏笔（第 1 章埋、之后没动），窗口滚到第 10 章显示"静默 9 章"，
+    /// 滚到第 116 章显示"静默 115 章"——数字跟着滚轮走，伏笔一个字段都没变。
+    /// 有档案但记忆账本空白的人物必须能发现。
+    ///
+    /// 真实样本上：8 个人物里 4 个在 facts 里一条记录都没有。旧逻辑只遍历
+    /// "有记录的人"，这 4 个在范围之外——一个都不会被报出来。而他们恰恰
+    /// 最需要记：写他们时 AI 无前情可依。
+    #[test]
+    fn characters_without_any_fact_are_visible() {
+        let (home, _guard) = use_home("blank-roster");
+        let dir = create_project("空白档案").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+
+        crate::characters::Roster::new(&dir)
+            .save(&[
+                crate::characters::Character::new("沈砚"),
+                crate::characters::Character::new("顾青"),
+            ])
+            .unwrap();
+        let mem = serde_json::json!({
+            "facts": [
+                {"id":"m1","subject":"沈砚","predicate":"获得","object":"断刀","fromChapter":3}
+            ],
+            "aliases": []
+        });
+        std::fs::write(dir.join("memory.json"), serde_json::to_string(&mem).unwrap()).unwrap();
+
+        let (facts, aliases) = h.memory_ledger();
+        let map = crate::memory::alias_map(&aliases);
+        let known: std::collections::HashSet<String> = facts
+            .iter()
+            .map(|f| {
+                crate::memory::normalize(
+                    f.get("subject").and_then(|v| v.as_str()).unwrap_or(""),
+                    &map,
+                )
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let blank: Vec<String> = crate::characters::Roster::new(&dir)
+            .all()
+            .into_iter()
+            .map(|c| c.name)
+            .filter(|n| !n.is_empty() && !known.contains(n))
+            .collect();
+        assert_eq!(blank, vec!["顾青".to_string()], "有档案没事实的人要被点名");
+        assert!(!blank.contains(&"沈砚".to_string()), "已记过事实的不该误报");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn clue_silence_has_one_baseline() {
+        let clue = serde_json::json!({
+            "id": "F01", "status": "埋下", "plantedChapter": 1, "lastActionChapter": 1
+        });
+        // 不论哪个视图来问，只要全书进度相同，答案就相同
+        assert_eq!(clue_silence(&clue, 10), Some(9));
+        assert_eq!(clue_silence(&clue, 116), Some(115));
+
+        // 从没被养过的伏笔：静默从埋下算起，不从第 0 章算起
+        let late = serde_json::json!({
+            "id": "F02", "status": "推进中", "plantedChapter": 90
+        });
+        assert_eq!(
+            clue_silence(&late, 100),
+            Some(10),
+            "缺 lastActionChapter 应回落到埋设章，否则会被误报静默 100 章"
+        );
+
+        // 已兑现的伏笔不算静默
+        let done = serde_json::json!({
+            "id": "F03", "status": "已兑现", "plantedChapter": 1, "resolvedChapter": 5
+        });
+        assert_eq!(clue_silence(&done, 100), None, "已兑现的不该再报静默");
+    }
+
     #[test]
     fn chapters_leave_visible_holes_in_the_middle() {
         let (home, _guard) = use_home("chapter-holes");
@@ -3292,6 +3373,29 @@ fn iso_now() -> String {
 
 // ───────────────────── 台账读取（真实文件名：storylines/events/stages/memory/dossiers）─────────────────────
 
+/// 一条伏笔的「静默章数」：距它最后一次被推进，过了几章。
+///
+/// 基准是**全书进度**（[`ProjectHandle::progress_chapter`]），不是当前视图窗口——
+/// 静默是伏笔自己的属性，不该因为作者滚动排期板就变。
+///
+/// `lastActionChapter` 缺省回落到埋设章：从没被养过的伏笔，静默从埋下那天算起，
+/// 而不是从第 0 章算起（否则第 90 章才埋的伏笔会被误报成静默 90 章）。
+///
+/// 只统计仍在"养"的伏笔（埋下 / 推进中）；已兑现的不算静默。
+pub fn clue_silence(clue: &serde_json::Value, progress: u32) -> Option<u32> {
+    let status = clue.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(status, "埋下" | "推进中") {
+        return None;
+    }
+    let planted = clue.get("plantedChapter").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let last = clue
+        .get("lastActionChapter")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(planted);
+    Some(progress.saturating_sub(last.max(planted)))
+}
+
 impl ProjectHandle {
     pub(crate) fn read_array(&self, file: &str) -> Vec<serde_json::Value> {
         std::fs::read_to_string(self.root.join(file))
@@ -3390,6 +3494,18 @@ impl ProjectHandle {
     pub fn clues_full(&self) -> Vec<serde_json::Value> {
         self.clues()
     }
+
+    /// 全书进度：**唯一**的「现在到哪一章」口径。
+    ///
+    /// 为什么需要它：静默章数这类指标必须有一个稳定基准。曾经排期板用窗口起点
+    /// （`current`）算静默，体检条用下一待写章算——同一个伏笔，滚一下滚轮
+    /// 就从"静默 9 章"变成"静默 115 章"，因为它比较的是一个会动的数。
+    /// 基准应当只随写作进度变，不随视角变。
+    pub fn progress_chapter(&self) -> u32 {
+        self.next_chapter_number().saturating_sub(1).max(1)
+    }
+
+
     pub fn aliases(&self) -> Vec<serde_json::Value> {
         self.memory_ledger().1
     }

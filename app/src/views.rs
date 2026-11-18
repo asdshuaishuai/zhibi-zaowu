@@ -5080,17 +5080,13 @@ impl ChaptersPanel {
 
         // 5. 静默伏笔（≥8 章没养的）
         let clues = handle.clues_full();
+        // 与排期板同一个口径（store::clue_silence + 全书进度）：
+        // 两处曾各自算过，基准一个是窗口起点、一个是下一待写章，数值会对不上。
+        let progress = handle.progress_chapter();
         let mut silent_clues: Vec<(String, u32)> = clues
             .iter()
-            .filter(|c| matches!(c.get("status").and_then(|v| v.as_str()), Some("埋下" | "推进中")))
             .filter_map(|c| {
-                let planted = c.get("plantedChapter").and_then(|v| v.as_u64())? as u32;
-                let last = c
-                    .get("lastActionChapter")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as u32)
-                    .unwrap_or(planted);
-                let silent = next_ch.saturating_sub(last.max(planted));
+                let silent = crate::store::clue_silence(c, progress)?;
                 if silent >= 8 {
                     Some((c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(), silent))
                 } else {
@@ -5169,6 +5165,32 @@ impl ChaptersPanel {
                 last_fact.entry(s).and_modify(|m| *m = (*m).max(ch)).or_insert(ch);
             }
         }
+        // 有档案却一条事实都没有的人：比"很久没更新"严重——账本里根本没他。
+        // 旧逻辑只遍历 last_fact（有记录的人），这些人在范围之外，一个都不会被报。
+        let roster = crate::characters::Roster::new(&handle.root).all();
+        let blank: Vec<&str> = roster
+            .iter()
+            .map(|c| c.name.as_str())
+            .filter(|n| !n.is_empty() && !last_fact.contains_key(*n))
+            .collect();
+        if !blank.is_empty() {
+            let mut names = blank.clone();
+            names.sort_unstable();
+            checkup.push((
+                if names.len() == 1 {
+                    format!("{} 有档案但记忆账本里一条事实都没有", names[0])
+                } else {
+                    format!(
+                        "{} 人有档案但记忆账本空白（如 {}）——写他们时 AI 无前情可依",
+                        names.len(),
+                        names[0]
+                    )
+                },
+                Tone::Amber,
+            ));
+        }
+
+        // 有记录但很久没更新的人
         let mut dormant: Vec<&str> = last_fact
             .iter()
             .filter(|(_, ch)| written_max.saturating_sub(**ch) >= 20)
