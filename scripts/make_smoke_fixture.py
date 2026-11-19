@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """造一本「形状逼真」的长篇 fixture，用于桌面实机冒烟与性能观察。
 
+默认落在工作区 `.smoke/`（已 gitignore）——放 /tmp 会在重启后消失，
+而"验过的东西能再验一遍"是这个脚本存在的意义。
+
 不是随机填充：章节有真实的中文叙事段落、人物反复出场但会断续、
 伏笔有埋有收有静默、事件挂到具体章、记忆事实与正文对得上。
 这样打开应用看到的是"一本真书"，而不是测试数据。
@@ -15,7 +18,7 @@ from pathlib import Path
 random.seed(20261116)
 
 TITLE = "冒烟长卷"
-ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/zhibi-fixture") / f"{TITLE}.zhibi"
+ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else ".smoke") / f"{TITLE}.zhibi"
 
 PEOPLE = ["沈砚", "顾青", "老周", "阿绣", "裴照", "无咎", "陆七", "钟晚"]
 PLACES = ["雨巷", "灯市", "码头", "断桥", "旧宅", "关外"]

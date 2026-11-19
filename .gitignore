@@ -8,3 +8,6 @@
 /runtime/spike/probe/node_modules
 /runtime/zhibi-runtime/package-lock.json
 /runtime/zhibi-runtime/pnpm-lock.yaml
+
+# 冒烟样本与日志（scripts/make_smoke_fixture.py 生成，不入库）
+/.smoke

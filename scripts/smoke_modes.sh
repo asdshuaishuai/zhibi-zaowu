@@ -5,18 +5,18 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-BOOK="${1:-/tmp/zhibi-smoke/冒烟长卷.zhibi}"
+BOOK="${1:-.smoke/冒烟长卷.zhibi}"
 SECS="${2:-4}"
 BIN="./target/release/zhibi"
 
 if [ ! -x "$BIN" ]; then echo "先构建：cargo build --release"; exit 1; fi
-if [ ! -d "$BOOK" ]; then echo "缺 fixture：python3 scripts/make_smoke_fixture.py /tmp/zhibi-smoke"; exit 1; fi
+if [ ! -d "$BOOK" ]; then echo "缺 fixture：python3 scripts/make_smoke_fixture.py"; exit 1; fi
 
 MODES=(editor chapters outline canon memory stats clues characters graph canvas director worldline oracle bookinfo search)
 fail=0
 
 for m in "${MODES[@]}"; do
-  log="/tmp/zhibi-smoke-$m.log"
+  log=".smoke/log-$m.log"
   : > "$log"
   ZHIBI_OPEN="$BOOK" ZHIBI_MODE="$m" "$BIN" >"$log" 2>&1 &
   pid=$!

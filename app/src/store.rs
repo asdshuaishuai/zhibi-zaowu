@@ -921,6 +921,41 @@ mod tests {
     /// 真实样本上：8 个人物里 4 个在 facts 里一条记录都没有。旧逻辑只遍历
     /// "有记录的人"，这 4 个在范围之外——一个都不会被报出来。而他们恰恰
     /// 最需要记：写他们时 AI 无前情可依。
+    /// 端到端确认：矛盾的伏笔数据**读得进**（书能打开），但**写不进去**（拦在落库前）。
+    ///
+    /// 这是这次校验的核心取舍：
+    /// - 读路径不校验 → 旧书里已有的矛盾不会让作者打不开书；
+    /// - 写路径校验 → 带着矛盾去保存会被拒，不会把坏账固化下去。
+    #[test]
+    fn contradictory_clues_read_but_do_not_write() {
+        let (home, _guard) = use_home("contradictory-clues");
+        let dir = create_project("矛盾伏笔").unwrap();
+        let h = ProjectHandle::open(&dir).unwrap();
+
+        // 手写一份含矛盾的台账（模拟旧书 / 导入数据）
+        let bad = serde_json::json!([
+            {"id":"F01","title":"收了还推进","status":"已兑现",
+             "plantedChapter":43,"lastActionChapter":74,"resolvedChapter":54}
+        ]);
+        let raw = serde_json::to_string(&bad).unwrap();
+        std::fs::write(dir.join("clues.json"), &raw).unwrap();
+
+        // 读得进：书能打开，页面能看到这一条
+        let clues = h.clues_full();
+        assert_eq!(clues.len(), 1, "读取路径不该因为章号矛盾而拒绝打开书");
+        assert_eq!(clues[0]["id"], serde_json::json!("F01"));
+
+        // 写不进：同一份内容走校验要被拒
+        let err = crate::schema::validate_text("clues.json", &raw);
+        assert!(err.is_err(), "写路径必须拦下矛盾数据");
+        assert!(
+            err.unwrap_err().iter().any(|e| e.contains("不该再推进")),
+            "错误信息要说清是哪一种矛盾"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn characters_without_any_fact_are_visible() {
         let (home, _guard) = use_home("blank-roster");

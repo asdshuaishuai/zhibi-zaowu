@@ -145,6 +145,30 @@ fn check_shape(
             if !chapter_ok("plantedChapter") {
                 issues.push(format!("第 {n} 条的 plantedChapter 不是数字"));
             }
+            // 章号自洽：同一条记录内部的字段不能互相矛盾。
+            // 这是结构契约，不是业务规则——"该不该收"才是业务，不在这里管。
+            //
+            // 实测真实数据里出现过 `已兑现` 但 `resolvedChapter` 早于
+            // `lastActionChapter`（第 43 章埋、第 54 章收、却记着第 74 章还动过）：
+            // 收了的伏笔不该再有后续动作，这种账会让"静默/逾期"统计失去意义。
+            let ch = |key: &str| obj.get(key).and_then(|v| v.as_u64());
+            if let (Some(planted), Some(resolved)) = (ch("plantedChapter"), ch("resolvedChapter"))
+                && planted > 0
+                && resolved > 0
+                && resolved < planted
+            {
+                issues.push(format!(
+                    "第 {n} 条的 resolvedChapter（{resolved}）早于 plantedChapter（{planted}）"
+                ));
+            }
+            if let (Some(resolved), Some(last)) = (ch("resolvedChapter"), ch("lastActionChapter"))
+                && resolved > 0
+                && last > resolved
+            {
+                issues.push(format!(
+                    "第 {n} 条已在第 {resolved} 章收束，却记着第 {last} 章还有动作（收了的伏笔不该再推进）"
+                ));
+            }
         }
         "stages.json" => {
             for key in ["chapterStart", "chapterEnd"] {
@@ -393,6 +417,42 @@ pub fn validate_and_rollback_ai_edits(root: &Path, limit: usize) -> Vec<Problem>
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 伏笔章号必须自洽：同一条记录内部的字段不能互相矛盾。
+    ///
+    /// 真实数据里出现过两种矛盾账（来自手写/导入/模型提案）：
+    /// - 已兑现，但 resolvedChapter 早于 plantedChapter（先收后埋）
+    /// - 已兑现，但 lastActionChapter 晚于 resolvedChapter（收了还继续推进）
+    ///
+    /// 这两种都不会让程序崩，只会让"静默/逾期"统计失去意义——所以要拦。
+    #[test]
+    fn clue_chapter_fields_must_be_self_consistent() {
+        let ok = r#"[{"id":"F01","title":"半块虎符","status":"已兑现",
+                      "plantedChapter":43,"lastActionChapter":54,"resolvedChapter":54}]"#;
+        assert!(validate_text("clues.json", ok).is_ok(), "章号自洽的伏笔要放行");
+
+        let unresolved = r#"[{"id":"F02","title":"灯契","status":"推进中",
+                             "plantedChapter":50,"lastActionChapter":65}]"#;
+        assert!(validate_text("clues.json", unresolved).is_ok(), "未收束的没有 resolvedChapter，合法");
+
+        let reversed = r#"[{"id":"F03","title":"先收后埋","status":"已兑现",
+                           "plantedChapter":75,"lastActionChapter":80,"resolvedChapter":40}]"#;
+        let err = validate_text("clues.json", reversed).unwrap_err();
+        assert!(err.iter().any(|e| e.contains("早于")), "先收后埋要报：{err:?}");
+
+        let after_close = r#"[{"id":"F04","title":"收了还推进","status":"已兑现",
+                              "plantedChapter":43,"lastActionChapter":74,"resolvedChapter":54}]"#;
+        let err = validate_text("clues.json", after_close).unwrap_err();
+        assert!(
+            err.iter().any(|e| e.contains("收了的伏笔不该再推进")),
+            "收束后还有动作要报：{err:?}"
+        );
+
+        // 章节号写 0（未排章）不算矛盾——这是"还没定"的合法表达
+        let zero = r#"[{"id":"F05","title":"未排章","status":"待埋",
+                        "plantedChapter":0,"lastActionChapter":0,"resolvedChapter":0}]"#;
+        assert!(validate_text("clues.json", zero).is_ok(), "0 表示未排章，不能当矛盾报");
+    }
+
 
     fn tmp(tag: &str) -> std::path::PathBuf {
         let p = std::env::temp_dir().join(format!("zhibi-schema-{tag}"));

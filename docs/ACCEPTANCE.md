@@ -2,7 +2,7 @@
 
 构建：`./scripts/build_app.sh` → `open target/release/执笔造物.app`
 （`.app` 已内置 Node + DSH，目标机无需安装；真实模型在「设置」里配 API Key 或账号）。
-双端测试：`./scripts/test-all.sh`（Rust 247 项 + novel-pack 8 项）。
+双端测试：`./scripts/test-all.sh`（Rust 250 项 + novel-pack 8 项）。
 逐项打勾即验收；「期望」为验收标准，不符请记现象。
 
 ## A. 书架（首页）
@@ -96,6 +96,9 @@
 - [ ] 所有台账去截断，全部条目可见（不再有 40/60/80 条上限）
 - [ ] 新建伏笔 / 新建事件 / 新建故事线 / 新建幕都可用
 - [ ] 任一删除都能在「改动记录」里撤销回来（字段完整）
+- [ ] **伏笔章号要自洽**：`resolvedChapter` 不能早于 `plantedChapter`，
+      也不能晚于 `lastActionChapter`（收了就不该再推进）。矛盾数据**读得进**（旧书照常打开），
+      但**写不进**——保存会被拒并指出是哪一种矛盾。章号 0 表示未排章，不算矛盾
 - [ ] **章节页驾驶舱**：目录上方七格「现在」——固化到第几章 / 预测推到哪 /
       正在写哪章 / 今日字数 / 静默伏笔 / 断线故事线 / **预计完本日（按近 14 天日均）**；
       每格可点跳到对应页（伏笔格跳伏笔台账、故事线格跳大纲、预测格跳预言书、字数/完本格跳统计…）
@@ -231,6 +234,8 @@
       拖节点/空白平移/±/⊡；Shift 橡皮筋框选成组拖动；
       「读者视角」隐去未揭示与暗线；位置保留（canvas.json）
 - [ ] **章节排期**：5 章窗口；拖卡跨列即改期；幕带卷名；底部预警条；
+      「无事件覆盖」只对**已成稿**的章报——空章缺的是正文，不是事件；未来章没事件是常态。
+      实测一本 115 成稿章的书夹 3 个空章，其中 2 个会误报，而一屏只有 5 列
       列级「AI 核对」走 `zhibi-director` 技能
 - [ ] **排期 ↔ 世界线跳转**：世界线章抽屉「排期板看此章」→ 切到排期板并定位该章；
       排期板列头「世界线」→ 切到世界线并聚焦该章；跳转不改任何台账
@@ -304,10 +309,10 @@
 ## Z. 长篇实机冒烟（发版前跑一次）
 
 ```sh
-python3 scripts/make_smoke_fixture.py /tmp/zhibi-smoke   # 造 118 章 / 30 万字样本
+python3 scripts/make_smoke_fixture.py                      # 造 118 章 / 30 万字样本（落 .smoke/）
 cargo build --release
 ./scripts/smoke_modes.sh                                  # 15 页逐页起进程，验不崩
-ZHIBI_PROBE_BOOK=/tmp/zhibi-smoke/冒烟长卷.zhibi \
+ZHIBI_PROBE_BOOK=.smoke/冒烟长卷.zhibi \
   cargo test --bin zhibi real_book_shape -- --ignored --nocapture   # 数据口径自洽
 ```
 

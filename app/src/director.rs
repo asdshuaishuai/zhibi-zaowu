@@ -38,6 +38,26 @@ pub(crate) fn window_for_jump(n: u32) -> u32 {
     n.saturating_sub(2).max(1)
 }
 
+/// 窗口内哪些**已写成稿**的章没有事件卡——"缺事件"的唯一判据。
+///
+/// 三条都要满足才报：在窗口内、已成稿、没有事件卡。
+/// - 未来章：还没写，没事件是常态；
+/// - 空章：连正文都没有，缺的不是事件（实测一屏 5 列里能有 2 个，纯噪音）；
+/// - 已有事件卡的章：不报。
+///
+/// 抽成纯函数是为了能直接断言"空章不报"——UI 里那层 Tag 没法测。
+pub(crate) fn uncovered_written_chapters(
+    window: &[u32],
+    written: &std::collections::HashSet<u32>,
+    carded: &std::collections::HashSet<u32>,
+) -> Vec<u32> {
+    window
+        .iter()
+        .copied()
+        .filter(|c| written.contains(c) && !carded.contains(c))
+        .collect()
+}
+
 /// refresh 的合法右界：`next_chapter_number`（下一待写章）。
 /// 章节被删/书变短时把窗口拉回，避免只剩空列。
 pub(crate) fn window_clamp(next_chapter: u32, current: u32) -> u32 {
@@ -334,22 +354,29 @@ impl DirectorPanel {
     /// 确定性预警（只读规则，无 AI）。
     fn warnings(&self) -> Vec<AnyElement> {
         let mut out: Vec<AnyElement> = Vec::new();
-        // 未写到的未来章没有事件是常态，不再刷「无事件覆盖」噪音；只提示已有章节
-        let last_existing = self.handle.next_chapter_number().saturating_sub(1).max(1);
-        for (i, _) in (0..COLS).enumerate() {
-            let chap = self.current + i as u32;
-            if chap > last_existing {
-                continue;
-            }
-            let n = self.cards.iter().filter(|c| c.chapter == chap).count();
-            if n == 0 {
-                out.push(
-                    Tag::custom(hsla(theme::RED_SOFT()), hsla(theme::RED()), hsla(theme::LINE()))
-                        .outline()
-                        .child(SharedString::from(format!("第{chap}章无事件覆盖")))
-                        .into_any_element(),
-                );
-            }
+        // 「无事件覆盖」只对**已写成稿**的章有意义。
+        //
+        // 两处会制造噪音：
+        // ① 未写到的未来章——没有事件是常态，本来就跳过；
+        // ② 建了目录但还没写正文的空章——它连正文都没有，缺的不是事件。
+        //    实测一本 115 成稿章的书里夹着 3 个空章，其中 2 个会亮红灯，
+        //    而一屏只有 5 列：2 个红色误报足以压过真问题。
+        let written: std::collections::HashSet<u32> = self
+            .handle
+            .chapters()
+            .iter()
+            .filter(|c| c.has_prose)
+            .map(|c| c.n)
+            .collect();
+        let win: Vec<u32> = (0..COLS).map(|i| self.current + i as u32).collect();
+        let carded: std::collections::HashSet<u32> = self.cards.iter().map(|c| c.chapter).collect();
+        for chap in uncovered_written_chapters(&win, &written, &carded) {
+            out.push(
+                Tag::custom(hsla(theme::RED_SOFT()), hsla(theme::RED()), hsla(theme::LINE()))
+                    .outline()
+                    .child(SharedString::from(format!("第{chap}章无事件覆盖")))
+                    .into_any_element(),
+            );
         }
         // 静默基准 = 全书进度，不是窗口起点：否则滚一下滚轮，
         // 同一个伏笔就从"静默 9 章"变成"静默 115 章"。
@@ -1200,6 +1227,23 @@ mod tests {
     }
 
     /// 纯函数 truth table：把放置公式与夹取公式钉死在同一张表上。
+    /// 「无事件覆盖」只报已成稿的章。
+    ///
+    /// 真实样本上：115 成稿章里 49 个没事件（43%），3 个空章里 2 个没事件。
+    /// 旧逻辑只跳过未来章，所以那 2 个空章也亮红灯——一屏 5 列里 2 个红色
+    /// 误报就能压过真问题。空章缺的不是事件，是正文。
+    #[test]
+    fn uncovered_warning_only_counts_written_chapters() {
+        let written: std::collections::HashSet<u32> = [10u32, 11, 13].into_iter().collect();
+        let carded: std::collections::HashSet<u32> = [11u32].into_iter().collect();
+        // 窗口 10..=14：10 成稿无事件(报)、11 成稿有事件、12 空章(不报)、13 成稿无事件(报)、14 未来(不报)
+        let window = [10u32, 11, 12, 13, 14];
+        let got = uncovered_written_chapters(&window, &written, &carded);
+        assert_eq!(got, vec![10, 13], "只报已成稿且无事件的章");
+        assert!(!got.contains(&12), "空章缺的是正文，不是事件，不该报");
+        assert!(!got.contains(&14), "未来章还没写，没事件是常态");
+    }
+
     #[test]
     fn window_functions_are_truth_table() {
         // —— window_for_jump ——
